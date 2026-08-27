@@ -14,6 +14,7 @@ source-check:
     python scripts/check-brand.py
     npm ci --ignore-scripts
     npm run build:css
+    npm test
     test -s dashboard/static/tailwind.css
     gitleaks git --redact --no-banner
     gitleaks dir . --redact --no-banner
@@ -29,6 +30,9 @@ typecheck:
 
 test:
     uv run pytest -m 'not e2e' --cov=dashboard --cov-report=term-missing
+
+js-test:
+    npm test
 
 e2e-setup:
     uv run playwright install chromium
