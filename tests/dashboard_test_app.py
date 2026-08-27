@@ -1,10 +1,10 @@
 """Test application factory for dashboard E2E tests."""
 
 import asyncio
-from collections.abc import AsyncGenerator
 import contextlib
-from contextlib import asynccontextmanager
 import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -34,13 +34,13 @@ class MockDashboardApp:
             amqp_connection="amqp://test:test@localhost:5672/",
             neo4j_host="neo4j://localhost:7687",
             neo4j_username="test",
-            neo4j_password="test",  # noqa: S106
+            neo4j_password="test",
             postgres_host="localhost:5432",
             postgres_username="test",
-            postgres_password="test",  # noqa: S106
+            postgres_password="test",
             postgres_database="test",
             rabbitmq_username="test",
-            rabbitmq_password="test",  # noqa: S106
+            rabbitmq_password="test",
         )
         self.websocket_connections: set[WebSocket] = set()
         self.latest_metrics: dict[str, Any] | None = None
@@ -301,7 +301,7 @@ def create_test_app() -> FastAPI:
                 mock_dashboard_app.websocket_connections.discard(websocket)
 
     # Configure static files
-    static_dir = Path(__file__).parent.parent.parent / "dashboard" / "static"
+    static_dir = Path(__file__).parent.parent / "dashboard" / "static"
     logger.info(f"📁 Static dir path: {static_dir}")
     logger.info(f"📁 Static dir exists: {static_dir.exists()}")
 

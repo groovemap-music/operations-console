@@ -1,10 +1,10 @@
 """Pytest configuration for dashboard tests."""
 
 import os
-from pathlib import Path
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -34,7 +34,7 @@ def test_server() -> Any:
             sys.executable,
             "-m",
             "uvicorn",
-            "tests.dashboard.dashboard_test_app:create_test_app",
+            "tests.dashboard_test_app:create_test_app",
             "--factory",
             "--host",
             "127.0.0.1",
@@ -149,13 +149,13 @@ def mock_dashboard_config() -> DashboardConfig:
         amqp_connection="amqp://test:test@localhost:5672/",
         neo4j_host="neo4j://localhost:7687",
         neo4j_username="test",
-        neo4j_password="test",  # noqa: S106
+        neo4j_password="test",
         postgres_host="localhost:5432",
         postgres_username="test",
-        postgres_password="test",  # noqa: S106
+        postgres_password="test",
         postgres_database="test",
         rabbitmq_username="test",
-        rabbitmq_password="test",  # noqa: S106
+        rabbitmq_password="test",
     )
 
 
@@ -196,7 +196,7 @@ def dashboard_mock_httpx_client() -> MagicMock:
     mock = MagicMock()
 
     # Create different responses based on URL
-    async def mock_get(url: str, **kwargs: Any) -> AsyncMock:  # noqa: ARG001
+    async def mock_get(url: str, **kwargs: Any) -> AsyncMock:
         response = AsyncMock()
         response.raise_for_status = AsyncMock()
 

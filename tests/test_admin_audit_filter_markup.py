@@ -13,7 +13,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 
-_ADMIN_HTML = Path(__file__).resolve().parents[2] / "dashboard" / "static" / "admin.html"
+_ADMIN_HTML = Path(__file__).resolve().parents[1] / "dashboard" / "static" / "admin.html"
 
 
 class _SelectOptionCollector(HTMLParser):

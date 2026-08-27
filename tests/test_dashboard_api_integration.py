@@ -2,10 +2,10 @@
 
 import typing
 
-from fastapi.testclient import TestClient
 import pytest
+from fastapi.testclient import TestClient
 
-from tests.dashboard.dashboard_test_app import create_test_app
+from tests.dashboard_test_app import create_test_app
 
 
 class TestDashboardAPIIntegration:
@@ -102,7 +102,7 @@ class TestDashboardPipelineDetection:
     @pytest.fixture
     def client_with_musicbrainz(self) -> typing.Generator[TestClient]:
         """Create test client with MusicBrainz pipeline included."""
-        from tests.dashboard.dashboard_test_app import create_test_app_with_musicbrainz
+        from tests.dashboard_test_app import create_test_app_with_musicbrainz
 
         app = create_test_app_with_musicbrainz()
         with TestClient(app) as test_client:

@@ -11,12 +11,13 @@ from __future__ import annotations
 import json
 import re
 
-from fastapi import APIRouter, Query, Request, Response
 import httpx
-from starlette.responses import JSONResponse
 import structlog
-
 from common import describe_exception
+from fastapi import APIRouter, Query, Request, Response
+from starlette.responses import JSONResponse
+
+from dashboard import catalog_admin_contract
 
 
 logger = structlog.get_logger(__name__)
@@ -125,7 +126,7 @@ async def _validated_json_body(request: Request) -> bytes | None:
 @router.post("/admin/api/login")
 async def proxy_login(request: Request) -> Response:
     """Proxy login requests to the API service."""
-    url = _build_url("/api/admin/auth/login")
+    url = _build_url(catalog_admin_contract.ADMIN_LOGIN_PATH)
     headers = _auth_headers(request)
     try:
         sanitised_body = await _validated_json_body(request)
@@ -147,7 +148,7 @@ async def proxy_login(request: Request) -> Response:
 @router.post("/admin/api/logout")
 async def proxy_logout(request: Request) -> Response:
     """Proxy logout requests to the API service."""
-    url = _build_url("/api/admin/auth/logout")
+    url = _build_url(catalog_admin_contract.ADMIN_LOGOUT_PATH)
     headers = _auth_headers(request)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -161,7 +162,7 @@ async def proxy_logout(request: Request) -> Response:
 @router.get("/admin/api/extractions")
 async def proxy_list_extractions(request: Request) -> Response:
     """Proxy extraction list requests to the API service."""
-    url = _build_url("/api/admin/extractions")
+    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTIONS_PATH)
     headers = _auth_headers(request)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -177,7 +178,7 @@ async def proxy_get_extraction(extraction_id: str, request: Request) -> Response
     """Proxy extraction detail requests to the API service."""
     if not _validate_path_segment(extraction_id):
         return Response(content=b'{"detail":"Invalid extraction ID"}', status_code=400, media_type="application/json")
-    url = _build_url(f"/api/admin/extractions/{extraction_id}")
+    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_PATH.format(extraction_id=extraction_id))
     headers = _auth_headers(request)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -191,7 +192,7 @@ async def proxy_get_extraction(extraction_id: str, request: Request) -> Response
 @router.post("/admin/api/extractions/trigger")
 async def proxy_trigger(request: Request) -> Response:
     """Proxy extraction trigger requests to the API service."""
-    url = _build_url("/api/admin/extractions/trigger")
+    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_TRIGGER_PATH)
     headers = _auth_headers(request)
     try:
         sanitised_body = await _validated_json_body(request)
@@ -213,7 +214,7 @@ async def proxy_trigger(request: Request) -> Response:
 @router.post("/admin/api/extractions/trigger-musicbrainz")
 async def proxy_trigger_musicbrainz(request: Request) -> Response:
     """Proxy MusicBrainz extraction trigger requests to the API service."""
-    url = _build_url("/api/admin/extractions/trigger")
+    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_TRIGGER_PATH)
     headers = _auth_headers(request)
     try:
         sanitised_body = await _validated_json_body(request)
@@ -246,7 +247,7 @@ async def proxy_trigger_musicbrainz(request: Request) -> Response:
 @router.get("/admin/api/users/stats")
 async def proxy_user_stats(request: Request) -> Response:
     """Proxy user stats requests to the API service."""
-    url = _build_url("/api/admin/users/stats")
+    url = _build_url(catalog_admin_contract.ADMIN_USER_STATS_PATH)
     headers = _auth_headers(request)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -260,7 +261,7 @@ async def proxy_user_stats(request: Request) -> Response:
 @router.get("/admin/api/users/sync-activity")
 async def proxy_sync_activity(request: Request) -> Response:
     """Proxy sync activity requests to the API service."""
-    url = _build_url("/api/admin/users/sync-activity")
+    url = _build_url(catalog_admin_contract.ADMIN_SYNC_ACTIVITY_PATH)
     headers = _auth_headers(request)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -274,7 +275,7 @@ async def proxy_sync_activity(request: Request) -> Response:
 @router.get("/admin/api/storage")
 async def proxy_storage(request: Request) -> Response:
     """Proxy storage utilization requests to the API service."""
-    url = _build_url("/api/admin/storage")
+    url = _build_url(catalog_admin_contract.ADMIN_STORAGE_PATH)
     headers = _auth_headers(request)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -290,7 +291,7 @@ async def proxy_dlq_purge(queue: str, request: Request) -> Response:
     """Proxy DLQ purge requests to the API service."""
     if not _validate_path_segment(queue):
         return Response(content=b'{"detail":"Invalid queue name"}', status_code=400, media_type="application/json")
-    url = _build_url(f"/api/admin/dlq/purge/{queue}")
+    url = _build_url(catalog_admin_contract.ADMIN_DLQ_PURGE_PATH.format(queue=queue))
     headers = _auth_headers(request)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -313,7 +314,7 @@ async def proxy_queue_history(
     granularity: str | None = Query(default=None, pattern=r"^[0-9]+(min|hour|day)$"),
 ) -> Response:
     """Proxy queue history requests to the API service."""
-    url = _build_url("/api/admin/queues/history")
+    url = _build_url(catalog_admin_contract.ADMIN_QUEUE_HISTORY_PATH)
     params: dict[str, str] = {}
     if range is not None:
         params["range"] = range
@@ -336,7 +337,7 @@ async def proxy_health_history(
     granularity: str | None = Query(default=None, pattern=r"^[0-9]+(min|hour|day)$"),
 ) -> Response:
     """Proxy health history requests to the API service."""
-    url = _build_url("/api/admin/health/history")
+    url = _build_url(catalog_admin_contract.ADMIN_HEALTH_HISTORY_PATH)
     params: dict[str, str] = {}
     if range is not None:
         params["range"] = range
@@ -366,7 +367,7 @@ async def proxy_audit_log(
     admin_id: str | None = Query(default=None, pattern=r"^[a-f0-9-]+$"),
 ) -> Response:
     """Proxy audit log requests to the API service."""
-    url = _build_url("/api/admin/audit-log")
+    url = _build_url(catalog_admin_contract.ADMIN_AUDIT_LOG_PATH)
     params: dict[str, str] = {}
     if page is not None:
         params["page"] = str(page)
@@ -394,7 +395,7 @@ async def proxy_audit_log(
 @router.get("/admin/api/extraction-analysis/versions")
 async def proxy_ea_versions(request: Request) -> Response:
     """Proxy extraction analysis versions list to the API service."""
-    url = _build_url("/api/admin/extraction-analysis/versions")
+    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_VERSIONS_PATH)
     headers = _auth_headers(request)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -410,7 +411,7 @@ async def proxy_ea_summary(version: str, request: Request) -> Response:
     """Proxy extraction analysis summary for a single version."""
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
-    url = _build_url(f"/api/admin/extraction-analysis/{version}/summary")
+    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_SUMMARY_PATH.format(version=version))
     headers = _auth_headers(request)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -428,7 +429,7 @@ async def proxy_ea_violation_detail(version: str, record_id: str, request: Reque
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
     if not _validate_path_segment(record_id):
         return Response(content=b'{"detail":"Invalid record ID"}', status_code=400, media_type="application/json")
-    url = _build_url(f"/api/admin/extraction-analysis/{version}/violations/{record_id}")
+    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_VIOLATION_PATH.format(version=version, record_id=record_id))
     headers = _auth_headers(request)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -450,7 +451,7 @@ async def proxy_ea_skipped(
     """Proxy extraction analysis skipped records list with optional query param filtering."""
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
-    url = _build_url(f"/api/admin/extraction-analysis/{version}/skipped")
+    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_SKIPPED_PATH.format(version=version))
     params: dict[str, str] = {}
     if entity_type is not None:
         params["entity_type"] = entity_type
@@ -481,7 +482,7 @@ async def proxy_ea_violations(
     """Proxy extraction analysis violations list with optional query param filtering."""
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
-    url = _build_url(f"/api/admin/extraction-analysis/{version}/violations")
+    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_VIOLATIONS_PATH.format(version=version))
     params: dict[str, str] = {}
     if entity_type is not None:
         params["entity_type"] = entity_type
@@ -508,7 +509,7 @@ async def proxy_ea_parsing_errors(version: str, request: Request) -> Response:
     """Proxy extraction analysis parsing errors — uses longer timeout as parsing can be slow."""
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
-    url = _build_url(f"/api/admin/extraction-analysis/{version}/parsing-errors")
+    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_PARSING_ERRORS_PATH.format(version=version))
     headers = _auth_headers(request)
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -526,7 +527,7 @@ async def proxy_ea_compare(version: str, other_version: str, request: Request) -
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
     if not _validate_path_segment(other_version):
         return Response(content=b'{"detail":"Invalid other_version"}', status_code=400, media_type="application/json")
-    url = _build_url(f"/api/admin/extraction-analysis/{version}/compare/{other_version}")
+    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_COMPARE_PATH.format(version=version, other_version=other_version))
     headers = _auth_headers(request)
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -542,7 +543,7 @@ async def proxy_ea_prompt_context(version: str, request: Request) -> Response:
     """Proxy extraction analysis prompt context generation."""
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
-    url = _build_url(f"/api/admin/extraction-analysis/{version}/prompt-context")
+    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_PROMPT_CONTEXT_PATH.format(version=version))
     headers = _auth_headers(request)
     try:
         sanitised_body = await _validated_json_body(request)
@@ -566,7 +567,7 @@ async def proxy_ea_generate_ai_prompt(version: str, request: Request) -> Respons
     """Proxy AI-powered prompt generation — may take longer due to Claude API call."""
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
-    url = _build_url(f"/api/admin/extraction-analysis/{version}/generate-ai-prompt")
+    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_GENERATE_AI_PROMPT_PATH.format(version=version))
     headers = _auth_headers(request)
     try:
         sanitised_body = await _validated_json_body(request)

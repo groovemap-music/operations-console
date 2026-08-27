@@ -11,8 +11,8 @@ default test suite could distinguish a correct env read from a hardcoded literal
 hence the source-level assertions below, which are the negative test that was missing.
 """
 
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -22,9 +22,8 @@ from dashboard.catalog_contract import DISCOGS_EXCHANGE_PREFIX, MUSICBRAINZ_EXCH
 from dashboard.dashboard import PIPELINE_CONFIGS
 
 
-REPO_ROOT = Path(__file__).parent.parent.parent
+REPO_ROOT = Path(__file__).parent.parent
 DASHBOARD_PY = REPO_ROOT / "dashboard" / "dashboard.py"
-SYSTEM_MONITOR_PY = REPO_ROOT / "utilities" / "system_monitor.py"
 
 # Matches a *string literal* containing a default prefix. Comments (which legitimately
 # name the env vars and the historical literals) are stripped before matching.
@@ -49,10 +48,6 @@ class TestPipelineConfigsUseEnvPrefixes:
         also assert no default-prefix literal survives in the source at all."""
         found = _DEFAULT_PREFIX_LITERAL.findall(_code_without_comments(DASHBOARD_PY))
         assert not found, f"dashboard.py must derive queue prefixes from the environment; found literals: {found}"
-
-    def test_system_monitor_source_has_no_hardcoded_prefix_literal(self) -> None:
-        found = _DEFAULT_PREFIX_LITERAL.findall(_code_without_comments(SYSTEM_MONITOR_PY))
-        assert not found, f"system_monitor.py must derive queue prefixes from the environment; found literals: {found}"
 
 
 class TestQueuePrefixesEndpoint:

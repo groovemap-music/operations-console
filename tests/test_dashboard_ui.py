@@ -3,8 +3,8 @@
 
 import re
 
-from playwright.sync_api import Page, expect
 import pytest
+from playwright.sync_api import Page, expect
 
 
 @pytest.mark.e2e
@@ -25,11 +25,11 @@ class TestDashboardUI:
         page.goto(dashboard_url, wait_until="domcontentloaded", timeout=10000)
 
         # Page title is set in <title> tag
-        expect(page).to_have_title("Discogsography Dashboard")
+        expect(page).to_have_title("GrooveMap Operations Console")
 
         # Deep Space rebrand: heading contains brand name and tagline
         heading = page.locator("h1")
-        expect(heading).to_contain_text("discogsography")
+        expect(heading).to_contain_text("GrooveMap")
 
     def test_service_cards_display(self, page: Page) -> None:
         """Test that service cards are displayed."""

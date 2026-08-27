@@ -1,1 +1,3 @@
-"""Dashboard module for monitoring discogsography services."""
+"""Privileged GrooveMap monitoring and administration console."""
+
+__version__ = "0.1.0"

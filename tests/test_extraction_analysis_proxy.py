@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 import httpx as httpx_mod
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from dashboard.admin_proxy import configure, router
 

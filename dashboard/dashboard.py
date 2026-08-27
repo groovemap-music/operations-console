@@ -1,26 +1,19 @@
 #!/usr/bin/env python3
-"""Dashboard service for monitoring discogsography components."""
+"""Operations console for monitoring GrooveMap components."""
 
 import asyncio
-from collections.abc import AsyncGenerator
 import contextlib
-from contextlib import asynccontextmanager
-from datetime import UTC, datetime
 import logging
 import os
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 import httpx
 import orjson
-from prometheus_client import REGISTRY, Counter, Gauge, generate_latest
-from pydantic import BaseModel
 import uvicorn
-
 from common import (
     AsyncResilientNeo4jDriver,
     AsyncResilientPostgreSQL,
@@ -29,7 +22,15 @@ from common import (
     parse_postgres_host_port,
     setup_logging,
 )
-from dashboard.admin_proxy import configure as configure_admin_proxy, router as admin_router
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from prometheus_client import REGISTRY, Counter, Gauge, generate_latest
+from pydantic import BaseModel
+
+from dashboard.admin_proxy import configure as configure_admin_proxy
+from dashboard.admin_proxy import router as admin_router
 from dashboard.catalog_contract import DISCOGS_EXCHANGE_PREFIX, MUSICBRAINZ_EXCHANGE_PREFIX
 from dashboard.config import get_config
 

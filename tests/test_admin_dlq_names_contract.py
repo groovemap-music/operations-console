@@ -1,19 +1,22 @@
 """Regression test for discogsography-cu2.35.
 
-Pins dashboard/static/admin.js's DLQ name generation to the backend contract
-in api/routers/admin.py::_VALID_DLQ_NAMES so the two lists can never silently
-drift apart again (they previously used incompatible naming shapes, causing
-every DLQ purge button to 404).
+Pins dashboard/static/admin.js's DLQ name generation to the promoted catalog
+event contract so the console and backend cannot silently drift apart.
 """
 
-from pathlib import Path
 import re
+from pathlib import Path
 
-from api.routers.admin import _VALID_DLQ_NAMES
-from dashboard.catalog_contract import DISCOGS_EXCHANGE_PREFIX, MUSICBRAINZ_EXCHANGE_PREFIX
+from dashboard.catalog_contract import (
+    CONSUMER_SOURCES,
+    DISCOGS_EXCHANGE_PREFIX,
+    MUSICBRAINZ_EXCHANGE_PREFIX,
+    dead_letter_queue_name,
+    entity_types,
+)
 
 
-ADMIN_JS_PATH = Path(__file__).parent.parent.parent / "dashboard" / "static" / "admin.js"
+ADMIN_JS_PATH = Path(__file__).parent.parent / "dashboard" / "static" / "admin.js"
 
 _SOURCE_PREFIXES = {
     "discogs": DISCOGS_EXCHANGE_PREFIX,
@@ -22,6 +25,14 @@ _SOURCE_PREFIXES = {
 
 _GROUP_RE = re.compile(r"\{\s*source:\s*'(?P<source>\w+)',\s*consumer:\s*'(?P<consumer>[\w-]+)',\s*types:\s*\[(?P<types>[^\]]+)\]\s*\}")
 _TYPE_RE = re.compile(r"'([\w-]+)'")
+
+
+def _valid_dlq_names_from_catalog_contract() -> set[str]:
+    return {
+        dead_letter_queue_name(consumer, entity)
+        for consumer, consumer_config in CONSUMER_SOURCES.items()
+        for entity in entity_types(consumer_config["source"])
+    }
 
 
 def _parse_dlq_names_from_admin_js() -> set[str]:
@@ -39,7 +50,7 @@ def _parse_dlq_names_from_admin_js() -> set[str]:
 
 
 def test_admin_js_dlq_names_match_backend_valid_dlq_names() -> None:
-    """admin.js's generated DLQ names must exactly equal the backend's _VALID_DLQ_NAMES.
+    """The JavaScript DLQ names must exactly equal the producer contract.
 
     Regression for discogsography-cu2.35: the frontend previously hardcoded
     bare `{consumer}-{type}-dlq` names while the backend required
@@ -49,10 +60,11 @@ def test_admin_js_dlq_names_match_backend_valid_dlq_names() -> None:
     frontend_names = _parse_dlq_names_from_admin_js()
 
     assert frontend_names, "Failed to reconstruct any DLQ names from admin.js"
-    assert frontend_names == _VALID_DLQ_NAMES, (
+    expected_names = _valid_dlq_names_from_catalog_contract()
+    assert frontend_names == expected_names, (
         f"admin.js DLQ names drifted from backend _VALID_DLQ_NAMES.\n"
-        f"Only in admin.js: {sorted(frontend_names - _VALID_DLQ_NAMES)}\n"
-        f"Only in backend:  {sorted(_VALID_DLQ_NAMES - frontend_names)}"
+        f"Only in admin.js: {sorted(frontend_names - expected_names)}\n"
+        f"Only in contract: {sorted(expected_names - frontend_names)}"
     )
 
 

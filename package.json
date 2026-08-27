@@ -1,0 +1,13 @@
+{
+  "name": "groovemap-operations-console-assets",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "npm@11.19.0",
+  "scripts": {
+    "build:css": "tailwindcss --input dashboard/tailwind.input.css --output dashboard/static/tailwind.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "4.3.3",
+    "@tailwindcss/forms": "0.5.11"
+  }
+}

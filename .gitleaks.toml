@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Deterministic brand asset digests"
+condition = "AND"
+regexTarget = "line"
+paths = ['''^dashboard/static/brand/source\.json$''']
+regexes = ['''^\s*"[a-z0-9.-]+":\s*"[0-9a-f]{64}",?\s*$''']
