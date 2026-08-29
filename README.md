@@ -43,4 +43,5 @@ Canonical editable branding belongs to `infra/brand`. `dashboard/static/brand/` 
 
 The console is independently versioned from PEP 621 metadata with Commitizen and `v$version` annotated tags. Migration verification is deliberately non-publishing. A hosted release workflow remains disabled until a short-lived GitHub App installation token can read the private runtime repository and an approved image publishing identity exists.
 
-See [docs/extraction.md](docs/extraction.md) for source-history provenance.
+See the [documentation index](docs/README.md) for operator guidance, dashboard design
+records, and source-history provenance.

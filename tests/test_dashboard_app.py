@@ -677,7 +677,7 @@ class TestDashboardAppDataCollection:
             # Mock RabbitMQ management API response
             queue_data = [
                 {
-                    "name": "discogsography.artists",
+                    "name": "groovemap.artists",
                     "messages": 100,
                     "messages_ready": 50,
                     "messages_unacknowledged": 50,
@@ -688,7 +688,7 @@ class TestDashboardAppDataCollection:
                     },
                 },
                 {
-                    "name": "discogsography.releases",
+                    "name": "groovemap.releases",
                     "messages": 200,
                     "messages_ready": 150,
                     "messages_unacknowledged": 50,
@@ -720,14 +720,14 @@ class TestDashboardAppDataCollection:
                 mock_client.__aexit__ = AsyncMock(return_value=None)
                 mock_client_class.return_value = mock_client
 
-                queues = await app.get_queue_info("discogsography")
+                queues = await app.get_queue_info("groovemap")
 
-                # Should only have 2 queues (discogsography prefix)
+                # Should only have 2 queues (groovemap prefix)
                 assert len(queues) == 2
-                assert queues[0].name == "discogsography.artists"
+                assert queues[0].name == "groovemap.artists"
                 assert queues[0].messages == 100
                 assert queues[0].message_rate == 10.5
-                assert queues[1].name == "discogsography.releases"
+                assert queues[1].name == "groovemap.releases"
 
     @pytest.mark.asyncio
     async def test_get_queue_info_uses_configured_management_host(self) -> None:
@@ -760,7 +760,7 @@ class TestDashboardAppDataCollection:
                 mock_client.__aexit__ = AsyncMock(return_value=None)
                 mock_client_class.return_value = mock_client
 
-                await app.get_queue_info("discogsography")
+                await app.get_queue_info("groovemap")
 
             assert captured_urls == ["http://mq.internal:25672/api/queues"]
 
@@ -773,7 +773,7 @@ class TestDashboardAppDataCollection:
             app = DashboardApp()
             # No rabbitmq connection
 
-            queues = await app.get_queue_info("discogsography")
+            queues = await app.get_queue_info("groovemap")
 
             # Should return empty list
             assert queues == []
@@ -804,7 +804,7 @@ class TestDashboardAppDataCollection:
                 mock_client.__aexit__ = AsyncMock(return_value=None)
                 mock_client_class.return_value = mock_client
 
-                queues = await app.get_queue_info("discogsography")
+                queues = await app.get_queue_info("groovemap")
 
                 # Should return empty list and log warning
                 assert queues == []
@@ -836,7 +836,7 @@ class TestDashboardAppDataCollection:
                 mock_client.__aexit__ = AsyncMock(return_value=None)
                 mock_client_class.return_value = mock_client
 
-                queues = await app.get_queue_info("discogsography")
+                queues = await app.get_queue_info("groovemap")
 
                 # Should return empty list and log warning
                 assert queues == []
@@ -866,7 +866,7 @@ class TestDashboardAppDataCollection:
                 mock_client.__aexit__ = AsyncMock(return_value=None)
                 mock_client_class.return_value = mock_client
 
-                queues = await app.get_queue_info("discogsography")
+                queues = await app.get_queue_info("groovemap")
 
                 # Should return empty list and log debug
                 assert queues == []
@@ -896,7 +896,7 @@ class TestDashboardAppDataCollection:
                 mock_client.__aexit__ = AsyncMock(return_value=None)
                 mock_client_class.return_value = mock_client
 
-                queues = await app.get_queue_info("discogsography")
+                queues = await app.get_queue_info("groovemap")
 
                 # Should return empty list and log error
                 assert queues == []
@@ -1377,7 +1377,7 @@ class TestFastAPIEndpoints:
 
         mock_queues = [
             QueueInfo(
-                name="discogsography.artists",
+                name="groovemap.artists",
                 messages=100,
                 messages_ready=50,
                 messages_unacknowledged=50,
@@ -1400,7 +1400,7 @@ class TestFastAPIEndpoints:
                 data = response.json()
                 assert isinstance(data, dict)
                 assert "discogs" in data
-                assert data["discogs"][0]["name"] == "discogsography.artists"
+                assert data["discogs"][0]["name"] == "groovemap.artists"
 
     @pytest.mark.asyncio
     async def test_get_databases(self) -> None:
@@ -1694,8 +1694,9 @@ class TestLifespanFunction:
             main()
 
         captured = capsys.readouterr()
-        # The ASCII art includes "DISCOGS" characters
-        assert "██" in captured.out
+        # The banner includes the repository-aligned service name.
+        assert "operations-console" in captured.out
+        assert len(captured.out.splitlines()) > 3
 
 
 class TestMainEntryPoint:

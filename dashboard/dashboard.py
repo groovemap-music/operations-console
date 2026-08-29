@@ -40,6 +40,15 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
+STARTUP_BANNER = r"""
+                        _   _                                     _
+ ___ _ __  ___ _ _ __ _| |_(_)___ _ _  ______ __ ___ _ _  ___ ___| |___
+/ _ \ '_ \/ -_) '_/ _` |  _| / _ \ ' \(_-<___/ _/ _ \ ' \(_-</ _ \ / -_)
+\___/ .__/\___|_| \__,_|\__|_\___/_||_/__/   \__\___/_||_/__/\___/_\___|
+    |_|
+                              operations-console
+""".strip("\n")
+
 # CORS origins configurable via environment variable (comma-separated list)
 _cors_origins_raw = os.environ.get("CORS_ORIGINS", "")
 _cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()] if _cors_origins_raw else None
@@ -588,7 +597,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
 
 app = FastAPI(
-    title="Discogsography Dashboard",
+    title="GrooveMap Dashboard",
     version="0.1.0",
     default_response_class=JSONResponse,
     lifespan=lifespan,
@@ -757,22 +766,7 @@ app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 def main() -> None:  # pragma: no cover
     """Entry point for the Dashboard service."""
     setup_logging("dashboard", log_file=Path("/logs/dashboard.log"))
-    # fmt: off
-    print("██████╗ ██╗███████╗ ██████╗ ██████╗  ██████╗ ███████╗                      ")
-    print("██╔══██╗██║██╔════╝██╔════╝██╔═══██╗██╔════╝ ██╔════╝                      ")
-    print("██║  ██║██║███████╗██║     ██║   ██║██║  ███╗███████╗                      ")
-    print("██║  ██║██║╚════██║██║     ██║   ██║██║   ██║╚════██║                      ")
-    print("██████╔╝██║███████║╚██████╗╚██████╔╝╚██████╔╝███████║                      ")
-    print("╚═════╝ ╚═╝╚══════╝ ╚═════╝ ╚═════╝  ╚═════╝ ╚══════╝                      ")
-    print("                                                                           ")
-    print("██████╗  █████╗ ███████╗██╗  ██╗██████╗  ██████╗  █████╗ ██████╗ ██████╗   ")
-    print("██╔══██╗██╔══██╗██╔════╝██║  ██║██╔══██╗██╔═══██╗██╔══██╗██╔══██╗██╔══██╗  ")
-    print("██║  ██║███████║███████╗███████║██████╔╝██║   ██║███████║██████╔╝██║  ██║  ")
-    print("██║  ██║██╔══██║╚════██║██╔══██║██╔══██╗██║   ██║██╔══██║██╔══██╗██║  ██║  ")
-    print("██████╔╝██║  ██║███████║██║  ██║██████╔╝╚██████╔╝██║  ██║██║  ██║██████╔╝  ")
-    print("╚═════╝ ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝   ")
-    print()
-    # fmt: on
+    print(STARTUP_BANNER)
     uvicorn.run(
         "dashboard.dashboard:app",
         host="0.0.0.0",  # noqa: S104  # nosec B104

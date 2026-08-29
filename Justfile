@@ -29,7 +29,7 @@ typecheck:
     uv run mypy
 
 test:
-    uv run pytest -m 'not e2e' --cov=dashboard --cov-report=term-missing
+    uv run pytest -m 'not e2e' --cov=dashboard --cov-report=term-missing --cov-report=xml
 
 js-test:
     npm test
@@ -68,7 +68,7 @@ brand:
 brand-promote:
     bash scripts/promote-brand.sh
 
-image: prepare-runtime-wheel
+image: build prepare-runtime-wheel
     bash scripts/build-image.sh
     docker run --rm --entrypoint /app/.venv/bin/python operations-console:local -c 'import dashboard.dashboard'
     test "$(docker run --rm --entrypoint /usr/bin/id operations-console:local -u):$(docker run --rm --entrypoint /usr/bin/id operations-console:local -g)" = "1000:1000"

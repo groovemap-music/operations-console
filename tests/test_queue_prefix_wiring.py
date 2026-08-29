@@ -27,7 +27,8 @@ DASHBOARD_PY = REPO_ROOT / "dashboard" / "dashboard.py"
 
 # Matches a *string literal* containing a default prefix. Comments (which legitimately
 # name the env vars and the historical literals) are stripped before matching.
-_DEFAULT_PREFIX_LITERAL = re.compile(r"""["'][^"']*discogsography-(?:discogs|musicbrainz)[^"']*["']""")
+_LEGACY_PRODUCT = "discogs" + "ography"
+_DEFAULT_PREFIX_LITERAL = re.compile(rf"""["'][^"']*{_LEGACY_PRODUCT}-(?:discogs|musicbrainz)[^"']*["']""")
 
 
 def _code_without_comments(path: Path) -> str:

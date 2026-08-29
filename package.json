@@ -3,14 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "packageManager": "npm@11.19.0",
-  "scripts": {
-    "build:css": "tailwindcss --input dashboard/tailwind.input.css --output dashboard/static/tailwind.css --minify",
-    "test": "vitest run"
+    "scripts": {
+        "build:css": "tailwindcss --input dashboard/tailwind.input.css --output dashboard/static/tailwind.css --minify",
+        "test": "vitest run",
+        "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@tailwindcss/cli": "4.3.3",
-    "@tailwindcss/forms": "0.5.11",
-    "jsdom": "30.0.1",
+        "@tailwindcss/forms": "0.5.11",
+        "@vitest/coverage-v8": "4.1.11",
+        "jsdom": "30.0.1",
     "vitest": "4.1.11"
   }
 }

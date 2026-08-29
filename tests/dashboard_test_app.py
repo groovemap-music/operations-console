@@ -101,7 +101,7 @@ class MockDashboardApp:
                         ],
                         "queues": [
                             {
-                                "name": "discogsography-discogs-graphinator-artists",
+                                "name": "groovemap-discogs-graphinator-artists",
                                 "messages": 10,
                                 "messages_ready": 5,
                                 "messages_unacknowledged": 2,
@@ -110,7 +110,7 @@ class MockDashboardApp:
                                 "ack_rate": 0.3,
                             },
                             {
-                                "name": "discogsography-discogs-tableinator-artists",
+                                "name": "groovemap-discogs-tableinator-artists",
                                 "messages": 8,
                                 "messages_ready": 3,
                                 "messages_unacknowledged": 1,
@@ -157,7 +157,7 @@ class MockDashboardApp:
                         ],
                         "queues": [
                             {
-                                "name": "discogsography-musicbrainz-brainzgraphinator-artists",
+                                "name": "groovemap-musicbrainz-brainzgraphinator-artists",
                                 "messages": 5,
                                 "messages_ready": 2,
                                 "messages_unacknowledged": 1,
@@ -221,7 +221,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 def create_test_app() -> FastAPI:
     """Create a test FastAPI app with mocked dependencies."""
     app = FastAPI(
-        title="Discogsography Dashboard",
+        title="GrooveMap Dashboard",
         version="0.1.0",
         default_response_class=JSONResponse,
         lifespan=lifespan,
@@ -341,7 +341,7 @@ def create_test_app_with_musicbrainz() -> FastAPI:
         await mock_dashboard_app.shutdown()
 
     app = FastAPI(
-        title="Discogsography Dashboard",
+        title="GrooveMap Dashboard",
         version="0.1.0",
         default_response_class=JSONResponse,
         lifespan=mb_lifespan,

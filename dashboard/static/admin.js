@@ -12,8 +12,8 @@
 // make every Purge button 404 against the backend's env-derived _VALID_DLQ_NAMES —
 // the same failure shape as discogsography-cu2.35 (discogsography-dvmi).
 const DLQ_SOURCE_PREFIXES = {
-    discogs: 'discogsography-discogs',
-    musicbrainz: 'discogsography-musicbrainz',
+    discogs: 'groovemap-discogs',
+    musicbrainz: 'groovemap-musicbrainz',
 };
 
 const DLQ_CONSUMER_GROUPS = [
@@ -25,7 +25,7 @@ const DLQ_CONSUMER_GROUPS = [
 
 // Structured items (queue/service/type) generated directly — NOT parsed back
 // out of the queue name string, which is brittle against multi-segment
-// prefixes (e.g. "discogsography-discogs-graphinator-artists.dlq").
+// prefixes (e.g. "groovemap-discogs-graphinator-artists.dlq").
 function buildDlqItems(prefixes) {
     return DLQ_CONSUMER_GROUPS.flatMap(({ source, consumer, types }) =>
         types.map(type => ({
@@ -69,9 +69,9 @@ function _esc(str) {
     return div.innerHTML;
 }
 
-// Helper: shorten queue names by stripping the common "discogsography-" prefix
+// Helper: shorten queue names by stripping the common "groovemap-" prefix
 function _shortQueueName(name) {
-    return name.replace(/^discogsography-/, '');
+    return name.replace(/^groovemap-/, '');
 }
 
 // Helper: create a table row with a single "no data" cell spanning colSpan columns
@@ -2308,7 +2308,7 @@ class AdminDashboard {
             const lines = [
                 `# Extraction Analysis — Version ${version}`,
                 '',
-                'You are debugging data quality violations from the Discogsography extraction pipeline.',
+                'You are debugging data quality violations from the GrooveMap extraction pipeline.',
                 'For each rule below, analyze the sample records to determine:',
                 '1. Root cause — why did the validation rule fire?',
                 '2. Whether this is a data issue (upstream Discogs data) or a parser bug',
