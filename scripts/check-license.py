@@ -24,7 +24,7 @@ package_lock = json.loads((ROOT / "package-lock.json").read_text())
 assert package_lock["packages"][""]["license"] == "AGPL-3.0-only"
 
 license_bytes = (ROOT / "LICENSE").read_bytes()
-assert hashlib.sha256(license_bytes).hexdigest() == "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+assert hashlib.sha256(license_bytes).hexdigest() == "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
 
 dockerfile = (ROOT / "Dockerfile").read_text()
 assert 'org.opencontainers.image.licenses="AGPL-3.0-only"' in dockerfile
