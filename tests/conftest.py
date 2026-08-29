@@ -4,12 +4,14 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from playwright.sync_api import Browser, Page, sync_playwright
 
 from dashboard.config import DashboardConfig
 
@@ -113,10 +115,9 @@ def test_server() -> Any:
 
 
 @pytest.fixture(scope="session")
-def browser_context_args(browser_context_args: dict[str, Any]) -> dict[str, Any]:
+def browser_context_args() -> dict[str, Any]:
     """Configure browser context for testing."""
     return {
-        **browser_context_args,
         "viewport": {"width": 1280, "height": 720},
         "ignore_https_errors": True,
         "locale": "en-US",
@@ -127,10 +128,9 @@ def browser_context_args(browser_context_args: dict[str, Any]) -> dict[str, Any]
 
 
 @pytest.fixture(scope="session")
-def browser_type_launch_args(browser_type_launch_args: dict[str, Any]) -> dict[str, Any]:
+def browser_type_launch_args() -> dict[str, Any]:
     """Configure browser launch arguments for headless mode."""
     return {
-        **browser_type_launch_args,
         "headless": True,  # Always run headless
         "timeout": 30000,  # 30 second timeout for browser launch
         "args": [
@@ -140,6 +140,24 @@ def browser_type_launch_args(browser_type_launch_args: dict[str, Any]) -> dict[s
             "--disable-gpu",  # Disable GPU hardware acceleration
         ],
     }
+
+
+@pytest.fixture(scope="session")
+def browser(browser_type_launch_args: dict[str, Any]) -> Iterator[Browser]:
+    """Launch Chromium without depending on pytest-playwright's dependency graph."""
+    with sync_playwright() as playwright:
+        instance = playwright.chromium.launch(**browser_type_launch_args)
+        yield instance
+        instance.close()
+
+
+@pytest.fixture
+def page(browser: Browser, browser_context_args: dict[str, Any]) -> Iterator[Page]:
+    """Create one isolated browser context and page per browser test."""
+    context = browser.new_context(**browser_context_args)
+    instance = context.new_page()
+    yield instance
+    context.close()
 
 
 @pytest.fixture

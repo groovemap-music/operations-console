@@ -3,7 +3,8 @@ python-libraries
 .github
 .venv
 node_modules
-dist
+dist/*
+!dist/*.whl
 htmlcov
 **/__pycache__
 **/*.pyc

@@ -21,6 +21,9 @@ ARG BUILD_DATE
 ARG BUILD_VERSION=0.1.0
 ARG VCS_REF
 
+RUN case "${VCS_REF}" in *[!0-9a-f]*|"") exit 1 ;; esac && \
+    [ "${#VCS_REF}" -eq 40 ]
+
 LABEL org.opencontainers.image.title="operations-console" \
       org.opencontainers.image.description="Privileged administration and monitoring console" \
       org.opencontainers.image.authors="Robert Wlodarczyk <robert@simplicityguy.com>" \
@@ -43,6 +46,7 @@ WORKDIR /app
 COPY --from=builder --chown=1000:1000 /app/.venv /app/.venv
 
 ENV HOME=/home/groovemap \
+    GROOVEMAP_SOURCE_REVISION="${VCS_REF}" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH"

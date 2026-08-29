@@ -5,6 +5,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -39,6 +40,18 @@ from dashboard.config import get_config
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
+
+SOURCE_REPOSITORY = "https://github.com/groovemap-music/operations-console"
+
+
+def source_url(revision: str | None) -> str:
+    """Return corresponding source when given an exact Git commit."""
+    if revision is not None and re.fullmatch(r"[0-9a-f]{40}", revision):
+        return f"{SOURCE_REPOSITORY}/tree/{revision}"
+    return SOURCE_REPOSITORY
+
+
+SOURCE_URL = source_url(os.environ.get("GROOVEMAP_SOURCE_REVISION"))
 
 STARTUP_BANNER = r"""
                         _   _                                     _
@@ -599,6 +612,8 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 app = FastAPI(
     title="GrooveMap Dashboard",
     version="0.1.0",
+    license_info={"name": "GNU Affero General Public License v3 only", "identifier": "AGPL-3.0-only"},
+    openapi_external_docs={"description": "Corresponding source for this console revision", "url": SOURCE_URL},
     default_response_class=JSONResponse,
     lifespan=lifespan,
 )
@@ -748,11 +763,12 @@ app.include_router(admin_router)
 
 
 @app.get("/admin")
+@app.get("/admin.html")
 async def serve_admin() -> HTMLResponse:
-    """Serve admin page directly to avoid StaticFiles routing issues."""
+    """Serve every admin-page alias with its build-specific source link."""
     admin_path = Path(__file__).parent / "static" / "admin.html"
     try:
-        content = admin_path.read_text()
+        content = admin_path.read_text().replace("__GROOVEMAP_SOURCE_URL__", SOURCE_URL)
     except FileNotFoundError:
         return HTMLResponse("<h1>Admin page not found</h1>", status_code=404)
     return HTMLResponse(content)
@@ -760,6 +776,20 @@ async def serve_admin() -> HTMLResponse:
 
 # Mount static files for the UI
 static_dir = Path(__file__).parent / "static"
+
+
+@app.get("/")
+@app.get("/index.html")
+async def serve_index() -> HTMLResponse:
+    """Serve every console-page alias with its build-specific source link."""
+    index_path = static_dir / "index.html"
+    try:
+        content = index_path.read_text().replace("__GROOVEMAP_SOURCE_URL__", SOURCE_URL)
+    except FileNotFoundError:
+        return HTMLResponse("<h1>Console page not found</h1>", status_code=404)
+    return HTMLResponse(content)
+
+
 app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 
 
