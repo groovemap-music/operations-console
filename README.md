@@ -37,7 +37,7 @@ The service listens on port 8003. Configure the RabbitMQ, Neo4j, PostgreSQL, Red
 
 `catalog-api` owns authentication and operator endpoints. `catalog-ingestion` owns catalog-event exchange and queue naming. `database-schema` owns datastore compatibility. This repository consumes immutable promoted copies of those contracts; it does not import producer source or require sibling checkouts at runtime.
 
-Canonical editable branding belongs to `infra/brand`. `dashboard/static/brand/` contains promoted deterministic render outputs with recorded hashes and source commit. Run `scripts/promote-brand.sh` against the expected clean `infra` checkout to update them.
+Canonical editable branding belongs to the public [`groovemap-music/design`](https://github.com/groovemap-music/design) repository. `dashboard/static/brand/` contains promoted deterministic render outputs with recorded hashes and the full design source commit. Run `scripts/promote-brand.sh` against the expected clean design checkout to update them; set `GROOVEMAP_DESIGN_REPO` when that checkout is not at `../design`. Use of the GrooveMap name and logos is governed separately by the design repository's [trademark-use policy](https://github.com/groovemap-music/design/blob/59c9fd3c8bbdfa676e0b7bb3d463fc766c1f3c0d/TRADEMARKS.md).
 
 ## Releases
 
