@@ -4,6 +4,8 @@ The GrooveMap operations console is available under the GNU Affero General Publi
 
 The copyright holder may also offer separately negotiated commercial terms as an optional alternative for organizations that do not want to use the software under the AGPL. Those terms require a separate written agreement. This document does not grant alternative rights, state commercial contract terms, or change the rights granted by the AGPL.
 
+Any alternative license can cover only rights held by the participating copyright holders. Third-party components remain governed by their own license terms; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). GrooveMap names and logos are governed separately by the public design repository's trademark-use policy.
+
 To ask whether alternative terms are available, contact Robert Wlodarczyk at <robert@simplicityguy.com>. An inquiry does not create a license or other agreement.
 
 ## Contributions

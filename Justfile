@@ -38,7 +38,7 @@ e2e-setup:
     uv run playwright install chromium
 
 e2e:
-    uv run pytest -m e2e --browser chromium
+    uv run pytest -m e2e
 
 web-build:
     npm ci --ignore-scripts
@@ -53,7 +53,7 @@ install-check: build
 
 license-check:
     uv run python scripts/check-license.py
-    uv run pip-licenses --ignore-packages groovemap-operations-console --fail-on "GPL-2.0-only;GPL-3.0-only;AGPL-3.0-only"
+    uv run pip-licenses --format=json | uv run python scripts/check_dependency_licenses.py
 
 audit:
     uv run pip-audit
