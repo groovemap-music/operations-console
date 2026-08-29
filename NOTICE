@@ -1,0 +1,22 @@
+GrooveMap operations console
+Copyright (c) 2023-2026 Robert Wlodarczyk
+
+Current licensing
+=================
+
+The current source tree is licensed under the GNU Affero General Public
+License, version 3 only. See LICENSE. The copyright holder may offer optional,
+separately negotiated commercial terms as an alternative; see
+COMMERCIAL-LICENSING.md.
+
+Prior-license history
+=====================
+
+Versions released on or before 2026-05-13 were made available under the MIT License.
+
+After 2026-05-13 and before adoption of AGPL-3.0-only, the source was offered
+under the PolyForm Noncommercial License 1.0.0.
+
+A copy received under a prior license remains governed by the license under
+which that copy was received. This notice records that history; it does not
+change the rights attached to those historical copies.

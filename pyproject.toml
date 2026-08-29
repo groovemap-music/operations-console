@@ -12,13 +12,12 @@ requires-python = ">=3.13"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: Other/Proprietary License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.13",
 ]
-license = "PolyForm-Noncommercial-1.0.0"
-license-files = ["LICENSE"]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "NOTICE"]
 dependencies = [
     "aio-pika>=10.0.1",
     "fastapi>=0.141.1",

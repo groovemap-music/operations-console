@@ -2,7 +2,7 @@
 
 Private, privileged administration and monitoring console for GrooveMap. It presents service, queue, Neo4j, PostgreSQL, extraction, audit, and data-quality views, and proxies authenticated operator actions to `catalog-api`.
 
-This source is available under the [PolyForm Noncommercial License 1.0.0](LICENSE). Commercial use requires a separate license.
+This source is licensed under the [GNU Affero General Public License v3.0 only](LICENSE). The AGPL permits commercial use subject to its terms, including its source-availability requirements. Optional, separately negotiated commercial terms are available as an alternative for users who do not want to use the software under the AGPL; see [Commercial licensing](COMMERCIAL-LICENSING.md).
 
 ## Development
 
@@ -45,3 +45,9 @@ The console is independently versioned from PEP 621 metadata with Commitizen and
 
 See the [documentation index](docs/README.md) for operator guidance, dashboard design
 records, and source-history provenance.
+
+## Contributions and licensing
+
+Outside code contributions are temporarily paused. Do not submit code or documentation changes until a relicensing-capable contributor license agreement has been approved and published. Bug reports and other feedback that do not include proposed code remain welcome through the issue tracker.
+
+The current license, optional alternative-licensing boundary, and prior-license history are recorded in [LICENSE](LICENSE), [COMMERCIAL-LICENSING.md](COMMERCIAL-LICENSING.md), and [NOTICE](NOTICE).
