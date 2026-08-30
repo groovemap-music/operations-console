@@ -222,7 +222,7 @@ async def proxy_trigger_musicbrainz(request: Request) -> Response:
         return JSONResponse(content={"detail": "Malformed JSON in request body"}, status_code=400)
     try:
         parsed = json.loads(sanitised_body) if sanitised_body else {}
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except json.JSONDecodeError, UnicodeDecodeError:
         return JSONResponse(content={"detail": "Malformed JSON in request body"}, status_code=400)
     if not isinstance(parsed, dict):
         return JSONResponse(content={"detail": "Request body must be a JSON object"}, status_code=400)

@@ -1,14 +1,15 @@
 """Pytest configuration for dashboard tests."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import os
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -16,6 +17,10 @@ import pytest
 from playwright.sync_api import Browser, Page, sync_playwright
 
 from dashboard.config import DashboardConfig
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 E2E_PROJECTS = {"chromium", "firefox", "webkit", "iphone", "ipad"}

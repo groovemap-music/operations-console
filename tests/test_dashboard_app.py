@@ -1651,6 +1651,22 @@ class TestWebSocketGeneralException:
 class TestLifespanFunction:
     """Test the FastAPI lifespan function in dashboard.py (lines 435-457)."""
 
+    def test_lifespan_annotations_resolve_at_runtime(self) -> None:
+        """Keep Python 3.14's lazy lifespan annotations runtime-resolvable."""
+        import inspect
+        from collections.abc import AsyncGenerator
+        from typing import get_type_hints
+
+        from fastapi import FastAPI
+
+        import dashboard.dashboard as dashboard_module
+
+        expected = {"_app": FastAPI, "return": AsyncGenerator[None]}
+
+        assert dashboard_module.lifespan.__annotations__ == expected
+        assert inspect.get_annotations(dashboard_module.lifespan, eval_str=True) == expected
+        assert get_type_hints(dashboard_module.lifespan) == expected
+
     def test_lifespan_executes_startup_and_shutdown(self) -> None:
         """Test that the real lifespan function runs ASCII art, startup, and shutdown."""
         mock_config = Mock()
