@@ -37,7 +37,7 @@ class DashboardConfig:
     cache_webhook_secret: str | None = field(default=None, repr=False)
 
     @classmethod
-    def from_env(cls) -> "DashboardConfig":
+    def from_env(cls) -> DashboardConfig:
         """Create configuration without depending on another service's config class."""
         neo4j_username = get_secret("NEO4J_USERNAME")
         neo4j_password = get_secret("NEO4J_PASSWORD")
