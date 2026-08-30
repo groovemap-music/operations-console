@@ -60,7 +60,9 @@ if [[ -s "${private_paths}" ]]; then
   exit 1
 fi
 
-gitleaks git --log-opts=--all --redact --no-banner "${sanitized_repo}"
+gitleaks_config="${output_root}/gitleaks.toml"
+git -C "${sanitized_repo}" show HEAD:.gitleaks.toml > "${gitleaks_config}"
+gitleaks git --config "${gitleaks_config}" --log-opts=--all --redact --no-banner "${sanitized_repo}"
 git clone --quiet "${sanitized_repo}" "${sanitized_worktree}"
 gitleaks dir --redact --no-banner "${sanitized_worktree}"
 
