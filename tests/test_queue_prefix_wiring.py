@@ -1,4 +1,4 @@
-"""Regression tests for discogsography-dvmi.
+"""Regression tests for queue-prefix wiring.
 
 Every component derives queue/exchange names from DISCOGS_EXCHANGE_PREFIX /
 MUSICBRAINZ_EXCHANGE_PREFIX (CLAUDE.md: "never hardcode exchange names"). The

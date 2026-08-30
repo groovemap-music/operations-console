@@ -5,12 +5,12 @@
 // Keep these prefixes/types in lockstep with common/config.py's
 // DISCOGS_EXCHANGE_PREFIX / MUSICBRAINZ_EXCHANGE_PREFIX / DATA_TYPES /
 // MUSICBRAINZ_DATA_TYPES defaults — a drift here reproduces the "every Purge
-// button 404s" bug (discogsography-cu2.35).
+// button 404s" regression.
 // DEFAULTS ONLY. The live values are fetched from /api/queue-prefixes (which serves
 // the dashboard's env-derived DISCOGS_EXCHANGE_PREFIX / MUSICBRAINZ_EXCHANGE_PREFIX)
 // before the DLQ list is rendered. Under a prefix override, compiled-in literals would
 // make every Purge button 404 against the backend's env-derived _VALID_DLQ_NAMES —
-// the same failure shape as discogsography-cu2.35 (discogsography-dvmi).
+// the same failure shape as the queue-prefix regression.
 const DLQ_SOURCE_PREFIXES = {
     discogs: 'groovemap-discogs',
     musicbrainz: 'groovemap-musicbrainz',
@@ -2190,7 +2190,7 @@ class AdminDashboard {
             // The API (extraction_analysis.compare_versions) returns per-rule
             // deltas under `details` — not `delta` — and does not send
             // total_a/total_b directly; derive them by summing count_a/count_b
-            // across all rules (discogsography-c892).
+            // across all rules (retained regression coverage).
             const deltas = data.details || [];
             const totalA = deltas.reduce((sum, d) => sum + (d.count_a ?? 0), 0);
             const totalB = deltas.reduce((sum, d) => sum + (d.count_b ?? 0), 0);

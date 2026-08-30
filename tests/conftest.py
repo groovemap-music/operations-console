@@ -1,5 +1,7 @@
 """Pytest configuration for dashboard tests."""
 
+import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -16,6 +18,18 @@ from playwright.sync_api import Browser, Page, sync_playwright
 from dashboard.config import DashboardConfig
 
 
+E2E_PROJECTS = {"chromium", "firefox", "webkit", "iphone", "ipad"}
+_DEVICE_CONTEXT: dict[str, Any] = {}
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item: pytest.Item) -> Iterator[None]:
+    """Expose the call outcome to fixture teardown for failure artifacts."""
+    outcome = yield
+    report = outcome.get_result()
+    setattr(item, f"rep_{report.when}", report)
+
+
 @pytest.fixture(scope="session")
 def test_server() -> Any:
     """Start the test dashboard server for E2E tests.
@@ -23,7 +37,7 @@ def test_server() -> Any:
     This fixture is only used when running E2E tests.
     """
     # Get project root directory
-    project_root = str(Path(__file__).parent.parent.parent)
+    project_root = str(Path(__file__).resolve().parents[1])
 
     # Start server as subprocess
     env = os.environ.copy()
@@ -115,16 +129,19 @@ def test_server() -> Any:
 
 
 @pytest.fixture(scope="session")
-def browser_context_args() -> dict[str, Any]:
+def browser_context_args(browser: Browser) -> dict[str, Any]:
     """Configure browser context for testing."""
-    return {
+    del browser
+    defaults: dict[str, Any] = {
         "viewport": {"width": 1280, "height": 720},
         "ignore_https_errors": True,
         "locale": "en-US",
         "timezone_id": "UTC",
-        "record_video_dir": "test-results/videos",
+        "record_video_dir": f"test-results/{os.environ.get('GROOVEMAP_E2E_PROJECT', 'chromium')}/videos",
         "record_video_size": {"width": 1280, "height": 720},
     }
+    defaults.update(_DEVICE_CONTEXT)
+    return defaults
 
 
 @pytest.fixture(scope="session")
@@ -133,30 +150,53 @@ def browser_type_launch_args() -> dict[str, Any]:
     return {
         "headless": True,  # Always run headless
         "timeout": 30000,  # 30 second timeout for browser launch
-        "args": [
-            "--no-sandbox",  # Required for CI environments
-            "--disable-setuid-sandbox",  # Required for CI environments
-            "--disable-dev-shm-usage",  # Overcome limited resource problems
-            "--disable-gpu",  # Disable GPU hardware acceleration
-        ],
     }
 
 
 @pytest.fixture(scope="session")
 def browser(browser_type_launch_args: dict[str, Any]) -> Iterator[Browser]:
-    """Launch Chromium without depending on pytest-playwright's dependency graph."""
+    """Launch the selected desktop browser or standard emulated WebKit device."""
+    project = os.environ.get("GROOVEMAP_E2E_PROJECT", "chromium")
+    if project not in E2E_PROJECTS:
+        raise ValueError(f"Unknown GROOVEMAP_E2E_PROJECT: {project}")
     with sync_playwright() as playwright:
-        instance = playwright.chromium.launch(**browser_type_launch_args)
+        engine_name = "webkit" if project in {"iphone", "ipad"} else project
+        engine = getattr(playwright, engine_name)
+        launch_args = dict(browser_type_launch_args)
+        if engine_name == "chromium":
+            launch_args["args"] = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+        _DEVICE_CONTEXT.clear()
+        if project in {"iphone", "ipad"}:
+            device_name = "iPhone 15" if project == "iphone" else "iPad (gen 11)"
+            _DEVICE_CONTEXT.update(playwright.devices[device_name])
+            _DEVICE_CONTEXT.pop("default_browser_type", None)
+        instance = engine.launch(**launch_args)
         yield instance
         instance.close()
 
 
 @pytest.fixture
-def page(browser: Browser, browser_context_args: dict[str, Any]) -> Iterator[Page]:
-    """Create one isolated browser context and page per browser test."""
+def page(request: pytest.FixtureRequest, browser: Browser, browser_context_args: dict[str, Any]) -> Iterator[Page]:
+    """Create an isolated page and retain coverage plus failure diagnostics."""
+    project = os.environ.get("GROOVEMAP_E2E_PROJECT", "chromium")
+    artifact_root = Path("test-results") / project
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    node_digest = hashlib.sha256(request.node.nodeid.encode()).hexdigest()[:16]
     context = browser.new_context(**browser_context_args)
+    context.tracing.start(screenshots=True, snapshots=True, sources=True)
     instance = context.new_page()
     yield instance
+    coverage = instance.evaluate("globalThis.__coverage__ || null")
+    if coverage is not None:
+        raw_root = Path("coverage/e2e/raw") / project
+        raw_root.mkdir(parents=True, exist_ok=True)
+        (raw_root / f"{node_digest}.json").write_text(json.dumps(coverage, sort_keys=True) + "\n")
+    failed = bool(getattr(request.node, "rep_call", None) and request.node.rep_call.failed)
+    if failed:
+        instance.screenshot(path=artifact_root / f"{node_digest}.png", full_page=True)
+        context.tracing.stop(path=artifact_root / f"{node_digest}-trace.zip")
+    else:
+        context.tracing.stop()
     context.close()
 
 

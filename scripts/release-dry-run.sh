@@ -6,7 +6,6 @@ uv build --out-dir dist --clear
   cd dist
   shasum -a 256 ./*.whl ./*.tar.gz > SHA256SUMS
 )
-uv run cyclonedx-py environment --output-file dist/sbom.json
 notices_tmp="$(mktemp -d)"
 trap 'rm -rf -- "${notices_tmp}"' EXIT
 uv venv "${notices_tmp}/venv"
@@ -19,6 +18,11 @@ uv pip install \
   --no-deps \
   .build/runtime/*.whl \
   dist/*.whl
+uv run cyclonedx-py environment \
+  "${notices_tmp}/venv/bin/python" \
+  --pyproject pyproject.toml \
+  --output-reproducible \
+  --output-file dist/sbom.json
 uv run pip-licenses \
   --python "${notices_tmp}/venv/bin/python" \
   --ignore-packages groovemap-operations-console \

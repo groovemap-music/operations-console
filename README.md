@@ -1,6 +1,6 @@
 # GrooveMap operations console
 
-Private, privileged administration and monitoring console for GrooveMap. It presents service, queue, Neo4j, PostgreSQL, extraction, audit, and data-quality views, and proxies authenticated operator actions to `catalog-api`.
+Privileged administration and monitoring console for GrooveMap. It presents service, queue, Neo4j, PostgreSQL, extraction, audit, and data-quality views, and proxies authenticated operator actions to `catalog-api`.
 
 This source is licensed under the [GNU Affero General Public License v3.0 only](LICENSE). The AGPL permits commercial use subject to its terms, including its source-availability requirements. Optional, separately negotiated commercial terms are available as an alternative for users who do not want to use the software under the AGPL; see [Commercial licensing](COMMERCIAL-LICENSING.md).
 
@@ -20,7 +20,7 @@ The stable repository interface is:
 - `just check` — run the authoritative pre-merge gate.
 - `just test` — run non-browser tests with coverage.
 - `just build` — build deterministic CSS, wheel, and source distribution.
-- `just e2e-setup` / `just e2e` — install Chromium, then run the browser gate.
+- `just e2e-setup` / `just e2e` — install Chromium, Firefox, and WebKit, then run the desktop and emulated mobile browser matrix.
 - `just image` — build and inspect the non-root production image.
 - `just release-dry-run` — build checksums, SBOM, notices, and provenance without publishing.
 - `just bump-preview` — preview the Conventional Commits version and changelog without changing files.
@@ -43,7 +43,7 @@ Canonical editable branding belongs to the public [`groovemap-music/design`](htt
 
 ## Releases
 
-The console is independently versioned from PEP 621 metadata with Commitizen and `v$version` annotated tags. Migration verification is deliberately non-publishing. A hosted release workflow remains disabled until a short-lived GitHub App installation token can read the private runtime repository and an approved image publishing identity exists.
+The console is independently versioned from PEP 621 metadata with Commitizen and approved `v$version` annotated tags. Migration and release-readiness verification are deliberately non-publishing; the hosted workflow only responds to an explicitly created version tag.
 
 See the [documentation index](docs/README.md) for operator guidance, dashboard design
 records, and source-history provenance.

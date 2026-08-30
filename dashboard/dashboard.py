@@ -54,12 +54,12 @@ def source_url(revision: str | None) -> str:
 SOURCE_URL = source_url(os.environ.get("GROOVEMAP_SOURCE_REVISION"))
 
 STARTUP_BANNER = r"""
+                         GrooveMap operations-console
                         _   _                                     _
  ___ _ __  ___ _ _ __ _| |_(_)___ _ _  ______ __ ___ _ _  ___ ___| |___
 / _ \ '_ \/ -_) '_/ _` |  _| / _ \ ' \(_-<___/ _/ _ \ ' \(_-</ _ \ / -_)
 \___/ .__/\___|_| \__,_|\__|_\___/_||_/__/   \__\___/_||_/__/\___/_\___|
     |_|
-                              operations-console
 """.strip("\n")
 
 # CORS origins configurable via environment variable (comma-separated list)
@@ -146,7 +146,7 @@ class SystemMetrics(BaseModel):
 # Hardcoding the defaults here made the dashboard the only component that ignored a
 # prefix override: the management-API filter matched nothing, and get_queue_info logs
 # nothing on a zero-match 200, so both pipeline panes silently showed an empty,
-# healthy-looking pipeline while queues backed up (discogsography-dvmi).
+# healthy-looking pipeline while queues backed up (retained queue-prefix regression).
 PIPELINE_CONFIGS: dict[str, dict] = {
     "discogs": {
         "services": [
@@ -253,7 +253,7 @@ class DashboardApp:
             # the lock concurrently, mutating the set mid-iteration
             # (`RuntimeError: Set changed size during iteration`), which the
             # broad `except Exception` below swallows — leaving the
-            # remaining sockets never closed (discogsography-ip9y).
+            # remaining sockets never closed (retained shutdown regression).
             if self._ws_lock is None:
                 self._ws_lock = asyncio.Lock()
             async with self._ws_lock:
@@ -489,7 +489,7 @@ class DashboardApp:
                     # "0 nodes, 0 relationships" — a hard count for an unmeasured
                     # quantity is indistinguishable from a genuinely empty graph
                     # and misleads operators into thinking ingestion is broken
-                    # (discogsography-k3vu).
+                    # (retained APOC fallback regression).
                     node_count: int | None
                     rel_count: int | None
                     try:
@@ -600,7 +600,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         setup_logging("dashboard", log_file=log_file)
     except OSError:
         setup_logging("dashboard")
-    logger.info("🚀 Starting Dashboard service...")
+    logger.info("🚀 Starting GrooveMap operations-console...")
 
     global dashboard
     dashboard = DashboardApp()
@@ -691,7 +691,7 @@ async def get_queue_prefixes() -> JSONResponse:
     admin.js builds DLQ names it POSTs to the API, which validates them against
     _VALID_DLQ_NAMES (itself env-derived). Its compiled-in literals are only defaults;
     under a DISCOGS_EXCHANGE_PREFIX / MUSICBRAINZ_EXCHANGE_PREFIX override every Purge
-    button would 404 without this (discogsography-dvmi).
+    button would 404 without this (retained queue-prefix regression).
     """
     API_REQUESTS.labels(endpoint="/api/queue-prefixes", method="GET").inc()
     return JSONResponse(content={"discogs": DISCOGS_EXCHANGE_PREFIX, "musicbrainz": MUSICBRAINZ_EXCHANGE_PREFIX})
@@ -794,7 +794,7 @@ app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 
 
 def main() -> None:  # pragma: no cover
-    """Entry point for the Dashboard service."""
+    """Entry point for the GrooveMap operations-console service."""
     setup_logging("dashboard", log_file=Path("/logs/dashboard.log"))
     print(STARTUP_BANNER)
     uvicorn.run(

@@ -201,7 +201,7 @@ class TestDashboardAppShutdown:
 
     @pytest.mark.asyncio
     async def test_shutdown_survives_concurrent_disconnect_mutating_the_set(self) -> None:
-        """discogsography-ip9y: shutdown() must snapshot websocket_connections
+        """shutdown() must snapshot websocket_connections
         under _ws_lock before iterating — not iterate the live set directly.
         Simulates the exact race: another coroutine's disconnect handler
         (discard() under the lock) mutates the set WHILE shutdown is closing
@@ -452,7 +452,7 @@ class TestDashboardAppBroadcast:
 
     @pytest.mark.asyncio
     async def test_broadcast_metrics_closes_evicted_sockets(self) -> None:
-        """Regression for discogsography-lk51.
+        """Regression for concurrent service polling.
 
         A send failure (including a timeout on a still-live, merely stalled
         socket) used to only evict the websocket from websocket_connections
@@ -507,7 +507,7 @@ class TestDashboardAppBroadcast:
 
     @pytest.mark.asyncio
     async def test_broadcast_metrics_stalled_client_does_not_block_others(self) -> None:
-        """discogsography-cu2.62: broadcast_metrics used to hold _ws_lock while awaiting
+        """broadcast_metrics used to hold _ws_lock while awaiting
         send_text serially, so one stalled client (e.g. a sleeping laptop applying TCP
         backpressure) blocked delivery to every other client. A stalled send must not
         delay a well-behaved client's send, and the stalled client must still be
@@ -545,7 +545,7 @@ class TestDashboardAppBroadcast:
 
     @pytest.mark.asyncio
     async def test_broadcast_metrics_sends_outside_the_lock(self) -> None:
-        """discogsography-cu2.62: the lock must only guard the connection-set snapshot
+        """The lock must only guard the connection-set snapshot
         and cleanup, not the network sends — a new /ws registration (which needs the
         same lock) must be able to proceed concurrently with an in-flight broadcast.
         """
@@ -1151,7 +1151,7 @@ class TestDashboardAppDataCollection:
 
     @pytest.mark.asyncio
     async def test_get_database_info_neo4j_apoc_not_installed(self) -> None:
-        """Regression discogsography-k3vu: when APOC is unavailable, Neo4j must
+        """When APOC is unavailable, Neo4j must
         report an 'unknown' size marker — never a fabricated '0 nodes, 0
         relationships', which a fully-populated graph cannot be distinguished
         from and misleads operators into thinking ingestion is broken."""
@@ -1198,7 +1198,7 @@ class TestDashboardAppDataCollection:
 
     @pytest.mark.asyncio
     async def test_get_database_info_neo4j_apoc_stats_returns_no_row(self) -> None:
-        """Regression discogsography-k3vu: apoc.meta.stats() succeeding but its
+        """When apoc.meta.stats() succeeds but its
         single() returning None (e.g. an empty result set) must also report
         'unknown', not fabricate a 0-count via the `stats["x"] if stats else 0`
         fallback."""
