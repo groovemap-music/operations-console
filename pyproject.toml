@@ -8,14 +8,14 @@ version = "0.1.0"
 description = "Privileged administration and monitoring console for GrooveMap"
 authors = [{name = "Robert Wlodarczyk", email = "robert@simplicityguy.com"}]
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.14,<3.15"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: Other/Proprietary License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
 ]
 license = "PolyForm-Noncommercial-1.0.0"
 license-files = ["LICENSE"]
@@ -76,9 +76,13 @@ exclude-newer = "2 days"
 groovemap-runtime = { git = "https://github.com/groovemap-music/python-libraries.git", rev = "28fa329702bc76896cc54ab8d05ec5b1bd3d929e" }
 
 [tool.ruff]
-extend-exclude = ["dashboard/catalog_contract.py", "dashboard/catalog_admin_contract.py"]
+extend-exclude = [
+    "dashboard/catalog_contract.py",
+    "dashboard/catalog_admin_contract.py",
+    "docs/superpowers",
+]
 line-length = 150
-target-version = "py313"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = ["ARG", "B", "C4", "E", "F", "I", "PLC", "PTH", "RUF", "S", "SIM", "T20", "TCH", "UP", "W"]
@@ -94,7 +98,7 @@ lines-after-imports = 2
 "scripts/*.py" = ["S108", "T201"]
 
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
