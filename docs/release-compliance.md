@@ -6,7 +6,7 @@ No migration or validation command publishes a package, image, tag, release, or 
 
 `just check` verifies formatting, linting, promoted contracts, repository policy, secret scans, types, tests and coverage, deterministic web assets, wheel installation, legal metadata, dependency policy, release artifacts, and the version preview. `just image` builds and inspects the local OCI image. `just audit` performs the network-backed Python and JavaScript vulnerability audits.
 
-`just e2e` instruments browser JavaScript with Istanbul, runs Chromium, Firefox, WebKit, iPhone 15, and iPad generation 11 projects, captures per-project raw coverage and LCOV, and always restores the original JavaScript. Failed tests retain a screenshot, trace, and video. The shared workflow retains both coverage and failure evidence even when validation fails.
+`just e2e` instruments browser JavaScript with Istanbul, runs Chromium, Firefox, WebKit, iPhone 15, and iPad generation 11 projects, captures per-project raw coverage and LCOV, and always restores the original JavaScript. A restoration guard is active before the first source is changed, including when a later source is unavailable. Failed or crashed pages independently attempt coverage, screenshot, trace, and video finalization; one diagnostic failure cannot skip the remaining cleanup. The shared workflow retains both coverage and failure evidence even when validation fails.
 
 ## Automation
 

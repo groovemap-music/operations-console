@@ -99,11 +99,23 @@ projects_match = re.search(r"projects=\(([^)]+)\)", matrix)
 assert projects_match is not None
 assert set(projects_match.group(1).split()) == E2E_PROJECTS
 instrument = (ROOT / "scripts/instrument-e2e-coverage.mjs").read_text()
+instrument_guard = (ROOT / "scripts/instrument-e2e-coverage.sh").read_text()
+restore = (ROOT / "scripts/e2e-coverage-sources.mjs").read_text()
 finalize = (ROOT / "scripts/finalize-e2e-coverage.mjs").read_text()
 assert "istanbul-lib-instrument" in instrument
+assert instrument_guard.index("trap restore_on_failure EXIT") < instrument_guard.index("node scripts/instrument-e2e-coverage.mjs")
+assert "restoreSources();" in instrument
+assert "e2e-original" in restore
 assert "Missing Istanbul coverage" in finalize
 assert set(re.findall(r'"(chromium|firefox|webkit|iphone|ipad)"', finalize)) == E2E_PROJECTS
-assert "finally" in finalize and "e2e-original" in finalize
+assert "finally" in finalize and "restoreSources();" in finalize
+
+conftest = (ROOT / "tests/conftest.py").read_text()
+assert "def _finalize_e2e_page(" in conftest
+assert 'instance.screenshot(path=artifact_root / f"{node_digest}.png"' in conftest
+assert "context.tracing.stop" in conftest
+assert "context.close()" in conftest
+assert "finally:" in conftest
 
 package = json.loads((ROOT / "package.json").read_text())
 for dependency in ("istanbul-lib-coverage", "istanbul-lib-instrument", "istanbul-lib-report", "istanbul-reports"):

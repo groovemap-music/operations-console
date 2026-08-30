@@ -42,7 +42,7 @@ e2e-setup:
     uv run playwright install chromium firefox webkit
 
 e2e-instrument:
-    node scripts/instrument-e2e-coverage.mjs
+    bash scripts/instrument-e2e-coverage.sh
 
 e2e-run:
     bash scripts/run-e2e-matrix.sh

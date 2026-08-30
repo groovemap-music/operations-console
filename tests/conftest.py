@@ -175,6 +175,62 @@ def browser(browser_type_launch_args: dict[str, Any]) -> Iterator[Browser]:
         instance.close()
 
 
+def _note_e2e_cleanup_error(errors: list[Exception], phase: str, error: Exception) -> None:
+    """Retain every independent teardown failure with its diagnostic phase."""
+    error.add_note(f"operations-console E2E teardown phase: {phase}")
+    errors.append(error)
+
+
+def _finalize_e2e_page(
+    request: pytest.FixtureRequest,
+    instance: Page,
+    context: Any,
+    artifact_root: Path,
+    project: str,
+    node_digest: str,
+) -> None:
+    """Collect evidence and close the context even when a page has crashed."""
+    errors: list[Exception] = []
+    failed = bool(getattr(request.node, "rep_call", None) and request.node.rep_call.failed)
+    retain_diagnostics = failed
+
+    try:
+        try:
+            coverage = instance.evaluate("globalThis.__coverage__ || null")
+            if coverage is not None:
+                raw_root = Path("coverage/e2e/raw") / project
+                raw_root.mkdir(parents=True, exist_ok=True)
+                (raw_root / f"{node_digest}.json").write_text(json.dumps(coverage, sort_keys=True) + "\n")
+        except Exception as error:
+            retain_diagnostics = True
+            _note_e2e_cleanup_error(errors, "coverage", error)
+
+        if retain_diagnostics:
+            try:
+                instance.screenshot(path=artifact_root / f"{node_digest}.png", full_page=True)
+            except Exception as error:
+                _note_e2e_cleanup_error(errors, "screenshot", error)
+    finally:
+        try:
+            try:
+                trace_path = artifact_root / f"{node_digest}-trace.zip" if retain_diagnostics else None
+                if trace_path:
+                    context.tracing.stop(path=trace_path)
+                else:
+                    context.tracing.stop()
+            except Exception as error:
+                _note_e2e_cleanup_error(errors, "trace", error)
+        finally:
+            try:
+                # Closing the context finalizes Playwright's recorded video.
+                context.close()
+            except Exception as error:
+                _note_e2e_cleanup_error(errors, "context/video", error)
+
+    if errors:
+        raise ExceptionGroup("operations-console E2E teardown failed", errors)
+
+
 @pytest.fixture
 def page(request: pytest.FixtureRequest, browser: Browser, browser_context_args: dict[str, Any]) -> Iterator[Page]:
     """Create an isolated page and retain coverage plus failure diagnostics."""
@@ -186,18 +242,7 @@ def page(request: pytest.FixtureRequest, browser: Browser, browser_context_args:
     context.tracing.start(screenshots=True, snapshots=True, sources=True)
     instance = context.new_page()
     yield instance
-    coverage = instance.evaluate("globalThis.__coverage__ || null")
-    if coverage is not None:
-        raw_root = Path("coverage/e2e/raw") / project
-        raw_root.mkdir(parents=True, exist_ok=True)
-        (raw_root / f"{node_digest}.json").write_text(json.dumps(coverage, sort_keys=True) + "\n")
-    failed = bool(getattr(request.node, "rep_call", None) and request.node.rep_call.failed)
-    if failed:
-        instance.screenshot(path=artifact_root / f"{node_digest}.png", full_page=True)
-        context.tracing.stop(path=artifact_root / f"{node_digest}-trace.zip")
-    else:
-        context.tracing.stop()
-    context.close()
+    _finalize_e2e_page(request, instance, context, artifact_root, project, node_digest)
 
 
 @pytest.fixture

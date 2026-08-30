@@ -1,20 +1,18 @@
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 import coverage from "istanbul-lib-coverage";
 import reportLibrary from "istanbul-lib-report";
 import reports from "istanbul-reports";
 
+import { restoreSources, root } from "./e2e-coverage-sources.mjs";
+
 const { createCoverageMap } = coverage;
 const { createContext } = reportLibrary;
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const backupRoot = resolve(root, ".build/e2e-original");
 const coverageRoot = resolve(root, "coverage/e2e");
 const rawRoot = resolve(coverageRoot, "raw");
 const projects = ["chromium", "firefox", "webkit", "iphone", "ipad"];
-const sources = ["dashboard/static/admin.js", "dashboard/static/dashboard.js"];
 
 function jsonFiles(directory) {
   if (!existsSync(directory)) return [];
@@ -47,11 +45,7 @@ try {
 } catch (error) {
   failure = error;
 } finally {
-  for (const relativePath of sources) {
-    const backup = resolve(backupRoot, relativePath);
-    if (existsSync(backup)) cpSync(backup, resolve(root, relativePath));
-  }
-  if (existsSync(backupRoot)) rmSync(backupRoot, { recursive: true, force: true });
+  restoreSources();
 }
 
 if (failure) throw failure;
