@@ -5,7 +5,7 @@ import asyncio
 import contextlib
 import logging
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator  # noqa: TC003  # FastAPI resolves lifespan annotations at runtime.
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
