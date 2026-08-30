@@ -41,9 +41,12 @@ dependency is distributed.
 
 The direct, build-only JavaScript dependencies are `@tailwindcss/cli` 4.3.3,
 `@tailwindcss/forms` 0.5.11, `@vitest/coverage-v8` 4.1.11, `jsdom` 30.0.1,
-and `vitest` 4.1.11. Each declares the `MIT` license. Their exact transitive
-dependency versions, source URLs, integrity hashes, and SPDX license identifiers
-are recorded in `package-lock.json`.
+and `vitest` 4.1.11. Each declares the `MIT` license. The browser-coverage
+pipeline directly uses `istanbul-lib-coverage` 3.2.2,
+`istanbul-lib-instrument` 6.0.3, `istanbul-lib-report` 3.0.1, and
+`istanbul-reports` 3.2.0; each declares `BSD-3-Clause`. Exact transitive
+dependency versions, source URLs, integrity hashes, and SPDX license
+identifiers are recorded in `package-lock.json`.
 
 The locked Tailwind/Vite graph includes `lightningcss` 1.32.0 and 1.33.0 plus
 their platform-specific optional packages under `MPL-2.0`. Those tools compile

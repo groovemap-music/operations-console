@@ -1,4 +1,4 @@
-"""Regression test for discogsography-zjg7.
+"""Regression test for the audit action filter.
 
 Pins dashboard/static/admin.html's audit-log action-filter `<select>` to being
 well-formed markup. The opening tag was previously missing its closing '>',
@@ -64,7 +64,7 @@ def test_audit_log_action_filter_select_has_closing_bracket() -> None:
     assert close_bracket_idx < next_open_bracket_idx, (
         "The <select id=\"al-action-filter\"> opening tag is not closed before the next '<' — "
         "a dropped '>' causes the HTML tokenizer to consume the following <option> as bogus "
-        "attributes of <select>, destroying the 'All Actions' option (discogsography-zjg7)."
+        "attributes of <select>, destroying the 'All Actions' option."
     )
 
 

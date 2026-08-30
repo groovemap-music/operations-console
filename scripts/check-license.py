@@ -73,11 +73,19 @@ assert "applies only to first-party rights" in dependency_notices
 assert "does not change any third-party license" in dependency_notices
 assert "does not grant trademark rights" in dependency_notices
 
+js_license_overrides = {
+    "istanbul-lib-coverage": "BSD-3-Clause",
+    "istanbul-lib-instrument": "BSD-3-Clause",
+    "istanbul-lib-report": "BSD-3-Clause",
+    "istanbul-reports": "BSD-3-Clause",
+}
 for dependency, version in package["devDependencies"].items():
     locked = package_lock["packages"][f"node_modules/{dependency}"]
     assert locked["version"] == version
-    assert locked["license"] == "MIT"
+    assert locked["license"] == js_license_overrides.get(dependency, "MIT")
     assert f"`{dependency}` {version}" in dependency_notices
+
+assert "BSD-3-Clause" in dependency_notices
 
 assert "`lightningcss` 1.32.0 and 1.33.0" in dependency_notices
 

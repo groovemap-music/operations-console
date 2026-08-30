@@ -1,11 +1,11 @@
-# Admin Guide
+# Operations-console administrator guide
 
 ## Creating an Admin Account
 
 Admin accounts are created via the `admin-setup` CLI tool inside the API container:
 
-```
-docker exec -it groovemap-api admin-setup --email admin@example.com
+```bash
+docker exec -it groovemap-catalog-api admin-setup --email admin@example.com
 ```
 
 `admin-setup` never accepts the password as a CLI argument (command-line
@@ -19,8 +19,8 @@ Passwords must be at least 8 characters. If the email already exists, the passwo
 
 ## Listing Admin Accounts
 
-```
-docker exec -it groovemap-api admin-setup --list
+```bash
+docker exec -it groovemap-catalog-api admin-setup --list
 ```
 
 ## Accessing the Admin Panel
@@ -35,9 +35,9 @@ Click **Trigger Extraction** in the admin panel. This forces a full reprocessing
 
 - Downloads the latest monthly data from the Discogs S3 bucket
 - Reprocesses all files regardless of existing state markers
-- Publishes records to RabbitMQ for graphinator and tableinator consumers
+- Publishes records to RabbitMQ for the `discogs-graph-enricher` and `discogs-sql-loader` consumers
 
-The admin panel also supports triggering a **MusicBrainz extraction**, which downloads the latest MusicBrainz JSONL dumps and publishes records to the `groovemap-musicbrainz-{artists,labels,release-groups,releases}` exchanges for brainzgraphinator and brainztableinator consumers.
+The admin panel also supports triggering a **MusicBrainz extraction**, which downloads the latest MusicBrainz JSONL dumps and publishes records to the `groovemap-musicbrainz-{artists,labels,release-groups,releases}` exchanges for the `musicbrainz-graph-enricher` and `musicbrainz-sql-loader` consumers.
 
 Use this when:
 
@@ -55,22 +55,22 @@ Dead-letter queues (DLQs) collect messages that consumers failed to process. Eac
 
 | Queue                                                             | Consumer          |
 | ----------------------------------------------------------------- | ----------------- |
-| `groovemap-discogs-graphinator-artists.dlq`                  | Graphinator       |
-| `groovemap-discogs-graphinator-labels.dlq`                   | Graphinator       |
-| `groovemap-discogs-graphinator-masters.dlq`                  | Graphinator       |
-| `groovemap-discogs-graphinator-releases.dlq`                 | Graphinator       |
-| `groovemap-discogs-tableinator-artists.dlq`                  | Tableinator       |
-| `groovemap-discogs-tableinator-labels.dlq`                   | Tableinator       |
-| `groovemap-discogs-tableinator-masters.dlq`                  | Tableinator       |
-| `groovemap-discogs-tableinator-releases.dlq`                 | Tableinator       |
-| `groovemap-musicbrainz-brainzgraphinator-artists.dlq`        | Brainzgraphinator |
-| `groovemap-musicbrainz-brainzgraphinator-labels.dlq`         | Brainzgraphinator |
-| `groovemap-musicbrainz-brainzgraphinator-release-groups.dlq` | Brainzgraphinator |
-| `groovemap-musicbrainz-brainzgraphinator-releases.dlq`       | Brainzgraphinator |
-| `groovemap-musicbrainz-brainztableinator-artists.dlq`        | Brainztableinator |
-| `groovemap-musicbrainz-brainztableinator-labels.dlq`         | Brainztableinator |
-| `groovemap-musicbrainz-brainztableinator-release-groups.dlq` | Brainztableinator |
-| `groovemap-musicbrainz-brainztableinator-releases.dlq`       | Brainztableinator |
+| `groovemap-discogs-graphinator-artists.dlq`                  | `discogs-graph-enricher`       |
+| `groovemap-discogs-graphinator-labels.dlq`                   | `discogs-graph-enricher`       |
+| `groovemap-discogs-graphinator-masters.dlq`                  | `discogs-graph-enricher`       |
+| `groovemap-discogs-graphinator-releases.dlq`                 | `discogs-graph-enricher`       |
+| `groovemap-discogs-tableinator-artists.dlq`                  | `discogs-sql-loader`           |
+| `groovemap-discogs-tableinator-labels.dlq`                   | `discogs-sql-loader`           |
+| `groovemap-discogs-tableinator-masters.dlq`                  | `discogs-sql-loader`           |
+| `groovemap-discogs-tableinator-releases.dlq`                 | `discogs-sql-loader`           |
+| `groovemap-musicbrainz-brainzgraphinator-artists.dlq`        | `musicbrainz-graph-enricher`   |
+| `groovemap-musicbrainz-brainzgraphinator-labels.dlq`         | `musicbrainz-graph-enricher`   |
+| `groovemap-musicbrainz-brainzgraphinator-release-groups.dlq` | `musicbrainz-graph-enricher`   |
+| `groovemap-musicbrainz-brainzgraphinator-releases.dlq`       | `musicbrainz-graph-enricher`   |
+| `groovemap-musicbrainz-brainztableinator-artists.dlq`        | `musicbrainz-sql-loader`       |
+| `groovemap-musicbrainz-brainztableinator-labels.dlq`         | `musicbrainz-sql-loader`       |
+| `groovemap-musicbrainz-brainztableinator-release-groups.dlq` | `musicbrainz-sql-loader`       |
+| `groovemap-musicbrainz-brainztableinator-releases.dlq`       | `musicbrainz-sql-loader`       |
 
 **Purging** permanently deletes all messages in a DLQ. Do this when:
 
@@ -87,7 +87,7 @@ DLQ names follow the pattern `{exchange-prefix}-{consumer}-{data-type}.dlq`, usi
 
 Two new endpoints expose time-series metrics for queue depths and service health:
 
-```
+```http
 GET /api/admin/queues/history?range=<range>
 GET /api/admin/health/history?range=<range>
 ```
@@ -123,7 +123,7 @@ The collector interval is controlled by the `METRICS_COLLECTION_INTERVAL` enviro
 
 Set these in your `docker-compose.yml` or environment file:
 
-```
+```dotenv
 METRICS_RETENTION_DAYS=366
 METRICS_COLLECTION_INTERVAL=300
 ```
@@ -151,7 +151,7 @@ Metrics are stored in two PostgreSQL tables:
 | ------------------ | ----------- | ------------------------------------------------------- |
 | `id`               | bigint      | Primary key (generated always as identity)              |
 | `recorded_at`      | timestamptz | When the sample was taken                               |
-| `service_name`     | varchar(50) | Name of the service (e.g. `graphinator`, `tableinator`) |
+| `service_name`     | varchar(50) | Runtime service identity (for example, the aliases for `discogs-graph-enricher` and `discogs-sql-loader`) |
 | `status`           | varchar(20) | Health status (`healthy`, `unhealthy`, `unknown`)       |
 | `response_time_ms` | real        | Health check response time in milliseconds              |
 | `endpoint_stats`   | jsonb       | Per-endpoint latency statistics (API service only)      |
