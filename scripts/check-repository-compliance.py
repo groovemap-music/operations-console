@@ -121,6 +121,7 @@ assert "filter-repo --force --invert-paths" in rehearsal
 assert "remote-cutover-approved=false" in rehearsal
 assert "public-visibility-approved=false" in rehearsal
 assert 'gitleaks git --config "${gitleaks_config}"' in rehearsal
+assert 'cd "${sanitized_worktree}"' in rehearsal
 assert not re.search(r"\bgit\s+push\b", rehearsal)
 
 readme = (ROOT / "README.md").read_text()

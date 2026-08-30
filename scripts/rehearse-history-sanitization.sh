@@ -64,7 +64,10 @@ gitleaks_config="${output_root}/gitleaks.toml"
 git -C "${sanitized_repo}" show HEAD:.gitleaks.toml > "${gitleaks_config}"
 gitleaks git --config "${gitleaks_config}" --log-opts=--all --redact --no-banner "${sanitized_repo}"
 git clone --quiet "${sanitized_repo}" "${sanitized_worktree}"
-gitleaks dir --redact --no-banner "${sanitized_worktree}"
+(
+  cd "${sanitized_worktree}"
+  gitleaks dir --redact --no-banner .
+)
 
 cat > "${output_root}/CUTOVER-STATUS.txt" <<EOF
 archive-prerequisite=${archive_commit}
