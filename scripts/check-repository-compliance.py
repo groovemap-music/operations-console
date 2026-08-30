@@ -89,6 +89,11 @@ workflow_names = {path.name.lower() for path in (ROOT / ".github/workflows").ite
 assert not any("renovate" in name or "claude" in name for name in workflow_names)
 assert not any(path.name.lower().startswith("renovate") for path in ROOT.iterdir())
 
+gitleaks_config = (ROOT / ".gitleaks.toml").read_text()
+assert 'description = "Deterministic brand asset digests"' in gitleaks_config
+assert "^dashboard/static/brand/source\\.json$" in gitleaks_config
+assert '"[0-9a-f]{64}"' in gitleaks_config
+
 matrix = (ROOT / "scripts/run-e2e-matrix.sh").read_text()
 projects_match = re.search(r"projects=\(([^)]+)\)", matrix)
 assert projects_match is not None
