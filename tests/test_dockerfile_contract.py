@@ -41,6 +41,11 @@ def test_image_metadata_identifies_license_and_exact_source_revision() -> None:
     assert '--build-arg "VCS_REF=${vcs_ref}"' in BUILD_SCRIPT
 
 
+def test_image_provenance_rejects_tracked_changes_without_rejecting_injected_checkouts() -> None:
+    assert 'bash "${repo_root}/scripts/check-image-source.sh" "${repo_root}"' in BUILD_SCRIPT
+    assert "status --short" not in BUILD_SCRIPT
+
+
 def test_runtime_dependencies_come_from_locked_build_artifacts() -> None:
     assert "--require-hashes --requirements /wheels/requirements.txt" in DOCKERFILE
     assert "--no-deps /wheels/*.whl" in DOCKERFILE
