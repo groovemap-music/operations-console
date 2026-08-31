@@ -13,6 +13,6 @@
     "social-banner.svg": "85778c028a70fa2d381d2447cf260af180fb276afbc039093318d8db5274ffdb",
     "tokens.css": "2ad462b97badeab5bb2bc202270dcd0bf15b1823d340ee289573f50096ec7eda"
   },
-  "producer_commit": "342ee0d4d8a7290e55dfe1ad0d8fe82425ea2658",
-  "producer_repository": "https://github.com/groovemap-music/infra"
+  "producer_commit": "59c9fd3c8bbdfa676e0b7bb3d463fc766c1f3c0d",
+  "producer_repository": "https://github.com/groovemap-music/design"
 }

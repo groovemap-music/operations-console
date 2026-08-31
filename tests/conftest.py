@@ -1,17 +1,38 @@
 """Pytest configuration for dashboard tests."""
 
+from __future__ import annotations
+
+import hashlib
+import json
 import os
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from playwright.sync_api import Browser, Page, sync_playwright
 
 from dashboard.config import DashboardConfig
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+E2E_PROJECTS = {"chromium", "firefox", "webkit", "iphone", "ipad"}
+_DEVICE_CONTEXT: dict[str, Any] = {}
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item: pytest.Item) -> Iterator[None]:
+    """Expose the call outcome to fixture teardown for failure artifacts."""
+    outcome = yield
+    report = outcome.get_result()
+    setattr(item, f"rep_{report.when}", report)
 
 
 @pytest.fixture(scope="session")
@@ -21,7 +42,7 @@ def test_server() -> Any:
     This fixture is only used when running E2E tests.
     """
     # Get project root directory
-    project_root = str(Path(__file__).parent.parent.parent)
+    project_root = str(Path(__file__).resolve().parents[1])
 
     # Start server as subprocess
     env = os.environ.copy()
@@ -113,33 +134,120 @@ def test_server() -> Any:
 
 
 @pytest.fixture(scope="session")
-def browser_context_args(browser_context_args: dict[str, Any]) -> dict[str, Any]:
+def browser_context_args(browser: Browser) -> dict[str, Any]:
     """Configure browser context for testing."""
-    return {
-        **browser_context_args,
+    del browser
+    defaults: dict[str, Any] = {
         "viewport": {"width": 1280, "height": 720},
         "ignore_https_errors": True,
         "locale": "en-US",
         "timezone_id": "UTC",
-        "record_video_dir": "test-results/videos",
+        "record_video_dir": f"test-results/{os.environ.get('GROOVEMAP_E2E_PROJECT', 'chromium')}/videos",
         "record_video_size": {"width": 1280, "height": 720},
+    }
+    defaults.update(_DEVICE_CONTEXT)
+    return defaults
+
+
+@pytest.fixture(scope="session")
+def browser_type_launch_args() -> dict[str, Any]:
+    """Configure browser launch arguments for headless mode."""
+    return {
+        "headless": True,  # Always run headless
+        "timeout": 30000,  # 30 second timeout for browser launch
     }
 
 
 @pytest.fixture(scope="session")
-def browser_type_launch_args(browser_type_launch_args: dict[str, Any]) -> dict[str, Any]:
-    """Configure browser launch arguments for headless mode."""
-    return {
-        **browser_type_launch_args,
-        "headless": True,  # Always run headless
-        "timeout": 30000,  # 30 second timeout for browser launch
-        "args": [
-            "--no-sandbox",  # Required for CI environments
-            "--disable-setuid-sandbox",  # Required for CI environments
-            "--disable-dev-shm-usage",  # Overcome limited resource problems
-            "--disable-gpu",  # Disable GPU hardware acceleration
-        ],
-    }
+def browser(browser_type_launch_args: dict[str, Any]) -> Iterator[Browser]:
+    """Launch the selected desktop browser or standard emulated WebKit device."""
+    project = os.environ.get("GROOVEMAP_E2E_PROJECT", "chromium")
+    if project not in E2E_PROJECTS:
+        raise ValueError(f"Unknown GROOVEMAP_E2E_PROJECT: {project}")
+    with sync_playwright() as playwright:
+        engine_name = "webkit" if project in {"iphone", "ipad"} else project
+        engine = getattr(playwright, engine_name)
+        launch_args = dict(browser_type_launch_args)
+        if engine_name == "chromium":
+            launch_args["args"] = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+        _DEVICE_CONTEXT.clear()
+        if project in {"iphone", "ipad"}:
+            device_name = "iPhone 15" if project == "iphone" else "iPad (gen 11)"
+            _DEVICE_CONTEXT.update(playwright.devices[device_name])
+            _DEVICE_CONTEXT.pop("default_browser_type", None)
+        instance = engine.launch(**launch_args)
+        yield instance
+        instance.close()
+
+
+def _note_e2e_cleanup_error(errors: list[Exception], phase: str, error: Exception) -> None:
+    """Retain every independent teardown failure with its diagnostic phase."""
+    error.add_note(f"operations-console E2E teardown phase: {phase}")
+    errors.append(error)
+
+
+def _finalize_e2e_page(
+    request: pytest.FixtureRequest,
+    instance: Page,
+    context: Any,
+    artifact_root: Path,
+    project: str,
+    node_digest: str,
+) -> None:
+    """Collect evidence and close the context even when a page has crashed."""
+    errors: list[Exception] = []
+    failed = bool(getattr(request.node, "rep_call", None) and request.node.rep_call.failed)
+    retain_diagnostics = failed
+
+    try:
+        try:
+            coverage = instance.evaluate("globalThis.__coverage__ || null")
+            if coverage is not None:
+                raw_root = Path("coverage/e2e/raw") / project
+                raw_root.mkdir(parents=True, exist_ok=True)
+                (raw_root / f"{node_digest}.json").write_text(json.dumps(coverage, sort_keys=True) + "\n")
+        except Exception as error:
+            retain_diagnostics = True
+            _note_e2e_cleanup_error(errors, "coverage", error)
+
+        if retain_diagnostics:
+            try:
+                instance.screenshot(path=artifact_root / f"{node_digest}.png", full_page=True)
+            except Exception as error:
+                _note_e2e_cleanup_error(errors, "screenshot", error)
+    finally:
+        try:
+            try:
+                trace_path = artifact_root / f"{node_digest}-trace.zip" if retain_diagnostics else None
+                if trace_path:
+                    context.tracing.stop(path=trace_path)
+                else:
+                    context.tracing.stop()
+            except Exception as error:
+                _note_e2e_cleanup_error(errors, "trace", error)
+        finally:
+            try:
+                # Closing the context finalizes Playwright's recorded video.
+                context.close()
+            except Exception as error:
+                _note_e2e_cleanup_error(errors, "context/video", error)
+
+    if errors:
+        raise ExceptionGroup("operations-console E2E teardown failed", errors)
+
+
+@pytest.fixture
+def page(request: pytest.FixtureRequest, browser: Browser, browser_context_args: dict[str, Any]) -> Iterator[Page]:
+    """Create an isolated page and retain coverage plus failure diagnostics."""
+    project = os.environ.get("GROOVEMAP_E2E_PROJECT", "chromium")
+    artifact_root = Path("test-results") / project
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    node_digest = hashlib.sha256(request.node.nodeid.encode()).hexdigest()[:16]
+    context = browser.new_context(**browser_context_args)
+    context.tracing.start(screenshots=True, snapshots=True, sources=True)
+    instance = context.new_page()
+    yield instance
+    _finalize_e2e_page(request, instance, context, artifact_root, project, node_digest)
 
 
 @pytest.fixture

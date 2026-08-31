@@ -64,7 +64,7 @@ def _auth_headers(request: Request) -> dict[str, str]:
     would let a client spoof its apparent IP and defeat the API's per-IP rate
     limits (e.g. the admin login limiter, api/routers/admin.py). api/api.py only
     trusts these headers when they arrive from the internal docker network. See
-    discogsography-quq5.
+    the trusted-forwarding regression.
     """
     headers: dict[str, str] = {}
     auth = request.headers.get("authorization")

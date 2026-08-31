@@ -88,7 +88,7 @@ class TestValidatePathSegment:
         assert _validate_path_segment("foo bar") is False
 
     def test_rejects_dot_dot_dot_segment(self) -> None:
-        """Regression for discogsography-cu2.83: a pure ``..`` segment matches the
+        """Regression: a pure ``..`` segment matches the
         alphanumeric-plus-dot allowlist regex, but httpx/RFC 3986 URL normalization
         collapses it during base_url merge — silently retargeting the request to a
         sibling endpoint. Must be rejected explicitly."""
@@ -99,7 +99,7 @@ class TestValidatePathSegment:
 
 
 class TestAuthHeaders:
-    """discogsography-quq5: _auth_headers must set trustworthy X-Forwarded-For/-Proto
+    """_auth_headers must set trustworthy X-Forwarded-For/-Proto
     from what this service observed, never copy a client-supplied value — otherwise
     an attacker could spoof their apparent IP to the API and defeat the admin
     login rate limiter (api/routers/admin.py 5/minute)."""
@@ -703,7 +703,7 @@ class TestTriggerMusicBrainzProxy:
 
 
 class TestValidatedJsonBody:
-    """Direct unit tests for _validated_json_body (discogsography-cu2.84)."""
+    """Direct unit tests for the validated JSON body boundary."""
 
     @pytest.mark.asyncio
     async def test_non_utf8_body_raises_json_decode_error(self) -> None:
@@ -782,7 +782,7 @@ class TestMalformedJsonBody:
     def test_login_non_utf8_body_returns_400(self, proxy_client: TestClient) -> None:
         """POST /admin/api/login with a non-UTF-8 body returns 400, not an unhandled 500.
 
-        Regression for discogsography-cu2.84: json.loads(bytes) raises
+        Regression: json.loads(bytes) raises
         UnicodeDecodeError (a ValueError sibling, not a subclass, of
         json.JSONDecodeError) for invalid UTF-8 bytes such as b"\\xff".
         """
@@ -840,7 +840,7 @@ class TestAuthHeaderForwarding:
 
 
 class TestExtractionAnalysisTraversalRejected:
-    """Regression for discogsography-cu2.83: a ``..`` path segment previously passed
+    """Regression: a ``..`` path segment previously passed
     `_validate_path_segment` (dots are allowlisted for version strings) and was then
     silently collapsed by httpx/RFC 3986 URL normalization, retargeting the proxied
     request to a sibling `/api/admin/*` endpoint. Use a percent-encoded segment so the

@@ -7,6 +7,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
 DOCKERFILE = (ROOT / "Dockerfile").read_text()
+BUILD_SCRIPT = (ROOT / "scripts" / "build-image.sh").read_text()
+DOCKERIGNORE = (ROOT / ".dockerignore").read_text()
 SENSITIVE_ENV = re.compile(r"(?:PASSWORD|USERNAME|SECRET|TOKEN|CREDENTIAL|PRIVATE_KEY)(?:$|_)")
 
 
@@ -28,6 +30,24 @@ def _instructions() -> list[str]:
 def test_image_metadata_uses_repository_name() -> None:
     assert 'org.opencontainers.image.title="operations-console"' in DOCKERFILE
     assert "github.com/groovemap-music/operations-console" in DOCKERFILE
+
+
+def test_image_metadata_identifies_license_and_exact_source_revision() -> None:
+    assert 'org.opencontainers.image.licenses="AGPL-3.0-only"' in DOCKERFILE
+    assert 'org.opencontainers.image.revision="${VCS_REF}"' in DOCKERFILE
+    assert '[ "${#VCS_REF}" -eq 40 ]' in DOCKERFILE
+    assert 'GROOVEMAP_SOURCE_REVISION="${VCS_REF}"' in DOCKERFILE
+    assert "rev-parse --verify 'HEAD^{commit}'" in BUILD_SCRIPT
+    assert '--build-arg "VCS_REF=${vcs_ref}"' in BUILD_SCRIPT
+
+
+def test_runtime_dependencies_come_from_locked_build_artifacts() -> None:
+    assert "--require-hashes --requirements /wheels/requirements.txt" in DOCKERFILE
+    assert "--no-deps /wheels/*.whl" in DOCKERFILE
+    assert "groovemap-runtime==" not in DOCKERFILE
+    assert "fastapi==" not in DOCKERFILE
+    assert "dist/*" in DOCKERIGNORE
+    assert "!dist/*.whl" in DOCKERIGNORE
 
 
 def test_runtime_user_is_numeric_and_non_root() -> None:

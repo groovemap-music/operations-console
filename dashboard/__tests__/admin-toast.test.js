@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
 /**
- * Regression coverage for discogsography-3t37: overlapping toasts must not
+ * Regression coverage: overlapping toasts must not
  * cancel each other early. AdminDashboard.showToast() lives in
  * dashboard/static/admin.js, so this suite
  * loads it directly via the same vm-based technique explore/__tests__/helpers.js
@@ -38,7 +38,7 @@ function setupAdminDOM() {
     });
 }
 
-describe('AdminDashboard.showToast (discogsography-3t37)', () => {
+describe('AdminDashboard.showToast overlap regression', () => {
     let AdminDashboard;
 
     beforeEach(() => {
@@ -102,4 +102,3 @@ describe('AdminDashboard.showToast (discogsography-3t37)', () => {
         expect(toast.textContent).toBe('Second message');
     });
 });
-

@@ -1,9 +1,7 @@
 # Extraction provenance
 
-This repository was extracted without modifying the source monorepo. Its `main` history contains 194 commits relevant to the operations console before the standalone-establishment commit.
+This repository was extracted without modifying its source monorepository. The standalone history retains the commits relevant to the operations console, while unrelated application and deployment paths remain with their owning repositories.
 
-Source: `SimplicityGuy/discogsography`, bead branch `wt/bead/issue/discogsography-2kpm.20`.
+The reproducible extraction used an isolated clone and `git-filter-repo` with the console application, tests, license, administrator guide, and relevant historical design material. Dashboard tests were promoted to the repository-level `tests/` tree. Source tags were not copied because monorepository tags did not unambiguously version this service.
 
-The reproducible extraction used an isolated clone and `git-filter-repo` with `dashboard/`, `tests/dashboard/`, the PolyForm license, `docs/admin-guide.md`, and the dashboard-specific design plans/specifications. Tests were promoted with `--path-rename tests/dashboard/:tests/`.
-
-The platform-wide `docs/monitoring.md` was deliberately excluded for ownership by `deployment`; excluding it also prevents historical example credentials from becoming findings in this repository's retained history. No source tags were copied because the monorepo tags do not unambiguously version this console.
+Historical implementation plans are now preserved by the private `planning-archive` repository. They are removed from the current public-intent tree. Before publication, `scripts/rehearse-history-sanitization.sh` proves in a separate mirror clone that the private planning paths can be removed from every ref, records the old-to-new commit map, and passes complete reachable-object and secret scans. The script cannot change a remote; a real private-remote cutover and a later visibility change each require separate explicit approval.

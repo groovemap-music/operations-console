@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-infra_repo="${GROOVEMAP_INFRA_REPO:-../infra}"
-expected="342ee0d4d8a7290e55dfe1ad0d8fe82425ea2658"
+design_repo="${GROOVEMAP_DESIGN_REPO:-../design}"
+expected="59c9fd3c8bbdfa676e0b7bb3d463fc766c1f3c0d"
 
-test -d "${infra_repo}/.git"
-test "$(git -C "${infra_repo}" rev-parse HEAD)" = "${expected}"
-test -z "$(git -C "${infra_repo}" status --short)"
-node "${infra_repo}/brand/render.mjs" --check
+test -d "${design_repo}/.git"
+test "$(git -C "${design_repo}" rev-parse HEAD)" = "${expected}"
+test -z "$(git -C "${design_repo}" status --short)"
+node "${design_repo}/brand/render.mjs" --check
 
 find dashboard/static/brand -type f ! -name source.json -depth -delete
-cp "${infra_repo}"/brand/assets/* dashboard/static/brand/
+cp "${design_repo}"/brand/assets/* dashboard/static/brand/
 python scripts/check-brand.py

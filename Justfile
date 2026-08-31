@@ -12,6 +12,7 @@ source-check:
     uvx --from ruff==0.16.4 ruff check .
     python scripts/check-contracts.py
     python scripts/check-brand.py
+    python scripts/check-repository-compliance.py
     npm ci --ignore-scripts
     npm run build:css
     npm test
@@ -19,7 +20,7 @@ source-check:
     gitleaks git --redact --no-banner
     gitleaks dir . --redact --no-banner
 
-check: source-check typecheck test build install-check license-check bump-preview
+check: source-check typecheck test build install-check license-check release-artifacts bump-preview
 
 format:
     uv run ruff format .
@@ -34,11 +35,23 @@ test:
 js-test:
     npm test
 
+coverage: test
+    npm run test:coverage
+
 e2e-setup:
-    uv run playwright install chromium
+    uv run playwright install chromium firefox webkit
+
+e2e-instrument:
+    bash scripts/instrument-e2e-coverage.sh
+
+e2e-run:
+    bash scripts/run-e2e-matrix.sh
+
+e2e-post:
+    node scripts/finalize-e2e-coverage.mjs
 
 e2e:
-    uv run pytest -m e2e --browser chromium
+    bash scripts/e2e-with-coverage.sh
 
 web-build:
     npm ci --ignore-scripts
@@ -53,7 +66,7 @@ install-check: build
 
 license-check:
     uv run python scripts/check-license.py
-    uv run pip-licenses --fail-on "GPL-2.0-only;GPL-3.0-only;AGPL-3.0-only"
+    uv run pip-licenses --format=json | uv run python scripts/check_dependency_licenses.py
 
 audit:
     uv run pip-audit
@@ -72,6 +85,7 @@ image: build prepare-runtime-wheel
     bash scripts/build-image.sh
     docker run --rm --entrypoint /app/.venv/bin/python operations-console:local -c 'import dashboard.dashboard'
     test "$(docker run --rm --entrypoint /usr/bin/id operations-console:local -u):$(docker run --rm --entrypoint /usr/bin/id operations-console:local -g)" = "1000:1000"
+    uv run python scripts/check-image-metadata.py operations-console:local
 
 bump-preview:
     uv run cz bump --dry-run --changelog --yes --check-consistency
@@ -81,5 +95,7 @@ bump:
     uv run cz bump --version-files-only --changelog --yes --check-consistency
     uv lock
 
-release-dry-run: check
+release-artifacts: build install-check
     bash scripts/release-dry-run.sh
+
+release-dry-run: check

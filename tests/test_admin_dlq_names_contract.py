@@ -1,4 +1,4 @@
-"""Regression test for discogsography-cu2.35.
+"""Regression test for the DLQ name contract.
 
 Pins dashboard/static/admin.js's DLQ name generation to the promoted catalog
 event contract so the console and backend cannot silently drift apart.
@@ -52,7 +52,7 @@ def _parse_dlq_names_from_admin_js() -> set[str]:
 def test_admin_js_dlq_names_match_backend_valid_dlq_names() -> None:
     """The JavaScript DLQ names must exactly equal the producer contract.
 
-    Regression for discogsography-cu2.35: the frontend previously hardcoded
+    The frontend previously hardcoded
     bare `{consumer}-{type}-dlq` names while the backend required
     `{source-exchange-prefix}-{consumer}-{type}.dlq`, so no Purge button could
     ever succeed.
