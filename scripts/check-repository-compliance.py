@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+from repository_source import RepositorySourceError, tracked_tree_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 AUTOMATION_REVISION = "dacd84051e0c7c8bec7b2e489f37d57c7f1cdb20"
@@ -155,13 +157,20 @@ assert 'org.opencontainers.image.title="operations-console"' in dockerfile
 assert 'org.opencontainers.image.source="https://github.com/groovemap-music/operations-console"' in dockerfile
 assert 'org.opencontainers.image.revision="${VCS_REF}"' in dockerfile
 
-current_tree_text = "\n".join(
-    path.read_text(errors="ignore")
-    for path in ROOT.rglob("*")
-    if path.is_file()
-    and not any(
-        part in {".git", ".venv", ".build", ".pytest_cache", ".ruff_cache", "__pycache__", "node_modules", "dist", "coverage", "test-results"}
-        for part in path.parts
-    )
-)
+ignored_parts = {
+    ".git",
+    ".venv",
+    ".build",
+    ".pytest_cache",
+    ".ruff_cache",
+    "__pycache__",
+    "node_modules",
+    "dist",
+    "coverage",
+    "test-results",
+}
+try:
+    current_tree_text = tracked_tree_text(ROOT, excluded_parts=ignored_parts)
+except RepositorySourceError as error:
+    raise SystemExit(str(error)) from error
 assert legacy_product_name not in current_tree_text.lower()
