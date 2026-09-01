@@ -88,11 +88,12 @@ image: build prepare-runtime-wheel
     uv run python scripts/check-image-metadata.py operations-console:local
 
 bump-preview:
-    uv run cz bump --dry-run --changelog --yes --check-consistency
+    uv run python scripts/check_bump_preview.py
 
 # Update local version metadata and changelog only; do not commit, tag, push, or publish.
 bump:
-    uv run cz bump --version-files-only --changelog --yes --check-consistency
+    uv run cz bump --files-only --changelog --yes --check-consistency
+    npm version "$(uv run cz version --project)" --no-git-tag-version
     uv lock
 
 release-artifacts: build install-check
