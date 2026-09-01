@@ -98,7 +98,7 @@ assert "^dashboard/static/brand/source\\.json$" in gitleaks_config
 assert '"[0-9a-f]{64}"' in gitleaks_config
 
 matrix = (ROOT / "scripts/run-e2e-matrix.sh").read_text()
-justfile = (ROOT / "justfile").read_text()
+justfile = (ROOT / "Justfile").read_text()
 assert "uv run playwright install --with-deps chromium firefox webkit" in justfile
 projects_match = re.search(r"projects=\(([^)]+)\)", matrix)
 assert projects_match is not None
