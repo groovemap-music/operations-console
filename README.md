@@ -35,6 +35,18 @@ The service listens on port 8003. Configure the RabbitMQ, Neo4j, PostgreSQL, Red
 
 The container build injects its full Git revision into both the OCI metadata and the console's visible source/legal link. A released console therefore links to the corresponding source tree for the exact running revision. Dependency and first-party trademark notices are recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [NOTICE](NOTICE).
 
+### Metrics
+
+The console exports OpenTelemetry metrics through `groovemap-runtime`'s `common.telemetry` bootstrap; there is no Prometheus `/metrics` scrape endpoint. Metrics push over OTLP/HTTP-protobuf and are configured entirely through the standard OpenTelemetry environment variables:
+
+- `OTEL_EXPORTER_OTLP_ENDPOINT` — collector base URL, for example `http://otel-collector:4318`. When unset, telemetry stays a no-op and the service behaves exactly as it does without it.
+- `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` — metrics-only endpoint override.
+- `OTEL_METRICS_EXPORTER` — `otlp` (default) or `none` to force export off.
+- `OTEL_METRIC_EXPORT_INTERVAL` — push interval in milliseconds.
+- `OTEL_SERVICE_NAME` / `OTEL_RESOURCE_ATTRIBUTES` — override the resource's `service.name` and add attributes such as `service.namespace` and `deployment.environment.name`.
+
+HTTP server and client metrics (`http.server.request.duration`, `http.client.request.duration`) are emitted automatically once the `otel-http` extra is installed. The console additionally records `groovemap.console.websocket.connections` (an up-down counter of active WebSocket clients) and `groovemap.console.poll.duration` (a histogram, keyed by `target` — a polled service key, `rabbitmq`, `neo4j`, `postgres`, or `loop` for the 2-second collection loop itself — and `outcome`).
+
 ## Repository boundary
 
 `catalog-api` owns authentication and operator endpoints. `catalog-ingestion` owns catalog-event exchange and queue naming. `database-schema` owns datastore compatibility. This repository consumes immutable promoted copies of those contracts; it does not import producer source or require sibling checkouts at runtime.
