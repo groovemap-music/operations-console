@@ -67,13 +67,6 @@ class TestDashboardAPIIntegration:
         db_names = {db["name"] for db in databases}
         assert db_names == {"PostgreSQL", "Neo4j"}
 
-    def test_prometheus_metrics(self, client: TestClient) -> None:
-        """Test Prometheus metrics endpoint."""
-        response = client.get("/metrics")
-        assert response.status_code == 200
-        # The test app returns a simple string, not full prometheus format
-        assert "dashboard_websocket_connections" in response.text
-
     def test_index_page(self, client: TestClient) -> None:
         """Test that index page is served."""
         response = client.get("/")

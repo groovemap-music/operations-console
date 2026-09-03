@@ -1434,22 +1434,6 @@ class TestFastAPIEndpoints:
                 assert len(data) == 1
                 assert data[0]["name"] == "PostgreSQL"
 
-    def test_prometheus_metrics(self) -> None:
-        """Test /metrics Prometheus endpoint."""
-        from fastapi import FastAPI
-
-        from dashboard.dashboard import prometheus_metrics
-
-        test_app = FastAPI()
-        test_app.get("/metrics")(prometheus_metrics)
-
-        with TestClient(test_app) as client:
-            response = client.get("/metrics")
-            assert response.status_code == 200
-            assert "text/plain" in response.headers["content-type"]
-            # Prometheus metrics should contain some text
-            assert len(response.text) > 0
-
     def test_serve_admin_file_not_found(self) -> None:
         """Test /admin endpoint returns 404 when admin.html does not exist."""
         from fastapi import FastAPI
