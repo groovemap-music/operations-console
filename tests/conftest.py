@@ -26,6 +26,29 @@ if TYPE_CHECKING:
 E2E_PROJECTS = {"chromium", "firefox", "webkit", "iphone", "ipad"}
 _DEVICE_CONTEXT: dict[str, Any] = {}
 
+# Every standard OpenTelemetry variable that changes what the SDK records or exports. Mirrors
+# groovemap-runtime's own test isolation: the telemetry suites assert on what an in-memory
+# provider recorded, so they must not inherit the ambient OpenTelemetry configuration that a
+# developer's shell or CI runner may already have set.
+_OTEL_ENVIRONMENT = (
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    "OTEL_METRICS_EXEMPLAR_FILTER",
+    "OTEL_METRICS_EXPORTER",
+    "OTEL_METRIC_EXPORT_INTERVAL",
+    "OTEL_RESOURCE_ATTRIBUTES",
+    "OTEL_SDK_DISABLED",
+    "OTEL_SERVICE_NAME",
+)
+
+
+@pytest.fixture(autouse=True)
+def isolated_otel_environment(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Run every test against a known-empty OpenTelemetry configuration."""
+    for name in _OTEL_ENVIRONMENT:
+        monkeypatch.delenv(name, raising=False)
+    yield
+
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
 def pytest_runtest_makereport(item: pytest.Item) -> Iterator[None]:

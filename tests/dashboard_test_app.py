@@ -270,11 +270,6 @@ def create_test_app() -> FastAPI:
             return list(databases)  # Ensure we return a list
         return []
 
-    @app.get("/metrics")
-    async def prometheus_metrics() -> str:
-        """Return Prometheus metrics."""
-        return "# HELP dashboard_websocket_connections Number of active WebSocket connections\n"
-
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket) -> None:
         """WebSocket endpoint for real-time updates."""

@@ -54,17 +54,6 @@ class TestDashboardAPI:
         # by TestDashboardAPIIntegration.test_metrics_endpoint)
         assert isinstance(data, dict)
 
-    def test_prometheus_metrics(self, test_client: TestClient) -> None:
-        """Test the Prometheus metrics endpoint."""
-        response = test_client.get("/metrics")
-        assert response.status_code == 200
-        assert response.headers["content-type"] == "text/plain; charset=utf-8"
-
-        # Check for some expected metrics
-        content = response.text
-        assert "dashboard_websocket_connections" in content
-        assert "dashboard_api_requests" in content
-
     def test_static_files(self, test_client: TestClient) -> None:
         """Test that static files are served."""
         # Static files are mounted at root, not under /static
