@@ -6,11 +6,11 @@ import contextlib
 import logging
 import os
 import re
+import time
 from collections.abc import AsyncGenerator  # noqa: TC003  # FastAPI resolves lifespan annotations at runtime.
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
 
 import httpx
 import orjson
@@ -19,17 +19,21 @@ from common import (
     AsyncResilientNeo4jDriver,
     AsyncResilientPostgreSQL,
     AsyncResilientRabbitMQ,
+    instrument_fastapi_app,
+    instrument_httpx,
     neo4j_security_kwargs,
     parse_postgres_host_port,
     setup_logging,
+    setup_telemetry,
+    shutdown_telemetry,
 )
-from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from prometheus_client import REGISTRY, Counter, Gauge, generate_latest
 from pydantic import BaseModel
 
+from dashboard import telemetry as console_telemetry
 from dashboard.admin_proxy import configure as configure_admin_proxy
 from dashboard.admin_proxy import router as admin_router
 from dashboard.catalog_contract import DISCOGS_EXCHANGE_PREFIX, MUSICBRAINZ_EXCHANGE_PREFIX
@@ -66,24 +70,6 @@ STARTUP_BANNER = r"""
 _cors_origins_raw = os.environ.get("CORS_ORIGINS", "")
 _cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()] if _cors_origins_raw else None
 
-
-# Metrics — guarded against duplicate registration on hot reload
-def _get_or_create_gauge(name: str, description: str) -> Gauge:
-    try:
-        return Gauge(name, description)
-    except ValueError:
-        return cast("Gauge", REGISTRY._names_to_collectors[name])
-
-
-def _get_or_create_counter(name: str, description: str, labels: list[str]) -> Counter:
-    try:
-        return Counter(name, description, labels)
-    except ValueError:
-        return cast("Counter", REGISTRY._names_to_collectors[name + "_total"])
-
-
-WEBSOCKET_CONNECTIONS = _get_or_create_gauge("dashboard_websocket_connections", "Number of active WebSocket connections")
-API_REQUESTS = _get_or_create_counter("dashboard_api_requests", "Total API requests", ["endpoint", "method"])
 
 # Per-client cap on how long broadcast_metrics waits on a single websocket.send_text().
 # send_text applies TCP backpressure and can block indefinitely for a stalled client
@@ -259,7 +245,7 @@ class DashboardApp:
             async with self._ws_lock:
                 targets = list(self.websocket_connections)
                 self.websocket_connections.clear()
-                WEBSOCKET_CONNECTIONS.set(0)
+                console_telemetry.record_websocket_connection_delta(-len(targets))
             for ws in targets:
                 with contextlib.suppress(Exception):
                     await ws.close()
@@ -273,6 +259,7 @@ class DashboardApp:
         """Continuously collect metrics in the background."""
         cycle_count = 0
         while True:
+            loop_start = time.perf_counter()
             try:
                 metrics = await self.collect_all_metrics()
                 self.latest_metrics = metrics
@@ -292,11 +279,18 @@ class DashboardApp:
                         ws_count,
                     )
 
+                console_telemetry.record_poll_duration(
+                    console_telemetry.POLL_TARGET_LOOP, console_telemetry.POLL_OUTCOME_SUCCESS, time.perf_counter() - loop_start
+                )
+
                 await asyncio.sleep(2)  # Update every 2 seconds
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                console_telemetry.record_poll_duration(
+                    console_telemetry.POLL_TARGET_LOOP, console_telemetry.POLL_OUTCOME_FAILURE, time.perf_counter() - loop_start
+                )
                 logger.error(f"❌ Error collecting metrics: {e}")
                 await asyncio.sleep(5)
 
@@ -325,6 +319,7 @@ class DashboardApp:
 
         async with httpx.AsyncClient(timeout=5.0) as client:
             for name, url in service_configs:
+                poll_start = time.perf_counter()
                 try:
                     response = await client.get(url)
                     if response.status_code == 200:
@@ -344,6 +339,7 @@ class DashboardApp:
                                 last_extraction_time=data.get("last_extraction_time"),
                             )
                         )
+                        console_telemetry.record_poll_duration(name, console_telemetry.POLL_OUTCOME_SUCCESS, time.perf_counter() - poll_start)
                     else:
                         services.append(
                             ServiceStatus(
@@ -355,6 +351,7 @@ class DashboardApp:
                                 error=f"HTTP {response.status_code}",
                             )
                         )
+                        console_telemetry.record_poll_duration(name, console_telemetry.POLL_OUTCOME_FAILURE, time.perf_counter() - poll_start)
                 except Exception as e:
                     services.append(
                         ServiceStatus(
@@ -366,6 +363,7 @@ class DashboardApp:
                             error=str(e),
                         )
                     )
+                    console_telemetry.record_poll_duration(name, console_telemetry.POLL_OUTCOME_FAILURE, time.perf_counter() - poll_start)
 
         return services
 
@@ -373,10 +371,12 @@ class DashboardApp:
         """Get RabbitMQ queue information."""
         queues: list[QueueInfo] = []
 
-        try:
-            if not self.rabbitmq:
-                return queues
+        if not self.rabbitmq:
+            return queues
 
+        poll_start = time.perf_counter()
+        outcome = console_telemetry.POLL_OUTCOME_SUCCESS
+        try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 # Use RabbitMQ management API with host/credentials from config
                 management_host = self.config.rabbitmq_management_host
@@ -402,14 +402,20 @@ class DashboardApp:
                                 )
                             )
                 elif response.status_code == 401:
+                    outcome = console_telemetry.POLL_OUTCOME_FAILURE
                     logger.warning("⚠️ RabbitMQ management API authentication failed. Queue metrics unavailable.")
                 else:
+                    outcome = console_telemetry.POLL_OUTCOME_FAILURE
                     logger.warning(f"⚠️ RabbitMQ management API returned status {response.status_code}")
 
         except httpx.ConnectError:
+            outcome = console_telemetry.POLL_OUTCOME_FAILURE
             logger.debug("🐰 RabbitMQ management API unreachable. This is normal if RabbitMQ is not running.")
         except Exception as e:
+            outcome = console_telemetry.POLL_OUTCOME_FAILURE
             logger.error(f"❌ Error getting queue info: {e}")
+        finally:
+            console_telemetry.record_poll_duration(console_telemetry.POLL_TARGET_RABBITMQ, outcome, time.perf_counter() - poll_start)
 
         return queues
 
@@ -426,6 +432,8 @@ class DashboardApp:
 
         # Check PostgreSQL
         conn = None
+        poll_start = time.perf_counter()
+        outcome = console_telemetry.POLL_OUTCOME_SUCCESS
         try:
             if self.postgres_conn is None:
                 raise RuntimeError("PostgreSQL resilient connection not initialized")
@@ -461,6 +469,7 @@ class DashboardApp:
                 )
             )
         except Exception as e:
+            outcome = console_telemetry.POLL_OUTCOME_FAILURE
             databases.append(
                 DatabaseInfo(
                     name="PostgreSQL",
@@ -474,11 +483,13 @@ class DashboardApp:
             # The resilient connection manages the single connection internally;
             # do NOT close it here.  Autocommit is always True on pool connections,
             # so rollback() is a no-op — omit it per the autocommit contract.
-            pass
+            console_telemetry.record_poll_duration(console_telemetry.POLL_TARGET_POSTGRES, outcome, time.perf_counter() - poll_start)
 
         # Check Neo4j
-        try:
-            if self.neo4j_driver:
+        if self.neo4j_driver:
+            poll_start = time.perf_counter()
+            outcome = console_telemetry.POLL_OUTCOME_SUCCESS
+            try:
                 async with self.neo4j_driver.session() as session:
                     result = await session.run("CALL dbms.components() YIELD name, versions")
                     await result.single()
@@ -518,16 +529,19 @@ class DashboardApp:
                         error=None,
                     )
                 )
-        except Exception as e:
-            databases.append(
-                DatabaseInfo(
-                    name="Neo4j",
-                    status="unhealthy",
-                    connection_count=0,
-                    size=None,
-                    error=str(e),
+            except Exception as e:
+                outcome = console_telemetry.POLL_OUTCOME_FAILURE
+                databases.append(
+                    DatabaseInfo(
+                        name="Neo4j",
+                        status="unhealthy",
+                        connection_count=0,
+                        size=None,
+                        error=str(e),
+                    )
                 )
-            )
+            finally:
+                console_telemetry.record_poll_duration(console_telemetry.POLL_TARGET_NEO4J, outcome, time.perf_counter() - poll_start)
 
         return databases
 
@@ -568,7 +582,7 @@ class DashboardApp:
             # Re-acquire the lock only to discard the failed sockets.
             async with self._ws_lock:
                 self.websocket_connections -= disconnected
-                WEBSOCKET_CONNECTIONS.set(len(self.websocket_connections))
+                console_telemetry.record_websocket_connection_delta(-len(disconnected))
 
             # A send failure here can mean either a genuinely dead socket OR
             # a still-live one that merely stalled past _WS_SEND_TIMEOUT_SECONDS
@@ -600,6 +614,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         setup_logging("dashboard", log_file=log_file)
     except OSError:
         setup_logging("dashboard")
+    setup_telemetry("dashboard")
+    instrument_fastapi_app(_app)
+    instrument_httpx()
     logger.info("🚀 Starting GrooveMap operations-console...")
 
     global dashboard
@@ -607,6 +624,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     await dashboard.startup()
     yield
     await dashboard.shutdown()
+    shutdown_telemetry()
 
 
 app = FastAPI(
@@ -644,8 +662,6 @@ async def health_check() -> JSONResponse:
 @app.get("/api/metrics")
 async def get_metrics() -> JSONResponse:
     """Get current system metrics."""
-    API_REQUESTS.labels(endpoint="/api/metrics", method="GET").inc()
-
     if dashboard and dashboard.latest_metrics:
         return JSONResponse(content=dashboard.latest_metrics.model_dump(mode="json"))
     elif dashboard:
@@ -659,7 +675,6 @@ async def get_metrics() -> JSONResponse:
 @app.get("/api/services")
 async def get_services() -> JSONResponse:
     """Get service statuses grouped by pipeline."""
-    API_REQUESTS.labels(endpoint="/api/services", method="GET").inc()
     if not dashboard:
         return JSONResponse(content={})
     result = {}
@@ -673,7 +688,6 @@ async def get_services() -> JSONResponse:
 @app.get("/api/queues")
 async def get_queues() -> JSONResponse:
     """Get queue information grouped by pipeline."""
-    API_REQUESTS.labels(endpoint="/api/queues", method="GET").inc()
     if not dashboard:
         return JSONResponse(content={})
     result = {}
@@ -693,24 +707,16 @@ async def get_queue_prefixes() -> JSONResponse:
     under a DISCOGS_EXCHANGE_PREFIX / MUSICBRAINZ_EXCHANGE_PREFIX override every Purge
     button would 404 without this (retained queue-prefix regression).
     """
-    API_REQUESTS.labels(endpoint="/api/queue-prefixes", method="GET").inc()
     return JSONResponse(content={"discogs": DISCOGS_EXCHANGE_PREFIX, "musicbrainz": MUSICBRAINZ_EXCHANGE_PREFIX})
 
 
 @app.get("/api/databases")
 async def get_databases() -> JSONResponse:
     """Get database information."""
-    API_REQUESTS.labels(endpoint="/api/databases", method="GET").inc()
     if not dashboard:
         return JSONResponse(content=[])
     databases = await dashboard.get_database_info()
     return JSONResponse(content=[d.model_dump(mode="json") for d in databases])
-
-
-@app.get("/metrics")
-async def prometheus_metrics() -> Response:
-    """Expose Prometheus metrics."""
-    return Response(content=generate_latest(), media_type="text/plain")
 
 
 @app.websocket("/ws")
@@ -722,7 +728,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             dashboard._ws_lock = asyncio.Lock()
         async with dashboard._ws_lock:
             dashboard.websocket_connections.add(websocket)
-            WEBSOCKET_CONNECTIONS.set(len(dashboard.websocket_connections))
+            console_telemetry.record_websocket_connection_delta(1)
 
     try:
         # Send initial metrics
@@ -743,14 +749,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         if dashboard and dashboard._ws_lock:
             async with dashboard._ws_lock:
-                dashboard.websocket_connections.discard(websocket)
-                WEBSOCKET_CONNECTIONS.set(len(dashboard.websocket_connections))
+                if websocket in dashboard.websocket_connections:
+                    dashboard.websocket_connections.discard(websocket)
+                    console_telemetry.record_websocket_connection_delta(-1)
     except Exception as e:
         logger.error(f"❌ WebSocket error: {e}")
         if dashboard and dashboard._ws_lock:
             async with dashboard._ws_lock:
-                dashboard.websocket_connections.discard(websocket)
-                WEBSOCKET_CONNECTIONS.set(len(dashboard.websocket_connections))
+                if websocket in dashboard.websocket_connections:
+                    dashboard.websocket_connections.discard(websocket)
+                    console_telemetry.record_websocket_connection_delta(-1)
 
 
 # Admin proxy routes (must be before StaticFiles catch-all)
