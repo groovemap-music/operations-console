@@ -74,12 +74,14 @@ artifacts = ["dashboard/static/tailwind.css"]
 exclude-newer = "2 days"
 
 [tool.uv.sources]
-groovemap-runtime = { git = "https://github.com/groovemap-music/python-libraries.git", rev = "3c8309bfb6123b2c85107e949e9d626e3193db6d" }
+groovemap-runtime = { git = "https://github.com/groovemap-music/python-libraries.git", rev = "41805b62520785f412e8f5d0db90f8d83838ec56" }
 
 [tool.ruff]
 extend-exclude = [
     "dashboard/catalog_contract.py",
     "dashboard/catalog_admin_contract.py",
+    "contracts/catalog-events/v1/discogs/python/catalog_contract.py",
+    "contracts/catalog-events/v1/musicbrainz/python/catalog_contract.py",
     "docs/superpowers",
 ]
 line-length = 150
