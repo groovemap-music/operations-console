@@ -1,4 +1,9 @@
-"""Tests for the media mapping coverage aggregation and proxy route in admin_proxy.py."""
+"""Tests for the media mapping coverage composition and proxy route in admin_proxy.py.
+
+The reading is sourced from catalog-api's `admin_unmapped_media` route
+(`GET /api/admin/media/unmapped?provider=…&limit=…`) for both providers; these tests
+mock that route rather than the data-quality violations route it replaced.
+"""
 
 from __future__ import annotations
 
@@ -12,112 +17,135 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from dashboard.admin_proxy import (
-    _MEDIA_MAPPING_MAX_PAGES,
-    _aggregate_media_mapping_coverage,
+    _MEDIA_MAPPING_PROVIDERS,
+    _MEDIA_MAPPING_TOP_N,
+    _compose_media_mapping_coverage,
+    _media_mapping_unavailable,
     configure,
     router,
 )
 
 
-def _violation(record_id: str, field_value: str) -> dict[str, str]:
+def _unmapped(kind: str, name: str, releases: int) -> dict[str, Any]:
+    return {"kind": kind, "name": name, "releases": releases}
+
+
+def _coverage_payload(
+    provider: str = "discogs",
+    *,
+    media_tagged_releases: int = 100,
+    releases_with_unmapped: int = 25,
+    unmapped_rate: float = 0.25,
+    limit: int = _MEDIA_MAPPING_TOP_N,
+    top_unmapped: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     return {
-        "record_id": record_id,
-        "rule": "format-not-recognized",
-        "severity": "warning",
-        "field": "formats.format.@name",
-        "field_value": field_value,
-        "entity_type": "releases",
+        "provider": provider,
+        "media_tagged_releases": media_tagged_releases,
+        "releases_with_unmapped": releases_with_unmapped,
+        "unmapped_rate": unmapped_rate,
+        "limit": limit,
+        "top_unmapped": [_unmapped("format", "Shellac", 15), _unmapped("description", "Hand-Numbered", 10)] if top_unmapped is None else top_unmapped,
     }
 
 
 # ---------------------------------------------------------------------------
-# _aggregate_media_mapping_coverage — pure aggregation logic
+# _compose_media_mapping_coverage — pure shaping logic
 # ---------------------------------------------------------------------------
 
 
-class TestAggregateMediaMappingCoverage:
-    def test_counts_distinct_releases_not_raw_violations(self) -> None:
-        """A release with two unrecognized format values counts once, not twice."""
-        violations = [
-            _violation("r1", "Shellac"),
-            _violation("r1", "Wax Cylinder"),
-            _violation("r2", "Shellac"),
-        ]
-        summary = {"version": "20240101", "source": "discogs", "by_entity": {"releases": {"total": 10}}}
+class TestComposeMediaMappingCoverage:
+    def test_maps_upstream_counts_onto_the_rendered_shape(self) -> None:
+        summary = {"version": "20240101", "source": "discogs"}
 
-        result = _aggregate_media_mapping_coverage(summary, violations, truncated=False)
+        result = _compose_media_mapping_coverage(summary, _coverage_payload())
 
         assert result["available"] is True
-        assert result["releases_with_unmapped_media"] == 2
-        assert result["unmapped_violation_count"] == 3
+        assert result["version"] == "20240101"
+        assert result["source"] == "discogs"
+        assert result["provider"] == "discogs"
+        assert result["media_tagged_releases"] == 100
+        assert result["releases_with_unmapped_media"] == 25
+        assert result["unmapped_rate"] == 0.25
+        assert result["limit"] == _MEDIA_MAPPING_TOP_N
 
-    def test_top_unmapped_formats_sorted_by_count_desc_then_name(self) -> None:
-        violations = [
-            _violation("r1", "Shellac"),
-            _violation("r2", "Shellac"),
-            _violation("r3", "Wax Cylinder"),
-            _violation("r4", "Betamax"),
-            _violation("r5", "Betamax"),
+    def test_top_unmapped_preserves_upstream_order_and_carries_kind(self) -> None:
+        """Upstream already orders by releases DESC, kind ASC, name ASC — do not re-sort."""
+        top = [
+            _unmapped("format", "Shellac", 9),
+            _unmapped("description", "Hand-Numbered", 4),
+            _unmapped("format", "Betamax", 4),
         ]
-        summary = {"version": "v1", "source": "discogs", "by_entity": {"releases": {"total": 5}}}
+        summary = {"version": "v1", "source": "discogs"}
 
-        result = _aggregate_media_mapping_coverage(summary, violations, truncated=False)
+        result = _compose_media_mapping_coverage(summary, _coverage_payload(top_unmapped=top))
 
-        names_in_order = [entry["name"] for entry in result["top_unmapped_formats"]]
-        # Betamax and Shellac tie at count=2; alphabetical tiebreak puts Betamax first.
-        assert names_in_order == ["Betamax", "Shellac", "Wax Cylinder"]
-        assert result["top_unmapped_formats"][0] == {"name": "Betamax", "count": 2}
+        assert result["top_unmapped_formats"] == [
+            {"kind": "format", "name": "Shellac", "count": 9},
+            {"kind": "description", "name": "Hand-Numbered", "count": 4},
+            {"kind": "format", "name": "Betamax", "count": 4},
+        ]
 
-    def test_top_unmapped_formats_capped_at_ten(self) -> None:
-        violations = [_violation(f"r{i}", f"format-{i}") for i in range(15)]
-        summary = {"version": "v1", "source": "discogs", "by_entity": {}}
+    def test_musicbrainz_reading_carries_names_and_counts(self) -> None:
+        """The MusicBrainz reading is a real reading now, not a 'not observable' note."""
+        summary = {"version": "20240201", "source": "musicbrainz"}
+        payload = _coverage_payload(
+            "musicbrainz",
+            media_tagged_releases=80,
+            releases_with_unmapped=12,
+            unmapped_rate=0.15,
+            top_unmapped=[_unmapped("format", "DualDisc", 7)],
+        )
 
-        result = _aggregate_media_mapping_coverage(summary, violations, truncated=False)
+        result = _compose_media_mapping_coverage(summary, payload)
 
-        assert len(result["top_unmapped_formats"]) == 10
+        assert result["available"] is True
+        assert result["provider"] == "musicbrainz"
+        assert result["releases_with_unmapped_media"] == 12
+        assert result["media_tagged_releases"] == 80
+        assert result["top_unmapped_formats"] == [{"kind": "format", "name": "DualDisc", "count": 7}]
 
-    def test_missing_field_value_falls_back_to_placeholder(self) -> None:
-        violations = [{"record_id": "r1", "field_value": ""}, {"record_id": "r2"}]
-        summary = {"version": "v1", "source": "discogs", "by_entity": {}}
+    def test_empty_top_unmapped_is_not_truncated(self) -> None:
+        summary = {"version": "v1", "source": "discogs"}
 
-        result = _aggregate_media_mapping_coverage(summary, violations, truncated=False)
+        result = _compose_media_mapping_coverage(summary, _coverage_payload(top_unmapped=[]))
 
-        assert result["top_unmapped_formats"] == [{"name": "(empty)", "count": 2}]
-
-    def test_empty_violations_yields_zero_counts_and_no_percent(self) -> None:
-        summary = {"version": "v1", "source": "discogs", "by_entity": {"releases": {"total": 42}}}
-
-        result = _aggregate_media_mapping_coverage(summary, [], truncated=False)
-
-        assert result["releases_with_unmapped_media"] == 0
-        assert result["unmapped_violation_count"] == 0
         assert result["top_unmapped_formats"] == []
-        assert result["unmapped_share_of_flagged_releases_percent"] == 0.0
+        assert result["truncated"] is False
 
-    def test_percent_computed_against_total_flagged_releases(self) -> None:
-        violations = [_violation("r1", "Shellac"), _violation("r2", "Shellac")]
-        summary = {"version": "v1", "source": "discogs", "by_entity": {"releases": {"total": 8}}}
+    def test_truncated_when_the_list_fills_the_requested_limit(self) -> None:
+        top = [_unmapped("format", f"format-{index}", 1) for index in range(3)]
+        summary = {"version": "v1", "source": "discogs"}
 
-        result = _aggregate_media_mapping_coverage(summary, violations, truncated=False)
-
-        assert result["total_flagged_releases"] == 8
-        assert result["unmapped_share_of_flagged_releases_percent"] == 25.0
-
-    def test_percent_is_none_when_total_flagged_releases_missing(self) -> None:
-        violations = [_violation("r1", "Shellac")]
-        summary = {"version": "v1", "source": "discogs", "by_entity": {}}
-
-        result = _aggregate_media_mapping_coverage(summary, violations, truncated=False)
-
-        assert result["total_flagged_releases"] is None
-        assert result["unmapped_share_of_flagged_releases_percent"] is None
-
-    def test_truncated_flag_passed_through(self) -> None:
-        summary = {"version": "v1", "source": "discogs", "by_entity": {}}
-
-        result = _aggregate_media_mapping_coverage(summary, [], truncated=True)
+        result = _compose_media_mapping_coverage(summary, _coverage_payload(limit=3, top_unmapped=top))
 
         assert result["truncated"] is True
+
+    def test_zero_denominator_reading_is_reported_as_zero_not_absent(self) -> None:
+        summary = {"version": "v1", "source": "musicbrainz"}
+        payload = _coverage_payload(
+            "musicbrainz",
+            media_tagged_releases=0,
+            releases_with_unmapped=0,
+            unmapped_rate=0.0,
+            top_unmapped=[],
+        )
+
+        result = _compose_media_mapping_coverage(summary, payload)
+
+        assert result["available"] is True
+        assert result["media_tagged_releases"] == 0
+        assert result["releases_with_unmapped_media"] == 0
+        assert result["unmapped_rate"] == 0.0
+
+    def test_unavailable_reason_names_the_readable_providers(self) -> None:
+        result = _media_mapping_unavailable("v1", "bandcamp")
+
+        assert result["available"] is False
+        assert result["source"] == "bandcamp"
+        for provider in _MEDIA_MAPPING_PROVIDERS:
+            assert provider in result["reason"]
+        assert "bandcamp" in result["reason"]
 
 
 # ---------------------------------------------------------------------------
@@ -145,9 +173,9 @@ def _mock_httpx_sequence(responses: list[MagicMock]) -> tuple[AsyncMock, AsyncMo
     return mock_cls, mock_instance
 
 
-def _mock_httpx_error() -> tuple[AsyncMock, AsyncMock]:
+def _mock_httpx_raising(error: Exception) -> tuple[AsyncMock, AsyncMock]:
     mock_instance = AsyncMock()
-    mock_instance.get = AsyncMock(side_effect=httpx_mod.ConnectError("refused"))
+    mock_instance.get = AsyncMock(side_effect=error)
     mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
     mock_instance.__aexit__ = AsyncMock(return_value=False)
 
@@ -170,13 +198,9 @@ def proxy_client(proxy_app: FastAPI) -> TestClient:
 
 class TestMediaMappingCoverageProxy:
     @patch("dashboard.admin_proxy.httpx.AsyncClient")
-    def test_discogs_single_page_aggregates(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
-        summary_payload = {"version": "20240101", "source": "discogs", "by_entity": {"releases": {"total": 4}}}
-        violations_payload = {
-            "violations": [_violation("r1", "Shellac"), _violation("r2", "Shellac")],
-            "pagination": {"page": 1, "page_size": 200, "total_items": 2, "total_pages": 1},
-        }
-        _, mock_instance = _mock_httpx_sequence([_mock_response(200, summary_payload), _mock_response(200, violations_payload)])
+    def test_discogs_reads_the_unmapped_media_route(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        summary_payload = {"version": "20240101", "source": "discogs"}
+        _, mock_instance = _mock_httpx_sequence([_mock_response(200, summary_payload), _mock_response(200, _coverage_payload("discogs"))])
         mock_cls_patch.return_value = mock_instance
 
         resp = proxy_client.get(
@@ -188,83 +212,55 @@ class TestMediaMappingCoverageProxy:
         data = resp.json()
         assert data["available"] is True
         assert data["source"] == "discogs"
-        assert data["releases_with_unmapped_media"] == 2
-        assert data["unmapped_violation_count"] == 2
-        assert data["total_flagged_releases"] == 4
-        assert data["truncated"] is False
+        assert data["provider"] == "discogs"
+        assert data["releases_with_unmapped_media"] == 25
+        assert data["media_tagged_releases"] == 100
+        assert data["unmapped_rate"] == 0.25
         assert mock_instance.get.call_count == 2
 
-        # Second call is the violations list, filtered to the media-mapping rule/entity.
-        violations_call = mock_instance.get.call_args_list[1]
-        assert "/api/admin/extraction-analysis/20240101/violations" in violations_call[0][0]
-        params = violations_call[1]["params"]
-        assert params["rule"] == "format-not-recognized"
-        assert params["entity_type"] == "releases"
-        assert params["page"] == "1"
-        assert params["page_size"] == "200"
+        coverage_call = mock_instance.get.call_args_list[1]
+        assert coverage_call[0][0].endswith("/api/admin/media/unmapped")
+        assert coverage_call[1]["params"] == {"provider": "discogs", "limit": str(_MEDIA_MAPPING_TOP_N)}
 
     @patch("dashboard.admin_proxy.httpx.AsyncClient")
-    def test_musicbrainz_source_returns_unavailable_without_fetching_violations(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
-        summary_payload = {"version": "20240201", "source": "musicbrainz", "by_entity": {}}
-        _, mock_instance = _mock_httpx_sequence([_mock_response(200, summary_payload)])
+    def test_musicbrainz_reads_the_same_route_with_its_own_provider(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        summary_payload = {"version": "20240201", "source": "musicbrainz"}
+        coverage = _coverage_payload(
+            "musicbrainz",
+            media_tagged_releases=80,
+            releases_with_unmapped=12,
+            unmapped_rate=0.15,
+            top_unmapped=[_unmapped("format", "DualDisc", 7), _unmapped("description", "Copy Control", 3)],
+        )
+        _, mock_instance = _mock_httpx_sequence([_mock_response(200, summary_payload), _mock_response(200, coverage)])
         mock_cls_patch.return_value = mock_instance
 
         resp = proxy_client.get("/admin/api/extraction-analysis/20240201/media-mapping-coverage")
 
         assert resp.status_code == 200
         data = resp.json()
+        # The old reading returned available=false with a "not observable" note here.
+        assert data["available"] is True
+        assert data["provider"] == "musicbrainz"
+        assert data["releases_with_unmapped_media"] == 12
+        assert [entry["name"] for entry in data["top_unmapped_formats"]] == ["DualDisc", "Copy Control"]
+        assert mock_instance.get.call_count == 2
+        assert mock_instance.get.call_args_list[1][1]["params"]["provider"] == "musicbrainz"
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_unknown_source_returns_unavailable_without_calling_upstream(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        summary_payload = {"version": "20240301", "source": "bandcamp"}
+        _, mock_instance = _mock_httpx_sequence([_mock_response(200, summary_payload)])
+        mock_cls_patch.return_value = mock_instance
+
+        resp = proxy_client.get("/admin/api/extraction-analysis/20240301/media-mapping-coverage")
+
+        assert resp.status_code == 200
+        data = resp.json()
         assert data["available"] is False
-        assert data["source"] == "musicbrainz"
-        assert "MusicBrainz" in data["reason"]
-        assert "rules engine" in data["reason"]
-        # Only the summary was fetched — no violations pagination for an unavailable source.
+        assert data["source"] == "bandcamp"
+        # Only the summary was fetched — no provider to name upstream.
         assert mock_instance.get.call_count == 1
-
-    @patch("dashboard.admin_proxy.httpx.AsyncClient")
-    def test_paginates_through_multiple_violation_pages(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
-        summary_payload = {"version": "20240101", "source": "discogs", "by_entity": {"releases": {"total": 3}}}
-        page1 = {
-            "violations": [_violation("r1", "Shellac")],
-            "pagination": {"page": 1, "page_size": 1, "total_items": 2, "total_pages": 2},
-        }
-        page2 = {
-            "violations": [_violation("r2", "Wax Cylinder")],
-            "pagination": {"page": 2, "page_size": 1, "total_items": 2, "total_pages": 2},
-        }
-        _, mock_instance = _mock_httpx_sequence([_mock_response(200, summary_payload), _mock_response(200, page1), _mock_response(200, page2)])
-        mock_cls_patch.return_value = mock_instance
-
-        resp = proxy_client.get("/admin/api/extraction-analysis/20240101/media-mapping-coverage")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["releases_with_unmapped_media"] == 2
-        assert data["unmapped_violation_count"] == 2
-        assert data["truncated"] is False
-        assert mock_instance.get.call_count == 3
-        second_page_call = mock_instance.get.call_args_list[2]
-        assert second_page_call[1]["params"]["page"] == "2"
-
-    @patch("dashboard.admin_proxy.httpx.AsyncClient")
-    def test_truncates_after_max_pages(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
-        summary_payload = {"version": "20240101", "source": "discogs", "by_entity": {"releases": {"total": 1000}}}
-        # Every page reports far more pages remaining than the cap allows.
-        page_payload = {
-            "violations": [_violation("r-x", "Some Format")],
-            "pagination": {"page": 1, "page_size": 200, "total_items": 100_000, "total_pages": 999},
-        }
-        responses = [_mock_response(200, summary_payload)] + [_mock_response(200, page_payload) for _ in range(_MEDIA_MAPPING_MAX_PAGES)]
-        _, mock_instance = _mock_httpx_sequence(responses)
-        mock_cls_patch.return_value = mock_instance
-
-        resp = proxy_client.get("/admin/api/extraction-analysis/20240101/media-mapping-coverage")
-
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["truncated"] is True
-        # 1 summary call + exactly _MEDIA_MAPPING_MAX_PAGES violation-page calls — the loop
-        # stops at the cap rather than continuing to page 999.
-        assert mock_instance.get.call_count == 1 + _MEDIA_MAPPING_MAX_PAGES
 
     @patch("dashboard.admin_proxy.httpx.AsyncClient")
     def test_summary_non_200_passed_through(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
@@ -277,18 +273,43 @@ class TestMediaMappingCoverageProxy:
         assert mock_instance.get.call_count == 1
 
     @patch("dashboard.admin_proxy.httpx.AsyncClient")
-    def test_violations_non_200_passed_through(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
-        summary_payload = {"version": "20240101", "source": "discogs", "by_entity": {"releases": {"total": 1}}}
+    def test_upstream_5xx_from_the_coverage_route_passed_through(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        summary_payload = {"version": "20240101", "source": "discogs"}
         _, mock_instance = _mock_httpx_sequence([_mock_response(200, summary_payload), _mock_response(500, {"detail": "boom"})])
         mock_cls_patch.return_value = mock_instance
 
         resp = proxy_client.get("/admin/api/extraction-analysis/20240101/media-mapping-coverage")
 
         assert resp.status_code == 500
+        assert resp.json()["detail"] == "boom"
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_upstream_422_from_the_coverage_route_passed_through(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        summary_payload = {"version": "20240101", "source": "discogs"}
+        _, mock_instance = _mock_httpx_sequence([_mock_response(200, summary_payload), _mock_response(422, {"detail": "Invalid provider"})])
+        mock_cls_patch.return_value = mock_instance
+
+        resp = proxy_client.get("/admin/api/extraction-analysis/20240101/media-mapping-coverage")
+
+        assert resp.status_code == 422
 
     @patch("dashboard.admin_proxy.httpx.AsyncClient")
     def test_returns_502_on_connect_error(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
-        _, mock_instance = _mock_httpx_error()
+        _, mock_instance = _mock_httpx_raising(httpx_mod.ConnectError("refused"))
+        mock_cls_patch.return_value = mock_instance
+
+        resp = proxy_client.get("/admin/api/extraction-analysis/20240101/media-mapping-coverage")
+
+        assert resp.status_code == 502
+        assert "unavailable" in resp.json()["detail"]
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_returns_502_when_the_coverage_route_times_out(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        summary_payload = {"version": "20240101", "source": "discogs"}
+        mock_instance = AsyncMock()
+        mock_instance.get = AsyncMock(side_effect=[_mock_response(200, summary_payload), httpx_mod.ReadTimeout("timed out")])
+        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
+        mock_instance.__aexit__ = AsyncMock(return_value=False)
         mock_cls_patch.return_value = mock_instance
 
         resp = proxy_client.get("/admin/api/extraction-analysis/20240101/media-mapping-coverage")
@@ -301,9 +322,9 @@ class TestMediaMappingCoverageProxy:
         assert resp.status_code == 400
 
     @patch("dashboard.admin_proxy.httpx.AsyncClient")
-    def test_forwards_auth_header(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
-        summary_payload = {"version": "20240101", "source": "musicbrainz", "by_entity": {}}
-        _, mock_instance = _mock_httpx_sequence([_mock_response(200, summary_payload)])
+    def test_forwards_auth_header_to_the_coverage_route(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        summary_payload = {"version": "20240101", "source": "discogs"}
+        _, mock_instance = _mock_httpx_sequence([_mock_response(200, summary_payload), _mock_response(200, _coverage_payload("discogs"))])
         mock_cls_patch.return_value = mock_instance
 
         proxy_client.get(
@@ -311,5 +332,5 @@ class TestMediaMappingCoverageProxy:
             headers={"Authorization": "Bearer mytoken"},
         )
 
-        call_kwargs = mock_instance.get.call_args
-        assert "Bearer mytoken" in str(call_kwargs)
+        coverage_call = mock_instance.get.call_args_list[1]
+        assert coverage_call[1]["headers"]["Authorization"] == "Bearer mytoken"
