@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from typing import Any
 
 import httpx
 import structlog
@@ -584,3 +585,163 @@ async def proxy_ea_generate_ai_prompt(version: str, request: Request) -> Respons
         logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
         return _unavailable_response()
     return _ok_response(resp)
+
+
+# ---------------------------------------------------------------------------
+# Media mapping coverage — a console-side aggregation over the extraction
+# analysis summary + violations routes above, not a 1:1 proxy of a single
+# catalog-api endpoint.
+#
+# catalog-api exposes no "unmapped media" endpoint (and this program adds
+# none): the discogs-ingestion data-quality rules engine emits a warning-level
+# `format-not-recognized` violation on `releases` whenever a Discogs record's
+# raw `formats.format.@name` is absent from the vendored media taxonomy, and
+# that shows up like any other rule in the existing extraction-analysis
+# summary/violations routes. This composes those two routes into one coverage
+# reading instead of asking the admin UI to do the pagination and counting
+# itself.
+#
+# MusicBrainz ingestion has no rules engine at all, so unmapped media names
+# are not flagged as violations for it and there is nothing here to read —
+# the response says so explicitly rather than reporting a misleading zero.
+# ---------------------------------------------------------------------------
+
+_MEDIA_MAPPING_RULE = "format-not-recognized"
+_MEDIA_MAPPING_ENTITY_TYPE = "releases"
+_MEDIA_MAPPING_PAGE_SIZE = 200
+# 25 pages * 200/page = 5,000 violations aggregated per request — generous for
+# a warning-level rule's real-world volume while bounding worst-case latency
+# and upstream load if a version is flagged far more heavily than expected.
+_MEDIA_MAPPING_MAX_PAGES = 25
+_MEDIA_MAPPING_TOP_N = 10
+
+
+def _aggregate_media_mapping_coverage(
+    summary: dict[str, Any],
+    violations: list[dict[str, Any]],
+    *,
+    truncated: bool,
+) -> dict[str, Any]:
+    """Aggregate `format-not-recognized`/`releases` violations into a coverage summary.
+
+    *violations* must already be scoped to that rule and entity type for one
+    extraction version (the caller filters server-side via the upstream
+    `rule`/`entity_type` query params — catalog-api has no distinct-count or
+    group-by endpoint, so the counting happens here). Distinct release counts
+    are computed from `record_id` rather than taken as the raw violation
+    count because a single release can carry more than one unrecognized
+    format value (a multi-format release such as "Vinyl, LP" alongside an
+    unrecognized third format), which would otherwise double-count it.
+    """
+    release_ids: set[str] = set()
+    format_counts: dict[str, int] = {}
+    for violation in violations:
+        record_id = violation.get("record_id")
+        if record_id:
+            release_ids.add(record_id)
+        format_name = violation.get("field_value") or "(empty)"
+        format_counts[format_name] = format_counts.get(format_name, 0) + 1
+
+    top_unmapped_formats = [
+        {"name": name, "count": count} for name, count in sorted(format_counts.items(), key=lambda item: (-item[1], item[0]))[:_MEDIA_MAPPING_TOP_N]
+    ]
+
+    by_entity = summary.get("by_entity") or {}
+    releases_entity = by_entity.get(_MEDIA_MAPPING_ENTITY_TYPE) or {}
+    # Total release-entity violations of ANY rule for this version — the same
+    # number already shown as the "releases" entity card total elsewhere in
+    # this view. It is a violation count, not a distinct-release count, so it
+    # is reported plainly as "flagged" rather than "analysed": there is no
+    # existing route that returns how many Discogs releases this extraction
+    # processed in total.
+    total_flagged_releases = releases_entity.get("total")
+
+    unmapped_share_of_flagged_releases_percent: float | None = None
+    if isinstance(total_flagged_releases, int) and total_flagged_releases > 0:
+        unmapped_share_of_flagged_releases_percent = round((len(release_ids) / total_flagged_releases) * 100, 1)
+
+    return {
+        "available": True,
+        "version": summary.get("version"),
+        "source": summary.get("source"),
+        "releases_with_unmapped_media": len(release_ids),
+        "unmapped_violation_count": len(violations),
+        "total_flagged_releases": total_flagged_releases,
+        "unmapped_share_of_flagged_releases_percent": unmapped_share_of_flagged_releases_percent,
+        "top_unmapped_formats": top_unmapped_formats,
+        "truncated": truncated,
+    }
+
+
+def _media_mapping_unavailable(version: str, source: str | None) -> dict[str, Any]:
+    """Coverage response for a source with no data-quality rules engine (MusicBrainz today)."""
+    return {
+        "available": False,
+        "version": version,
+        "source": source,
+        "reason": (
+            "MusicBrainz ingestion has no data-quality rules engine, so unmapped media "
+            "names are never recorded as extraction-analysis violations. Media mapping "
+            "coverage is only observable for Discogs until a MusicBrainz-side view is added."
+        ),
+    }
+
+
+@router.get("/admin/api/extraction-analysis/{version}/media-mapping-coverage")
+async def proxy_ea_media_mapping_coverage(version: str, request: Request) -> Response:
+    """Aggregate Discogs media/format mapping coverage for one extraction version.
+
+    Reads the existing summary route for context (source, total flagged
+    releases) and pages through the existing violations route filtered to
+    `rule=format-not-recognized`/`entity_type=releases`, then aggregates
+    both into one coverage payload. Returns `available: false` with a reason
+    for any non-Discogs source instead of guessing at a number nothing
+    upstream can currently produce.
+    """
+    if not _validate_path_segment(version):
+        return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
+
+    headers = _auth_headers(request)
+    summary_url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_SUMMARY_PATH.format(version=version))
+    violations_url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_VIOLATIONS_PATH.format(version=version))
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            summary_resp = await client.get(summary_url, headers=headers)
+            if summary_resp.status_code != 200:
+                return _ok_response(summary_resp)
+            summary = summary_resp.json()
+
+            source = summary.get("source")
+            if source != "discogs":
+                return JSONResponse(content=_media_mapping_unavailable(version, source))
+
+            all_violations: list[dict[str, Any]] = []
+            truncated = False
+            page = 1
+            while page <= _MEDIA_MAPPING_MAX_PAGES:
+                params = {
+                    "entity_type": _MEDIA_MAPPING_ENTITY_TYPE,
+                    "rule": _MEDIA_MAPPING_RULE,
+                    "page": str(page),
+                    "page_size": str(_MEDIA_MAPPING_PAGE_SIZE),
+                }
+                violations_resp = await client.get(violations_url, headers=headers, params=params)
+                if violations_resp.status_code != 200:
+                    return _ok_response(violations_resp)
+                payload = violations_resp.json()
+                all_violations.extend(payload.get("violations", []))
+                total_pages = (payload.get("pagination") or {}).get("total_pages", 1)
+                if page >= total_pages:
+                    break
+                page += 1
+            else:
+                # Loop exhausted _MEDIA_MAPPING_MAX_PAGES without a `break` —
+                # more pages remain upstream than were aggregated.
+                truncated = True
+    except (httpx.ConnectError, httpx.RequestError) as exc:
+        logger.error("❌ API service unreachable", url=violations_url, error=describe_exception(exc))
+        return _unavailable_response()
+
+    result = _aggregate_media_mapping_coverage(summary, all_violations, truncated=truncated)
+    return JSONResponse(content=result)

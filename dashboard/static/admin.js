@@ -1734,11 +1734,12 @@ class AdminDashboard {
         const spinner = document.getElementById('ea-loading-spinner');
         if (spinner) spinner.style.display = '';
 
-        // Fetch summary and parsing errors in parallel
+        // Fetch summary, parsing errors, and media mapping coverage in parallel
         try {
-            const [summaryResp, errorsResp] = await Promise.all([
+            const [summaryResp, errorsResp, mappingResp] = await Promise.all([
                 this.authFetch(`/admin/api/extraction-analysis/${encodeURIComponent(version)}/summary`),
                 this.authFetch(`/admin/api/extraction-analysis/${encodeURIComponent(version)}/parsing-errors`),
+                this.authFetch(`/admin/api/extraction-analysis/${encodeURIComponent(version)}/media-mapping-coverage`),
             ]);
 
             if (summaryResp.ok) {
@@ -1759,6 +1760,13 @@ class AdminDashboard {
                     this._eaParsingErrors = errData;
                 }
                 this._eaRenderRuleBreakdown(summary.by_rule || []);
+            }
+
+            if (mappingResp.ok) {
+                const mapping = await mappingResp.json();
+                this._eaRenderMediaMappingCoverage(mapping);
+            } else {
+                this._eaRenderMediaMappingCoverage(null);
             }
         } catch {
             // Silently fail
@@ -1824,6 +1832,91 @@ class AdminDashboard {
             return card;
         });
         container.replaceChildren(...cards);
+    }
+
+    // Media mapping coverage: releases whose Discogs `formats.format.@name` isn't in the
+    // vendored media taxonomy, surfaced by discogs-ingestion's `format-not-recognized`
+    // data-quality rule and aggregated server-side by the console's
+    // `/media-mapping-coverage` proxy route. `data` is null on a fetch failure and
+    // `{available: false, reason}` for a source with no rules engine (MusicBrainz today).
+    _eaRenderMediaMappingCoverage(data) {
+        const unavailableEl = document.getElementById('ea-media-mapping-unavailable');
+        const bodyEl = document.getElementById('ea-media-mapping-body');
+        if (!unavailableEl || !bodyEl) return;
+
+        if (!data || !data.available) {
+            bodyEl.style.display = 'none';
+            unavailableEl.style.display = '';
+            unavailableEl.textContent = (data && data.reason) || 'Media mapping coverage could not be loaded for this version.';
+            return;
+        }
+
+        unavailableEl.style.display = 'none';
+        bodyEl.style.display = '';
+
+        const cardsContainer = document.getElementById('ea-media-mapping-cards');
+        if (cardsContainer) {
+            const stats = [
+                { label: 'Releases with unmapped media', value: (data.releases_with_unmapped_media ?? 0).toLocaleString() },
+                { label: 'Unmapped-format violations', value: (data.unmapped_violation_count ?? 0).toLocaleString() },
+                { label: 'Distinct unrecognized formats', value: (data.top_unmapped_formats || []).length.toLocaleString() },
+            ];
+            if (data.total_flagged_releases !== null && data.total_flagged_releases !== undefined) {
+                stats.push({ label: 'Total flagged Discogs releases', value: data.total_flagged_releases.toLocaleString() });
+            }
+            if (data.unmapped_share_of_flagged_releases_percent !== null && data.unmapped_share_of_flagged_releases_percent !== undefined) {
+                stats.push({ label: 'Share of flagged releases', value: `${data.unmapped_share_of_flagged_releases_percent}%` });
+            }
+            const cards = stats.map(({ label, value }) => {
+                const card = document.createElement('div');
+                card.className = 'stat-card flex flex-col gap-1';
+                const labelEl = document.createElement('p');
+                labelEl.className = 'text-[10px] font-bold uppercase tracking-wider t-muted';
+                labelEl.textContent = label;
+                const valueEl = document.createElement('p');
+                valueEl.className = 'text-xl font-bold t-high';
+                valueEl.textContent = value;
+                card.append(labelEl, valueEl);
+                return card;
+            });
+            cardsContainer.replaceChildren(...cards);
+        }
+
+        const tbody = document.getElementById('ea-media-mapping-tbody');
+        if (tbody) {
+            const formats = data.top_unmapped_formats || [];
+            if (formats.length === 0) {
+                const row = document.createElement('tr');
+                const cell = document.createElement('td');
+                cell.colSpan = 2;
+                cell.className = 'py-6 text-center t-muted';
+                cell.textContent = 'No unmapped format names found.';
+                row.appendChild(cell);
+                tbody.replaceChildren(row);
+            } else {
+                const rows = formats.map(({ name, count }) => {
+                    const row = document.createElement('tr');
+                    row.className = 'border-b b-theme';
+                    const nameCell = document.createElement('td');
+                    nameCell.className = 'py-2 px-2 mono';
+                    nameCell.textContent = name;
+                    const countCell = document.createElement('td');
+                    countCell.className = 'py-2 px-2 text-right';
+                    countCell.textContent = (count ?? 0).toLocaleString();
+                    row.append(nameCell, countCell);
+                    return row;
+                });
+                tbody.replaceChildren(...rows);
+            }
+        }
+
+        const truncatedNote = document.getElementById('ea-media-mapping-truncated-note');
+        if (truncatedNote) {
+            truncatedNote.style.display = data.truncated ? '' : 'none';
+            truncatedNote.textContent = data.truncated
+                ? 'Results are truncated — more unmapped-format violations exist upstream than were aggregated for this view.'
+                : '';
+        }
     }
 
     _eaRenderSkippedCards(skippedSummary) {

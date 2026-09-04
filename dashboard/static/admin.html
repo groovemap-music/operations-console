@@ -831,6 +831,31 @@
                     </div>
                 </section>
 
+                <!-- Media mapping coverage (Discogs unrecognized format names) -->
+                <section class="dashboard-card p-6 space-y-4">
+                    <h3 class="text-sm font-semibold flex items-center gap-2 border-b b-theme pb-4">
+                        <span class="material-symbols-outlined text-sm t-dim">album</span> Media Mapping Coverage
+                    </h3>
+                    <p id="ea-media-mapping-unavailable" class="text-xs t-muted" style="display:none"></p>
+                    <div id="ea-media-mapping-body" style="display:none">
+                        <div id="ea-media-mapping-cards" class="flex flex-wrap gap-3"></div>
+                        <div class="overflow-x-auto mt-4">
+                            <table class="w-full text-xs">
+                                <thead>
+                                    <tr class="text-[10px] t-muted uppercase font-bold tracking-wider border-b b-theme">
+                                        <th class="text-left py-2 px-2">Unrecognized format name</th>
+                                        <th class="text-right py-2 px-2">Releases</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ea-media-mapping-tbody">
+                                    <tr><td colspan="2" class="py-6 text-center t-muted">No data.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <p id="ea-media-mapping-truncated-note" class="text-[10px] t-muted mt-2" style="display:none"></p>
+                    </div>
+                </section>
+
                 <!-- Rule breakdown table -->
                 <section class="dashboard-card p-6 space-y-4">
                     <div class="flex items-center justify-between border-b b-theme pb-4">
