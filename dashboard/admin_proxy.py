@@ -588,122 +588,125 @@ async def proxy_ea_generate_ai_prompt(version: str, request: Request) -> Respons
 
 
 # ---------------------------------------------------------------------------
-# Media mapping coverage — a console-side aggregation over the extraction
-# analysis summary + violations routes above, not a 1:1 proxy of a single
-# catalog-api endpoint.
+# Media mapping coverage — a console-side composition over the extraction
+# analysis summary route (for the version's provider) and catalog-api's
+# `admin_unmapped_media` route (for the reading itself), not a 1:1 proxy of a
+# single catalog-api endpoint.
 #
-# catalog-api exposes no "unmapped media" endpoint (and this program adds
-# none): the discogs-ingestion data-quality rules engine emits a warning-level
-# `format-not-recognized` violation on `releases` whenever a Discogs record's
-# raw `formats.format.@name` is absent from the vendored media taxonomy, and
-# that shows up like any other rule in the existing extraction-analysis
-# summary/violations routes. This composes those two routes into one coverage
-# reading instead of asking the admin UI to do the pagination and counting
-# itself.
+# catalog-api now exposes GET /api/admin/media/unmapped?provider=…&limit=…
+# (contract operation `admin_unmapped_media`), which ranks the raw media names
+# the ADR 0007 canonical taxonomy did not recognise. Loaders keep those names
+# in each release's `media` block under `unmapped`, split into `formats` (the
+# provider's own format names) and `descriptions` (their qualifiers), so the
+# reading comes from stored data and exists for BOTH providers — MusicBrainz
+# included, which is why this view no longer reports it as unobservable.
 #
-# MusicBrainz ingestion has no rules engine at all, so unmapped media names
-# are not flagged as violations for it and there is nothing here to read —
-# the response says so explicitly rather than reporting a misleading zero.
+# The summary route is still called first, but only to learn which provider
+# the requested extraction version belongs to; the coverage numbers themselves
+# come entirely from the new route.
 # ---------------------------------------------------------------------------
 
-_MEDIA_MAPPING_RULE = "format-not-recognized"
-_MEDIA_MAPPING_ENTITY_TYPE = "releases"
-_MEDIA_MAPPING_PAGE_SIZE = 200
-# 25 pages * 200/page = 5,000 violations aggregated per request — generous for
-# a warning-level rule's real-world volume while bounding worst-case latency
-# and upstream load if a version is flagged far more heavily than expected.
-_MEDIA_MAPPING_MAX_PAGES = 25
+# Sources this view can read, mapped 1:1 onto the upstream `provider` query
+# parameter. A summary reporting anything else is reported as unavailable
+# rather than guessed at.
+_MEDIA_MAPPING_PROVIDERS = frozenset({"discogs", "musicbrainz"})
+# How many top names to request upstream. Well inside the route's 1-200 range,
+# and the number of rows the admin UI's table is sized for.
 _MEDIA_MAPPING_TOP_N = 10
 
 
-def _aggregate_media_mapping_coverage(
-    summary: dict[str, Any],
-    violations: list[dict[str, Any]],
-    *,
-    truncated: bool,
-) -> dict[str, Any]:
-    """Aggregate `format-not-recognized`/`releases` violations into a coverage summary.
+def _compose_media_mapping_coverage(summary: dict[str, Any], coverage: dict[str, Any]) -> dict[str, Any]:
+    """Shape one `admin_unmapped_media` payload into this view's coverage response.
 
-    *violations* must already be scoped to that rule and entity type for one
-    extraction version (the caller filters server-side via the upstream
-    `rule`/`entity_type` query params — catalog-api has no distinct-count or
-    group-by endpoint, so the counting happens here). Distinct release counts
-    are computed from `record_id` rather than taken as the raw violation
-    count because a single release can carry more than one unrecognized
-    format value (a multi-format release such as "Vinyl, LP" alongside an
-    unrecognized third format), which would otherwise double-count it.
+    *coverage* is the upstream body verbatim: `provider`, `media_tagged_releases`,
+    `releases_with_unmapped`, `unmapped_rate`, `limit`, and a `top_unmapped` list of
+    `{kind, name, releases}` ordered by `releases` descending. *summary* supplies only
+    the version/source context — no number in the result is derived from it.
+
+    **This deliberately does NOT agree with the violations-based reading it replaces,
+    and the numbers will move for Discogs on the same fixtures.** The old reading
+    counted discogs-ingestion `format-not-recognized` data-quality violations for one
+    extraction version: its release count was the distinct `record_id` set across those
+    violations, its ranking was by how many violations carried each `field_value`, and
+    its denominator was the total release-entity violations of *any* rule for that
+    version. The new reading counts stored releases instead — `releases_with_unmapped`
+    is how many rows in the provider's release table carry at least one unmapped name
+    in `releases.media`, ranked by release count, against a denominator of every
+    media-tagged release. Three consequences worth stating plainly:
+
+    1. It is a release count, not an occurrence count. The taxonomy de-duplicates each
+       release's `unmapped` list, so a release naming one unrecognised format twice
+       contributes 1 here where the rules engine could emit two violations.
+    2. It covers description qualifiers as well as format names (`kind` distinguishes
+       them); the old rule only ever fired on `formats.format.@name`.
+    3. It is table-wide, not scoped to the `{version}` in this route's path. The version
+       selects the provider and nothing more, so the reading reflects everything loaded
+       for that provider rather than one extraction run.
+
+    `truncated` means the ranked list hit the requested limit and more distinct unmapped
+    names exist upstream. The counts themselves are always exact — unlike the old
+    pagination cap, which truncated the aggregation input as well.
     """
-    release_ids: set[str] = set()
-    format_counts: dict[str, int] = {}
-    for violation in violations:
-        record_id = violation.get("record_id")
-        if record_id:
-            release_ids.add(record_id)
-        format_name = violation.get("field_value") or "(empty)"
-        format_counts[format_name] = format_counts.get(format_name, 0) + 1
-
-    top_unmapped_formats = [
-        {"name": name, "count": count} for name, count in sorted(format_counts.items(), key=lambda item: (-item[1], item[0]))[:_MEDIA_MAPPING_TOP_N]
-    ]
-
-    by_entity = summary.get("by_entity") or {}
-    releases_entity = by_entity.get(_MEDIA_MAPPING_ENTITY_TYPE) or {}
-    # Total release-entity violations of ANY rule for this version — the same
-    # number already shown as the "releases" entity card total elsewhere in
-    # this view. It is a violation count, not a distinct-release count, so it
-    # is reported plainly as "flagged" rather than "analysed": there is no
-    # existing route that returns how many Discogs releases this extraction
-    # processed in total.
-    total_flagged_releases = releases_entity.get("total")
-
-    unmapped_share_of_flagged_releases_percent: float | None = None
-    if isinstance(total_flagged_releases, int) and total_flagged_releases > 0:
-        unmapped_share_of_flagged_releases_percent = round((len(release_ids) / total_flagged_releases) * 100, 1)
-
+    top_unmapped = coverage.get("top_unmapped") or []
+    limit = coverage.get("limit", _MEDIA_MAPPING_TOP_N)
     return {
         "available": True,
         "version": summary.get("version"),
         "source": summary.get("source"),
-        "releases_with_unmapped_media": len(release_ids),
-        "unmapped_violation_count": len(violations),
-        "total_flagged_releases": total_flagged_releases,
-        "unmapped_share_of_flagged_releases_percent": unmapped_share_of_flagged_releases_percent,
-        "top_unmapped_formats": top_unmapped_formats,
-        "truncated": truncated,
+        "provider": coverage.get("provider"),
+        "media_tagged_releases": coverage.get("media_tagged_releases", 0),
+        "releases_with_unmapped_media": coverage.get("releases_with_unmapped", 0),
+        "unmapped_rate": coverage.get("unmapped_rate", 0.0),
+        "limit": limit,
+        "top_unmapped_formats": [
+            {
+                "kind": entry.get("kind"),
+                "name": entry.get("name"),
+                "count": entry.get("releases", 0),
+            }
+            for entry in top_unmapped
+        ],
+        "truncated": isinstance(limit, int) and len(top_unmapped) >= limit,
     }
 
 
 def _media_mapping_unavailable(version: str, source: str | None) -> dict[str, Any]:
-    """Coverage response for a source with no data-quality rules engine (MusicBrainz today)."""
+    """Coverage response for a source the upstream media-coverage route cannot read.
+
+    Both shipped providers are readable now; this is the fallback for a summary whose
+    `source` is missing or is something neither loader produces, where naming a
+    `provider` upstream would be a guess.
+    """
     return {
         "available": False,
         "version": version,
         "source": source,
         "reason": (
-            "MusicBrainz ingestion has no data-quality rules engine, so unmapped media "
-            "names are never recorded as extraction-analysis violations. Media mapping "
-            "coverage is only observable for Discogs until a MusicBrainz-side view is added."
+            f"Media mapping coverage is read per provider from catalog-api, which recognises "
+            f"{' and '.join(sorted(_MEDIA_MAPPING_PROVIDERS))}. This extraction version reports "
+            f"source {source!r}, so there is no provider to read coverage for."
         ),
     }
 
 
 @router.get("/admin/api/extraction-analysis/{version}/media-mapping-coverage")
 async def proxy_ea_media_mapping_coverage(version: str, request: Request) -> Response:
-    """Aggregate Discogs media/format mapping coverage for one extraction version.
+    """Media/format mapping coverage for the provider behind one extraction version.
 
-    Reads the existing summary route for context (source, total flagged
-    releases) and pages through the existing violations route filtered to
-    `rule=format-not-recognized`/`entity_type=releases`, then aggregates
-    both into one coverage payload. Returns `available: false` with a reason
-    for any non-Discogs source instead of guessing at a number nothing
-    upstream can currently produce.
+    Calls the existing summary route to learn the version's `source`, then reads the
+    coverage numbers for that provider from catalog-api's `admin_unmapped_media` route.
+    Both Discogs and MusicBrainz return a real reading; see
+    `_compose_media_mapping_coverage` for why the Discogs numbers differ from the
+    violations-based reading this replaced. An unreadable source returns
+    `available: false` with a reason instead of a misleading zero; an upstream non-200
+    (including a 5xx) is passed through unchanged and an unreachable API yields 502.
     """
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
 
     headers = _auth_headers(request)
     summary_url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_SUMMARY_PATH.format(version=version))
-    violations_url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_VIOLATIONS_PATH.format(version=version))
+    unmapped_url = _build_url(catalog_admin_contract.ADMIN_UNMAPPED_MEDIA_PATH)
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -713,35 +716,19 @@ async def proxy_ea_media_mapping_coverage(version: str, request: Request) -> Res
             summary = summary_resp.json()
 
             source = summary.get("source")
-            if source != "discogs":
+            if source not in _MEDIA_MAPPING_PROVIDERS:
                 return JSONResponse(content=_media_mapping_unavailable(version, source))
 
-            all_violations: list[dict[str, Any]] = []
-            truncated = False
-            page = 1
-            while page <= _MEDIA_MAPPING_MAX_PAGES:
-                params = {
-                    "entity_type": _MEDIA_MAPPING_ENTITY_TYPE,
-                    "rule": _MEDIA_MAPPING_RULE,
-                    "page": str(page),
-                    "page_size": str(_MEDIA_MAPPING_PAGE_SIZE),
-                }
-                violations_resp = await client.get(violations_url, headers=headers, params=params)
-                if violations_resp.status_code != 200:
-                    return _ok_response(violations_resp)
-                payload = violations_resp.json()
-                all_violations.extend(payload.get("violations", []))
-                total_pages = (payload.get("pagination") or {}).get("total_pages", 1)
-                if page >= total_pages:
-                    break
-                page += 1
-            else:
-                # Loop exhausted _MEDIA_MAPPING_MAX_PAGES without a `break` —
-                # more pages remain upstream than were aggregated.
-                truncated = True
+            coverage_resp = await client.get(
+                unmapped_url,
+                headers=headers,
+                params={"provider": source, "limit": str(_MEDIA_MAPPING_TOP_N)},
+            )
+            if coverage_resp.status_code != 200:
+                return _ok_response(coverage_resp)
+            coverage = coverage_resp.json()
     except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=violations_url, error=describe_exception(exc))
+        logger.error("❌ API service unreachable", url=unmapped_url, error=describe_exception(exc))
         return _unavailable_response()
 
-    result = _aggregate_media_mapping_coverage(summary, all_violations, truncated=truncated)
-    return JSONResponse(content=result)
+    return JSONResponse(content=_compose_media_mapping_coverage(summary, coverage))

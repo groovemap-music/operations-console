@@ -1834,11 +1834,14 @@ class AdminDashboard {
         container.replaceChildren(...cards);
     }
 
-    // Media mapping coverage: releases whose Discogs `formats.format.@name` isn't in the
-    // vendored media taxonomy, surfaced by discogs-ingestion's `format-not-recognized`
-    // data-quality rule and aggregated server-side by the console's
-    // `/media-mapping-coverage` proxy route. `data` is null on a fetch failure and
-    // `{available: false, reason}` for a source with no rules engine (MusicBrainz today).
+    // Media mapping coverage: releases carrying a raw provider media name the canonical
+    // taxonomy did not recognise, kept in each release's `media.unmapped` block and ranked
+    // by catalog-api's `/api/admin/media/unmapped` route, which the console's
+    // `/media-mapping-coverage` proxy route reads per provider. Both Discogs and
+    // MusicBrainz return a real reading. `data` is null on a fetch failure and
+    // `{available: false, reason}` when the version's source names no readable provider.
+    // Counts are release counts against every media-tagged release, not rule-violation
+    // counts against one extraction version as in the earlier violations-based reading.
     _eaRenderMediaMappingCoverage(data) {
         const unavailableEl = document.getElementById('ea-media-mapping-unavailable');
         const bodyEl = document.getElementById('ea-media-mapping-body');
@@ -1857,15 +1860,13 @@ class AdminDashboard {
         const cardsContainer = document.getElementById('ea-media-mapping-cards');
         if (cardsContainer) {
             const stats = [
+                { label: 'Provider', value: data.provider ?? data.source ?? '—' },
                 { label: 'Releases with unmapped media', value: (data.releases_with_unmapped_media ?? 0).toLocaleString() },
-                { label: 'Unmapped-format violations', value: (data.unmapped_violation_count ?? 0).toLocaleString() },
-                { label: 'Distinct unrecognized formats', value: (data.top_unmapped_formats || []).length.toLocaleString() },
+                { label: 'Media-tagged releases', value: (data.media_tagged_releases ?? 0).toLocaleString() },
+                { label: 'Distinct unmapped names', value: (data.top_unmapped_formats || []).length.toLocaleString() },
             ];
-            if (data.total_flagged_releases !== null && data.total_flagged_releases !== undefined) {
-                stats.push({ label: 'Total flagged Discogs releases', value: data.total_flagged_releases.toLocaleString() });
-            }
-            if (data.unmapped_share_of_flagged_releases_percent !== null && data.unmapped_share_of_flagged_releases_percent !== undefined) {
-                stats.push({ label: 'Share of flagged releases', value: `${data.unmapped_share_of_flagged_releases_percent}%` });
+            if (data.unmapped_rate !== null && data.unmapped_rate !== undefined) {
+                stats.push({ label: 'Unmapped rate', value: `${(data.unmapped_rate * 100).toFixed(2)}%` });
             }
             const cards = stats.map(({ label, value }) => {
                 const card = document.createElement('div');
@@ -1888,22 +1889,25 @@ class AdminDashboard {
             if (formats.length === 0) {
                 const row = document.createElement('tr');
                 const cell = document.createElement('td');
-                cell.colSpan = 2;
+                cell.colSpan = 3;
                 cell.className = 'py-6 text-center t-muted';
-                cell.textContent = 'No unmapped format names found.';
+                cell.textContent = 'No unmapped media names found.';
                 row.appendChild(cell);
                 tbody.replaceChildren(row);
             } else {
-                const rows = formats.map(({ name, count }) => {
+                const rows = formats.map(({ kind, name, count }) => {
                     const row = document.createElement('tr');
                     row.className = 'border-b b-theme';
+                    const kindCell = document.createElement('td');
+                    kindCell.className = 'py-2 px-2 t-muted';
+                    kindCell.textContent = kind ?? '—';
                     const nameCell = document.createElement('td');
                     nameCell.className = 'py-2 px-2 mono';
                     nameCell.textContent = name;
                     const countCell = document.createElement('td');
                     countCell.className = 'py-2 px-2 text-right';
                     countCell.textContent = (count ?? 0).toLocaleString();
-                    row.append(nameCell, countCell);
+                    row.append(kindCell, nameCell, countCell);
                     return row;
                 });
                 tbody.replaceChildren(...rows);
@@ -1914,7 +1918,7 @@ class AdminDashboard {
         if (truncatedNote) {
             truncatedNote.style.display = data.truncated ? '' : 'none';
             truncatedNote.textContent = data.truncated
-                ? 'Results are truncated — more unmapped-format violations exist upstream than were aggregated for this view.'
+                ? 'The ranked list is capped — more distinct unmapped media names exist upstream than are shown. The counts above are exact.'
                 : '';
         }
     }

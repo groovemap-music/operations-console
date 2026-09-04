@@ -169,43 +169,48 @@ The admin panel (`http://<host>:8003/admin`) exposes two new tabs backed by the 
 
 The **Extraction Analysis** tab's single-version report includes a **Media Mapping Coverage**
 panel, alongside the existing pipeline status, skipped records, and violations-by-entity
-cards. It shows how many Discogs releases in that extraction version carry a media/format
-name the vendored taxonomy doesn't recognize — the signal that the taxonomy needs a new
-entry.
+cards. It shows how many of a provider's releases carry a media name the canonical taxonomy
+doesn't recognize — the signal that the taxonomy needs a new entry. Both providers are
+covered: selecting a MusicBrainz version gives a real reading, not a "not observable" note.
 
-For each selected extraction version, the panel shows:
+For the provider behind the selected extraction version, the panel shows:
 
-- **Releases with unmapped media** — the count of distinct Discogs releases carrying at
-  least one unrecognized `formats.format.@name` value.
-- **Unmapped-format violations** — the raw violation count (a release with more than one
-  bad format value, e.g. a multi-format release, is counted once above but contributes more
-  than one violation here).
-- **Distinct unrecognized formats** and a table of the **top unrecognized format names**
-  with their per-format release counts, so an operator can see at a glance which raw format
-  strings are missing from the taxonomy.
-- **Total flagged Discogs releases** and **share of flagged releases** — for context, the
-  total number of release-entity violations of *any* rule in this version (the same number
-  shown on the "releases" entity card above it) and what fraction of that total is due to
-  unmapped media specifically. This is a share of *flagged* releases, not of every release in
-  the extraction — no existing route reports how many Discogs releases an extraction
-  processed in total, so this panel does not claim a "% of all releases mapped" figure.
+- **Provider** — `discogs` or `musicbrainz`, resolved from the selected version's `source`.
+- **Releases with unmapped media** — releases whose stored `media` block carries at least
+  one unmapped name, either a provider format name or a description qualifier.
+- **Media-tagged releases** — the denominator: every release whose `media` column is
+  populated.
+- **Distinct unmapped names** and a table of the **top unmapped names** with a **kind**
+  (`format` or `description`) and a per-name release count, so an operator can see at a
+  glance which raw strings are missing from the taxonomy.
+- **Unmapped rate** — unmapped releases as a share of media-tagged releases.
 
-**Where the data comes from.** discogs-ingestion's data-quality rules engine emits a
-warning-level `format-not-recognized` violation whenever a release's raw format name isn't
-one of the vendored media taxonomy's known Discogs format names (see the
-`discogs-ingestion` docs for the rule itself). catalog-api has no dedicated "unmapped media"
-endpoint; the console's `/admin/api/extraction-analysis/{version}/media-mapping-coverage`
-route composes the existing `/summary` and `/violations` (filtered to
-`rule=format-not-recognized&entity_type=releases`) routes, paginating through every matching
-violation page and aggregating distinct releases and top format names itself, since
-catalog-api's violations route filters but does not count distinct records or group by
-value. That aggregation is capped at 5,000 violations (25 pages of 200); a version flagged
-more heavily than that shows a **truncated** notice under the table.
+**Where the data comes from.** catalog-api exposes
+`GET /api/admin/media/unmapped?provider=…&limit=…` (contract operation
+`admin_unmapped_media`), which ranks the raw names each loader kept under
+`releases.media -> 'unmapped'` when the [ADR 0007](https://github.com/groovemap-music/design/blob/main/docs/adr/0007-canonical-media-taxonomy.md)
+canonical taxonomy did not recognize them. The console's
+`/admin/api/extraction-analysis/{version}/media-mapping-coverage` route calls the existing
+`/summary` route only to learn which provider the selected version belongs to, then reads
+every number from that upstream route. The ranked list is capped at 10 names; when more
+distinct names exist upstream the panel shows a **truncated** notice under the table. The
+counts themselves are always exact.
 
-**MusicBrainz.** This panel is Discogs-only. MusicBrainz ingestion has no data-quality rules
-engine, so unmapped media names are never recorded as extraction-analysis violations for it
-— the panel reports why, rather than a misleading zero, whenever a MusicBrainz version is
-selected. Making MusicBrainz's `releases.media->'unmapped'` observable through the admin API
-is tracked as separate follow-up work.
+**What changed from the earlier reading.** This panel previously counted discogs-ingestion
+`format-not-recognized` data-quality violations for one extraction version. The Discogs
+numbers moved when it switched to the route above, and the two readings are not expected to
+agree:
+
+- It is a **release** count, not an occurrence count. The taxonomy de-duplicates each
+  release's `unmapped` list, so a release naming one unrecognized format twice contributes
+  1 where the rules engine could emit two violations.
+- It covers **description qualifiers** as well as format names; the old rule only ever fired
+  on `formats.format.@name`.
+- It is **table-wide, not per-version**. The selected version chooses the provider and
+  nothing more, so the reading reflects everything loaded for that provider rather than one
+  extraction run.
+- The denominator is now **media-tagged releases** rather than the count of release-entity
+  violations of any rule, so the rate is a share of real releases rather than a share of
+  flagged ones.
 
 Both tabs auto-refresh every 60 seconds and respect the currently selected time range.
