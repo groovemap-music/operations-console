@@ -26,19 +26,25 @@ if TYPE_CHECKING:
 E2E_PROJECTS = {"chromium", "firefox", "webkit", "iphone", "ipad"}
 _DEVICE_CONTEXT: dict[str, Any] = {}
 
-# Every standard OpenTelemetry variable that changes what the SDK records or exports. Mirrors
+# Every standard OpenTelemetry variable that changes what either signal records or exports —
+# tracing's sampler, exporter, and propagator selection included. Mirrors
 # groovemap-runtime's own test isolation: the telemetry suites assert on what an in-memory
 # provider recorded, so they must not inherit the ambient OpenTelemetry configuration that a
 # developer's shell or CI runner may already have set.
 _OTEL_ENVIRONMENT = (
     "OTEL_EXPORTER_OTLP_ENDPOINT",
     "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
     "OTEL_METRICS_EXEMPLAR_FILTER",
     "OTEL_METRICS_EXPORTER",
     "OTEL_METRIC_EXPORT_INTERVAL",
+    "OTEL_PROPAGATORS",
     "OTEL_RESOURCE_ATTRIBUTES",
     "OTEL_SDK_DISABLED",
     "OTEL_SERVICE_NAME",
+    "OTEL_TRACES_EXPORTER",
+    "OTEL_TRACES_SAMPLER",
+    "OTEL_TRACES_SAMPLER_ARG",
 )
 
 

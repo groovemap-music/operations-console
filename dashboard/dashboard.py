@@ -26,6 +26,7 @@ from common import (
     setup_logging,
     setup_telemetry,
     shutdown_telemetry,
+    start_event_loop_monitor,
 )
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -187,6 +188,12 @@ class DashboardApp:
             )
             logger.info("🔗 Connected to Neo4j with resilient driver")
 
+            # Neo4j Community serves no Prometheus endpoint, so the console is the program's
+            # observer for the graph store. The gauges read through this same driver, from
+            # this same loop, on the metric reader's schedule — not on the 2-second poll loop
+            # — and never touch the health polling above.
+            console_telemetry.register_neo4j_gauges(self.neo4j_driver)
+
             # Initialize resilient PostgreSQL connection
             # Parse host and port from address (POSTGRES_HOST may embed a port, e.g. a pooler)
             host, port = parse_postgres_host_port(self.config.postgres_host)
@@ -224,6 +231,10 @@ class DashboardApp:
             if self.rabbitmq:
                 await self.rabbitmq.close()
             if self.neo4j_driver:
+                # Detach the gauges before the driver closes, so a collection that lands
+                # mid-shutdown observes nothing rather than reporting a fabricated up=0 for a
+                # console that is simply no longer running.
+                console_telemetry.reset_neo4j_gauges()
                 await self.neo4j_driver.close()
             if self.postgres_conn:
                 await self.postgres_conn.close()
@@ -317,53 +328,55 @@ class DashboardApp:
         """Get status of all services."""
         services = []
 
+        # The client is built outside the per-service span so the connection pool is shared
+        # across the whole batch; each request is issued inside its own span, which is what
+        # makes the httpx instrumentor's CLIENT span a child of `console.poll {name}`.
         async with httpx.AsyncClient(timeout=5.0) as client:
             for name, url in service_configs:
-                poll_start = time.perf_counter()
-                try:
-                    response = await client.get(url)
-                    if response.status_code == 200:
-                        data = response.json()
-                        # Use actual status from service health response
-                        # Valid statuses: healthy, unhealthy, starting
-                        service_status = data.get("status", "healthy")
-                        services.append(
-                            ServiceStatus(
-                                name=name,
-                                status=service_status,
-                                last_seen=datetime.now(UTC),
-                                current_task=data.get("current_task"),
-                                progress=data.get("progress"),
-                                error=None,
-                                extraction_progress=data.get("extraction_progress"),
-                                last_extraction_time=data.get("last_extraction_time"),
+                with console_telemetry.poll_span(name) as poll:
+                    try:
+                        response = await client.get(url)
+                        if response.status_code == 200:
+                            data = response.json()
+                            # Use actual status from service health response
+                            # Valid statuses: healthy, unhealthy, starting
+                            service_status = data.get("status", "healthy")
+                            services.append(
+                                ServiceStatus(
+                                    name=name,
+                                    status=service_status,
+                                    last_seen=datetime.now(UTC),
+                                    current_task=data.get("current_task"),
+                                    progress=data.get("progress"),
+                                    error=None,
+                                    extraction_progress=data.get("extraction_progress"),
+                                    last_extraction_time=data.get("last_extraction_time"),
+                                )
                             )
-                        )
-                        console_telemetry.record_poll_duration(name, console_telemetry.POLL_OUTCOME_SUCCESS, time.perf_counter() - poll_start)
-                    else:
+                        else:
+                            services.append(
+                                ServiceStatus(
+                                    name=name,
+                                    status="unhealthy",
+                                    last_seen=datetime.now(UTC),
+                                    current_task=None,
+                                    progress=None,
+                                    error=f"HTTP {response.status_code}",
+                                )
+                            )
+                            poll.failed()
+                    except Exception as e:
                         services.append(
                             ServiceStatus(
                                 name=name,
-                                status="unhealthy",
-                                last_seen=datetime.now(UTC),
+                                status="unknown",
+                                last_seen=None,
                                 current_task=None,
                                 progress=None,
-                                error=f"HTTP {response.status_code}",
+                                error=str(e),
                             )
                         )
-                        console_telemetry.record_poll_duration(name, console_telemetry.POLL_OUTCOME_FAILURE, time.perf_counter() - poll_start)
-                except Exception as e:
-                    services.append(
-                        ServiceStatus(
-                            name=name,
-                            status="unknown",
-                            last_seen=None,
-                            current_task=None,
-                            progress=None,
-                            error=str(e),
-                        )
-                    )
-                    console_telemetry.record_poll_duration(name, console_telemetry.POLL_OUTCOME_FAILURE, time.perf_counter() - poll_start)
+                        poll.failed(e)
 
         return services
 
@@ -374,48 +387,45 @@ class DashboardApp:
         if not self.rabbitmq:
             return queues
 
-        poll_start = time.perf_counter()
-        outcome = console_telemetry.POLL_OUTCOME_SUCCESS
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                # Use RabbitMQ management API with host/credentials from config
-                management_host = self.config.rabbitmq_management_host
-                management_port = self.config.rabbitmq_management_port
-                response = await client.get(
-                    f"http://{management_host}:{management_port}/api/queues",
-                    auth=(self.config.rabbitmq_username, self.config.rabbitmq_password),
-                )
+        with console_telemetry.poll_span(console_telemetry.POLL_TARGET_RABBITMQ) as poll:
+            try:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    # Use RabbitMQ management API with host/credentials from config
+                    management_host = self.config.rabbitmq_management_host
+                    management_port = self.config.rabbitmq_management_port
+                    response = await client.get(
+                        f"http://{management_host}:{management_port}/api/queues",
+                        auth=(self.config.rabbitmq_username, self.config.rabbitmq_password),
+                    )
 
-                if response.status_code == 200:
-                    queue_data = response.json()
-                    for queue in queue_data:
-                        if queue["name"].startswith(prefix):
-                            queues.append(
-                                QueueInfo(
-                                    name=queue["name"],
-                                    messages=queue.get("messages", 0),
-                                    messages_ready=queue.get("messages_ready", 0),
-                                    messages_unacknowledged=queue.get("messages_unacknowledged", 0),
-                                    consumers=queue.get("consumers", 0),
-                                    message_rate=queue.get("message_stats", {}).get("publish_details", {}).get("rate", 0.0),
-                                    ack_rate=queue.get("message_stats", {}).get("ack_details", {}).get("rate", 0.0),
+                    if response.status_code == 200:
+                        queue_data = response.json()
+                        for queue in queue_data:
+                            if queue["name"].startswith(prefix):
+                                queues.append(
+                                    QueueInfo(
+                                        name=queue["name"],
+                                        messages=queue.get("messages", 0),
+                                        messages_ready=queue.get("messages_ready", 0),
+                                        messages_unacknowledged=queue.get("messages_unacknowledged", 0),
+                                        consumers=queue.get("consumers", 0),
+                                        message_rate=queue.get("message_stats", {}).get("publish_details", {}).get("rate", 0.0),
+                                        ack_rate=queue.get("message_stats", {}).get("ack_details", {}).get("rate", 0.0),
+                                    )
                                 )
-                            )
-                elif response.status_code == 401:
-                    outcome = console_telemetry.POLL_OUTCOME_FAILURE
-                    logger.warning("⚠️ RabbitMQ management API authentication failed. Queue metrics unavailable.")
-                else:
-                    outcome = console_telemetry.POLL_OUTCOME_FAILURE
-                    logger.warning(f"⚠️ RabbitMQ management API returned status {response.status_code}")
+                    elif response.status_code == 401:
+                        poll.failed()
+                        logger.warning("⚠️ RabbitMQ management API authentication failed. Queue metrics unavailable.")
+                    else:
+                        poll.failed()
+                        logger.warning(f"⚠️ RabbitMQ management API returned status {response.status_code}")
 
-        except httpx.ConnectError:
-            outcome = console_telemetry.POLL_OUTCOME_FAILURE
-            logger.debug("🐰 RabbitMQ management API unreachable. This is normal if RabbitMQ is not running.")
-        except Exception as e:
-            outcome = console_telemetry.POLL_OUTCOME_FAILURE
-            logger.error(f"❌ Error getting queue info: {e}")
-        finally:
-            console_telemetry.record_poll_duration(console_telemetry.POLL_TARGET_RABBITMQ, outcome, time.perf_counter() - poll_start)
+            except httpx.ConnectError as e:
+                poll.failed(e)
+                logger.debug("🐰 RabbitMQ management API unreachable. This is normal if RabbitMQ is not running.")
+            except Exception as e:
+                poll.failed(e)
+                logger.error(f"❌ Error getting queue info: {e}")
 
         return queues
 
@@ -432,116 +442,110 @@ class DashboardApp:
 
         # Check PostgreSQL
         conn = None
-        poll_start = time.perf_counter()
-        outcome = console_telemetry.POLL_OUTCOME_SUCCESS
-        try:
-            if self.postgres_conn is None:
-                raise RuntimeError("PostgreSQL resilient connection not initialized")
-            conn = await self.postgres_conn.get_connection()
-            async with conn.cursor() as cur:
-                await cur.execute(
-                    "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = %s",
-                    (self.config.postgres_database,),
-                )
-                result = await cur.fetchone()
-                connection_count = result[0] if result else 0
-
-                await cur.execute(
-                    "SELECT pg_database_size(%s)",
-                    (self.config.postgres_database,),
-                )
-                result = await cur.fetchone()
-                raw_bytes = result[0] if result else 0
-                if raw_bytes >= 1024**3:
-                    gb = raw_bytes / 1024**3
-                    db_size = f"{gb:,.2f} GB"
-                else:
-                    mb = raw_bytes / 1024**2
-                    db_size = f"{mb:,.0f} MB"
-
-            databases.append(
-                DatabaseInfo(
-                    name="PostgreSQL",
-                    status="healthy",
-                    connection_count=connection_count,
-                    size=db_size,
-                    error=None,
-                )
-            )
-        except Exception as e:
-            outcome = console_telemetry.POLL_OUTCOME_FAILURE
-            databases.append(
-                DatabaseInfo(
-                    name="PostgreSQL",
-                    status="unhealthy",
-                    connection_count=0,
-                    size=None,
-                    error=str(e),
-                )
-            )
-        finally:
-            # The resilient connection manages the single connection internally;
-            # do NOT close it here.  Autocommit is always True on pool connections,
-            # so rollback() is a no-op — omit it per the autocommit contract.
-            console_telemetry.record_poll_duration(console_telemetry.POLL_TARGET_POSTGRES, outcome, time.perf_counter() - poll_start)
-
-        # Check Neo4j
-        if self.neo4j_driver:
-            poll_start = time.perf_counter()
-            outcome = console_telemetry.POLL_OUTCOME_SUCCESS
+        with console_telemetry.poll_span(console_telemetry.POLL_TARGET_POSTGRES) as poll:
             try:
-                async with self.neo4j_driver.session() as session:
-                    result = await session.run("CALL dbms.components() YIELD name, versions")
-                    await result.single()
-
-                    # Get database size — fall back to an "unknown" marker if APOC
-                    # is not installed. node_count/rel_count stay None (never a
-                    # fabricated 0) so a fully-populated graph can never render as
-                    # "0 nodes, 0 relationships" — a hard count for an unmeasured
-                    # quantity is indistinguishable from a genuinely empty graph
-                    # and misleads operators into thinking ingestion is broken
-                    # (retained APOC fallback regression).
-                    node_count: int | None
-                    rel_count: int | None
-                    try:
-                        result = await session.run("CALL apoc.meta.stats() YIELD nodeCount, relCount")
-                        stats = await result.single()
-                        node_count = stats["nodeCount"] if stats else None
-                        rel_count = stats["relCount"] if stats else None
-                    except Exception:
-                        # APOC not installed — avoid full graph scan which is too
-                        # expensive for the 2-second metrics loop on large datasets
-                        node_count = None
-                        rel_count = None
-
-                    size = (
-                        f"{node_count:,} nodes, {rel_count:,} relationships"
-                        if node_count is not None and rel_count is not None
-                        else "unknown (APOC unavailable)"
+                if self.postgres_conn is None:
+                    raise RuntimeError("PostgreSQL resilient connection not initialized")
+                # The resilient connection manages the single connection internally; it is
+                # never closed here. Autocommit is always True on pool connections, so
+                # rollback() is a no-op — omitted per the autocommit contract.
+                conn = await self.postgres_conn.get_connection()
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT COUNT(*) FROM pg_stat_activity WHERE datname = %s",
+                        (self.config.postgres_database,),
                     )
+                    result = await cur.fetchone()
+                    connection_count = result[0] if result else 0
+
+                    await cur.execute(
+                        "SELECT pg_database_size(%s)",
+                        (self.config.postgres_database,),
+                    )
+                    result = await cur.fetchone()
+                    raw_bytes = result[0] if result else 0
+                    if raw_bytes >= 1024**3:
+                        gb = raw_bytes / 1024**3
+                        db_size = f"{gb:,.2f} GB"
+                    else:
+                        mb = raw_bytes / 1024**2
+                        db_size = f"{mb:,.0f} MB"
 
                 databases.append(
                     DatabaseInfo(
-                        name="Neo4j",
+                        name="PostgreSQL",
                         status="healthy",
-                        connection_count=1,  # Neo4j doesn't expose this easily
-                        size=size,
+                        connection_count=connection_count,
+                        size=db_size,
                         error=None,
                     )
                 )
             except Exception as e:
-                outcome = console_telemetry.POLL_OUTCOME_FAILURE
+                poll.failed(e)
                 databases.append(
                     DatabaseInfo(
-                        name="Neo4j",
+                        name="PostgreSQL",
                         status="unhealthy",
                         connection_count=0,
                         size=None,
                         error=str(e),
                     )
                 )
-            finally:
-                console_telemetry.record_poll_duration(console_telemetry.POLL_TARGET_NEO4J, outcome, time.perf_counter() - poll_start)
+
+        # Check Neo4j
+        if self.neo4j_driver:
+            with console_telemetry.poll_span(console_telemetry.POLL_TARGET_NEO4J) as poll:
+                try:
+                    async with self.neo4j_driver.session() as session:
+                        result = await session.run("CALL dbms.components() YIELD name, versions")
+                        await result.single()
+
+                        # Get database size — fall back to an "unknown" marker if APOC
+                        # is not installed. node_count/rel_count stay None (never a
+                        # fabricated 0) so a fully-populated graph can never render as
+                        # "0 nodes, 0 relationships" — a hard count for an unmeasured
+                        # quantity is indistinguishable from a genuinely empty graph
+                        # and misleads operators into thinking ingestion is broken
+                        # (retained APOC fallback regression).
+                        node_count: int | None
+                        rel_count: int | None
+                        try:
+                            result = await session.run("CALL apoc.meta.stats() YIELD nodeCount, relCount")
+                            stats = await result.single()
+                            node_count = stats["nodeCount"] if stats else None
+                            rel_count = stats["relCount"] if stats else None
+                        except Exception:
+                            # APOC not installed — avoid full graph scan which is too
+                            # expensive for the 2-second metrics loop on large datasets
+                            node_count = None
+                            rel_count = None
+
+                        size = (
+                            f"{node_count:,} nodes, {rel_count:,} relationships"
+                            if node_count is not None and rel_count is not None
+                            else "unknown (APOC unavailable)"
+                        )
+
+                    databases.append(
+                        DatabaseInfo(
+                            name="Neo4j",
+                            status="healthy",
+                            connection_count=1,  # Neo4j doesn't expose this easily
+                            size=size,
+                            error=None,
+                        )
+                    )
+                except Exception as e:
+                    poll.failed(e)
+                    databases.append(
+                        DatabaseInfo(
+                            name="Neo4j",
+                            status="unhealthy",
+                            connection_count=0,
+                            size=None,
+                            error=str(e),
+                        )
+                    )
 
         return databases
 
@@ -617,6 +621,12 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     setup_telemetry("dashboard")
     instrument_fastapi_app(_app)
     instrument_httpx()
+    # The lifespan already runs on the server's event loop, so this is the first place in the
+    # process where the loop the console actually serves on can be sampled. It returns None
+    # (after one log line) whenever there is nothing to sample into — no endpoint, metrics
+    # export off, or no `otel` extra — and shutdown_telemetry() cancels the task on the way
+    # out, so nothing here has to be undone in the shutdown half below.
+    start_event_loop_monitor()
     logger.info("🚀 Starting GrooveMap operations-console...")
 
     global dashboard
