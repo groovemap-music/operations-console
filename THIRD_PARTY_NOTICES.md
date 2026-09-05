@@ -20,7 +20,7 @@ participating copyright holders; it does not change any third-party license.
   clients. Source: <https://github.com/certifi/python-certifi>.
 - `orjson` 3.12.0 declares `MPL-2.0 AND (Apache-2.0 OR MIT)` and is a direct
   runtime dependency. Source: <https://github.com/ijl/orjson>.
-- `psycopg` 3.3.4 and `psycopg-binary` 3.3.4 are licensed under
+- `psycopg` 3.3.5 and `psycopg-binary` 3.3.5 are licensed under
   `LGPL-3.0-only` and provide PostgreSQL access. Source:
   <https://github.com/psycopg/psycopg>.
 
@@ -40,8 +40,8 @@ dependency is distributed.
 ## JavaScript build and test dependencies
 
 The direct, build-only JavaScript dependencies are `@tailwindcss/cli` 4.3.3,
-`@tailwindcss/forms` 0.5.11, `@vitest/coverage-v8` 4.1.11, `jsdom` 30.0.1,
-and `vitest` 4.1.11. Each declares the `MIT` license. The browser-coverage
+`@tailwindcss/forms` 0.5.11, `@vitest/coverage-v8` 5.0.0, `jsdom` 30.0.1,
+and `vitest` 5.0.0. Each declares the `MIT` license. The browser-coverage
 pipeline directly uses `istanbul-lib-coverage` 3.2.2,
 `istanbul-lib-instrument` 6.0.3, `istanbul-lib-report` 3.0.1, and
 `istanbul-reports` 3.2.0; each declares `BSD-3-Clause`. Exact transitive
