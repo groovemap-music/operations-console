@@ -10,16 +10,32 @@ until the installed provider changes (tracked via ``provider_generation()``), so
 never calls ``setup_telemetry`` pays only for one no-op instrument per metric. Every recording
 helper swallows its own errors: telemetry must never turn a working poll into a failure.
 
-Metric names, units, and attribute keys follow the GrooveMap OpenTelemetry conventions. All
-attribute values are closed, low-cardinality sets — never ids, hostnames, or free text.
+It also owns the one domain span this service opens, ``console.poll {target}``, through the
+:func:`poll_span` context manager. Every other span the console produces comes from the
+library: the FastAPI and httpx instrumentors supply the HTTP server and client spans, and the
+resilient Neo4j, PostgreSQL, and RabbitMQ wrappers supply the database and messaging spans.
+
+Metric names, units, attribute keys, and span names follow the GrooveMap OpenTelemetry
+conventions. All attribute values are closed, low-cardinality sets — never ids, hostnames, or
+free text, and an error is reported as status ERROR with ``error.type`` and nothing else.
 """
 
-import logging
-from threading import RLock
-from typing import Any
+from __future__ import annotations
 
-from common import get_meter
+import logging
+import time
+from contextlib import contextmanager
+from threading import RLock
+from typing import TYPE_CHECKING, Any
+
+from common import get_meter, get_tracer
 from common.telemetry import provider_generation
+from opentelemetry.context import Context
+from opentelemetry.trace import Status, StatusCode
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 logger = logging.getLogger(__name__)
@@ -98,3 +114,78 @@ def record_poll_duration(target: str, outcome: str, duration_s: float) -> None:
         _instrument(POLL_DURATION).record(duration_s, {"target": target, "outcome": outcome})
     except Exception:  # pragma: no cover - defensive
         logger.debug("Could not record %s", POLL_DURATION, exc_info=True)
+
+
+class PollOutcome:
+    """The outcome a `poll_span` block reports back to the span it runs in.
+
+    A poll's own error handling almost never lets an exception escape — `get_service_statuses`
+    turns a dead service into an "unknown" row, `get_queue_info` logs and returns an empty
+    list — so the block has to be able to say "this attempt failed" without raising. Callers
+    flip it with `failed()`; anything that does raise is caught by `poll_span` itself.
+
+    `failed()` takes the exception when there was one. A poll that died on a refused connection
+    is a real error and gets span status ERROR with that exception's class name as `error.type`,
+    exactly as if it had propagated. A poll that merely got an answer it did not want — an HTTP
+    404 from a service that is up, a 401 from the RabbitMQ management API — is a result the
+    console handled, so it is reported through the `outcome` attribute and leaves the span
+    status unset. Neither form ever attaches the exception message, its traceback, or a span
+    event: `error.type` is the whole error report.
+    """
+
+    def __init__(self) -> None:
+        """Start out successful; only an explicit `failed()` or a raised exception changes it."""
+        self.value = POLL_OUTCOME_SUCCESS
+        self.error_type: str | None = None
+
+    def failed(self, error: BaseException | None = None) -> None:
+        """Mark this poll a failure, optionally naming the exception that caused it."""
+        self.value = POLL_OUTCOME_FAILURE
+        if error is not None:
+            self.error_type = type(error).__name__
+
+
+@contextmanager
+def poll_span(target: str) -> Iterator[PollOutcome]:
+    """Run one poll of `target` inside a `console.poll {target}` root span, timing it.
+
+    The span is a trace ROOT by construction (`context=Context()` starts from an empty context
+    rather than whatever span happens to be current). Two callers reach these polls: the
+    background `collect_metrics_loop`, which has no ambient span, and the `/api/*` handlers,
+    which run inside the FastAPI instrumentor's SERVER span. Without the empty context the same
+    poll would be a root in one case and a nested child in the other, and the GrooveMap span
+    conventions name `console.poll {target}` a domain root span. The outbound httpx request,
+    and any Neo4j or PostgreSQL work the wrappers instrument, become children of it.
+
+    `target` comes from the closed poll-target set — a configured service key, or one of
+    rabbitmq / neo4j / postgres — never from a URL or a response, so the span name stays
+    low-cardinality. The reserved "loop" target is deliberately not given a span: it measures
+    the whole collection cycle, so a span for it would make every real poll span its child and
+    none of them a root.
+
+    On the way out the block's outcome is recorded twice, once as the span's `outcome`
+    attribute and once as the `groovemap.console.poll.duration` histogram point, so the two
+    signals can never disagree. An exception — one that escapes the block, or one the block
+    caught and handed to `PollOutcome.failed` — sets span status ERROR with `error.type` only:
+    no message, no stack trace, no span event carrying a payload, which is why the span opts
+    out of the SDK's own exception recording.
+    """
+    outcome = PollOutcome()
+    started = time.perf_counter()
+    span_name = f"console.poll {target}"
+    # Fetched per call rather than cached at import: tests install an in-memory tracer provider
+    # directly into `common.telemetry`, and a poll every two seconds does not need the saving.
+    tracer = get_tracer(INSTRUMENTATION_SCOPE)
+    with tracer.start_as_current_span(span_name, context=Context(), record_exception=False, set_status_on_exception=False) as span:
+        try:
+            yield outcome
+        except Exception as exc:
+            outcome.failed(exc)
+            raise
+        finally:
+            span.set_attribute("target", target)
+            span.set_attribute("outcome", outcome.value)
+            if outcome.error_type is not None:
+                span.set_attribute("error.type", outcome.error_type)
+                span.set_status(Status(StatusCode.ERROR))
+            record_poll_duration(target, outcome.value, time.perf_counter() - started)
