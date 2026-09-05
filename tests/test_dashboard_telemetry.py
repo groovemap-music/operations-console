@@ -9,6 +9,7 @@ Mirrors groovemap-runtime's own `tests/test_runtime_metrics.py` pattern: an in-m
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -564,15 +565,20 @@ class FakeNeo4jSession:
             await asyncio.sleep(self._driver.delay_s)
         if self._driver.fails:
             raise RuntimeError("Neo4j is unreachable at bolt://neo4j:7687")
-        if query.startswith("CALL dbms.queryJmx"):
+        # Routed on the exact query constants, so a query the module stops sending — or starts
+        # sending in a different shape — shows up here as an unrouted query rather than as a
+        # fake that quietly keeps answering.
+        if query == console_telemetry.NEO4J_STORE_SIZE_QUERY:
             if not self._driver.jmx_available:
                 raise RuntimeError("There is no procedure with the name `dbms.queryJmx`")
             return FakeNeo4jResult(self._driver.jmx_rows)
-        if query.startswith("SHOW TRANSACTIONS"):
+        if query == console_telemetry.NEO4J_TRANSACTION_QUERY:
             return FakeNeo4jResult([{"count": self._driver.transactions}])
-        if query.startswith("MATCH ()-["):
+        if query == console_telemetry.NEO4J_RELATIONSHIP_COUNT_QUERY:
             return FakeNeo4jResult([{"name": name, "count": count} for name, count in self._driver.relationships.items()])
-        return FakeNeo4jResult([{"name": name, "count": count} for name, count in self._driver.nodes.items()])
+        if query == console_telemetry.NEO4J_NODE_COUNT_QUERY:
+            return FakeNeo4jResult([{"name": name, "count": count} for name, count in self._driver.nodes.items()])
+        raise AssertionError(f"the gauges sent an unexpected query: {query!r}")
 
 
 class FakeNeo4jDriver:
@@ -672,14 +678,32 @@ class TestNeo4jSchemaSets:
         }
         assert len(console_telemetry.NEO4J_RELATIONSHIP_TYPES) == 21
 
-    def test_every_count_query_is_a_count_store_query(self) -> None:
-        """No count may scan the graph: at 134 million edges a scan would never finish."""
+    def test_every_count_query_keeps_the_aggregation_alone_in_its_own_return(self) -> None:
+        """The count-store plan is fragile: `count()` must be the ONLY thing its RETURN projects.
+
+        Neo4j demotes `MATCH (n:Artist) RETURN 'Artist' AS name, count(n) AS count` to a label
+        scan plus an eager aggregation — 5,001 database hits against 5,000 nodes where the count
+        store answers in 1 — because the literal is a grouping key. The scoped subquery keeps
+        the aggregation alone and projects the label outside it. This test pins that shape;
+        `TestCountStorePlansAgainstRealNeo4j` proves the plan it actually produces.
+        """
         node_branches = console_telemetry.NEO4J_NODE_COUNT_QUERY.split("\nUNION ALL\n")
-        assert node_branches == [f"MATCH (n:{label}) RETURN '{label}' AS name, count(n) AS count" for label in console_telemetry.NEO4J_NODE_LABELS]
+        assert node_branches == [
+            f"CALL () {{ MATCH (n:{label}) RETURN count(n) AS count }}\nRETURN '{label}' AS name, count"
+            for label in console_telemetry.NEO4J_NODE_LABELS
+        ]
+
         rel_branches = console_telemetry.NEO4J_RELATIONSHIP_COUNT_QUERY.split("\nUNION ALL\n")
         assert rel_branches == [
-            f"MATCH ()-[r:{name}]->() RETURN '{name}' AS name, count(r) AS count" for name in console_telemetry.NEO4J_RELATIONSHIP_TYPES
+            f"CALL () {{ MATCH ()-[r:{name}]->() RETURN count(r) AS count }}\nRETURN '{name}' AS name, count"
+            for name in console_telemetry.NEO4J_RELATIONSHIP_TYPES
         ]
+
+        for branch in node_branches + rel_branches:
+            subquery, projection = branch.split("\n")
+            inner_return = subquery[subquery.index("RETURN") : subquery.rindex("}")].strip()
+            assert inner_return in {"RETURN count(n) AS count", "RETURN count(r) AS count"}, f"the aggregation is not alone in {inner_return!r}"
+            assert projection.endswith(" AS name, count"), f"the name must be projected outside the subquery: {projection!r}"
 
     def test_the_query_budget_is_two_seconds(self) -> None:
         """The bound the slow case relies on, stated once so the tests can shorten it safely."""
@@ -844,3 +868,74 @@ class TestNeo4jGaugeRegistration:
                 await app.shutdown()
 
         assert console_telemetry._neo4j_source is None, "shutdown detaches the gauges before closing the driver"
+
+
+# The planner rule the count queries depend on is not something a fake driver can check: only
+# a real Neo4j says which operator it chose. This suite profiles the generated queries against
+# a live server and is skipped unless one is explicitly pointed at, so it never runs in CI and
+# can never be aimed at a production graph by accident. To run it locally:
+#
+#   docker run --rm -d --name neo4j-probe -p 7699:7687 -e NEO4J_AUTH=neo4j/probepassword neo4j:5-community
+#   GROOVEMAP_NEO4J_PROFILE_URI=bolt://localhost:7699 GROOVEMAP_NEO4J_PROFILE_PASSWORD=probepassword uv run pytest -k CountStorePlans
+#
+# Everything it runs is read-only and O(1) against the count store; it writes nothing.
+_PROFILE_URI = os.environ.get("GROOVEMAP_NEO4J_PROFILE_URI", "")
+_PROFILE_USER = os.environ.get("GROOVEMAP_NEO4J_PROFILE_USER", "neo4j")
+_PROFILE_PASSWORD = os.environ.get("GROOVEMAP_NEO4J_PROFILE_PASSWORD", "")
+
+_SCAN_OPERATORS = ("NodeByLabelScan", "AllNodesScan", "DirectedRelationshipTypeScan", "UndirectedRelationshipTypeScan", "RelationshipTypeScan")
+
+
+def _plan_operators(plan: dict[str, Any]) -> list[tuple[str, int]]:
+    """Flatten a profiled plan into (operator, db hits) pairs, root first."""
+    operators = [(str(plan["operatorType"]), int(plan.get("dbHits", 0)))]
+    for child in plan.get("children", []):
+        operators.extend(_plan_operators(child))
+    return operators
+
+
+@pytest.fixture(scope="module")
+def profile_session() -> Iterator[Any]:
+    """Open one session against the server the profile environment variables name."""
+    from neo4j import GraphDatabase
+
+    driver = GraphDatabase.driver(_PROFILE_URI, auth=(_PROFILE_USER, _PROFILE_PASSWORD))
+    try:
+        driver.verify_connectivity()
+    except Exception as exc:  # pragma: no cover - environment dependent
+        driver.close()
+        pytest.skip(f"no Neo4j at {_PROFILE_URI}: {type(exc).__name__}")
+    with driver.session() as session:
+        yield session
+    driver.close()
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _PROFILE_URI, reason="set GROOVEMAP_NEO4J_PROFILE_URI to profile the count queries against a live Neo4j")
+class TestCountStorePlansAgainstRealNeo4j:
+    """Prove the generated queries are answered from the count store, not by a scan."""
+
+    @pytest.mark.parametrize(
+        ("query", "expected_operator", "branches"),
+        [
+            (console_telemetry.NEO4J_NODE_COUNT_QUERY, "NodeCountFromCountStore", len(console_telemetry.NEO4J_NODE_LABELS)),
+            (console_telemetry.NEO4J_RELATIONSHIP_COUNT_QUERY, "RelationshipCountFromCountStore", len(console_telemetry.NEO4J_RELATIONSHIP_TYPES)),
+        ],
+        ids=["nodes", "relationships"],
+    )
+    def test_the_plan_reads_the_count_store_once_per_branch(self, profile_session: Any, query: str, expected_operator: str, branches: int) -> None:
+        """One database hit per branch, no scan operator, and the expected count-store leaf.
+
+        The database hit total is the assertion that matters: it is one per branch whatever the
+        graph holds, and it would rise with the node or relationship count the moment a branch
+        fell back to a scan.
+        """
+        result = profile_session.run("PROFILE " + query)
+        rows = result.data()
+        operators = _plan_operators(result.consume().profile)
+        names = [operator for operator, _ in operators]
+
+        assert len(rows) == branches
+        assert [name for name in names if name.split("@")[0] in _SCAN_OPERATORS] == [], f"a branch fell back to a scan: {names}"
+        assert any(name.split("@")[0] == expected_operator for name in names), f"{expected_operator} is not in the plan: {names}"
+        assert sum(hits for _, hits in operators) == branches, f"expected one database hit per branch, got {operators}"

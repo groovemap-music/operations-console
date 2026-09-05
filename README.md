@@ -62,7 +62,9 @@ Neo4j Community serves no Prometheus endpoint, so the console — which already 
 | `groovemap.neo4j.transactions.active` | none | `SHOW TRANSACTIONS`, including this reading's own |
 | `groovemap.neo4j.store.size.bytes` | `store` | `CALL dbms.queryJmx('org.neo4j:instance=kernel#0,name=Store sizes')`, when the procedure answers |
 
-The label and relationship-type sets are the closed sets `database-schema` defines and are pinned in this repository's tests, so a schema change fails here before it can quietly change the attribute set under a dashboard or an alert rule. Every count is answered from Neo4j's count store, never by a scan.
+The label and relationship-type sets are the closed sets `database-schema` defines and are pinned in this repository's tests, so a schema change fails here before it can quietly change the attribute set under a dashboard or an alert rule.
+
+Every count is answered from Neo4j's count store, never by a scan, and the query shape that guarantees it is exact. Neo4j plans `NodeCountFromCountStore` only when `count()` is the sole thing its `RETURN` projects, so each branch wraps the aggregation in a `CALL () { ... }` scoped subquery and projects the label outside it. Naming the label alongside the count in one `RETURN` makes it a grouping key and silently demotes the plan to a label scan: profiled on Neo4j 5.26.30 community, 5,001 database hits against 5,000 nodes where the count store answers in 1. `TestCountStorePlansAgainstRealNeo4j` profiles the generated queries against a live server to prove the plan; it skips unless `GROOVEMAP_NEO4J_PROFILE_URI` points at one.
 
 All five callbacks share one refresh per export interval. Each query is bounded to two seconds and the refresh as a whole to ten, so a slow or unreachable store can neither hold the export open nor raise into it. When a refresh fails the console reports `groovemap.neo4j.up` 0 and omits every other observation: a zero count would be indistinguishable from a genuinely empty graph. The store sizes are the one optional reading, omitted on their own when the JMX procedure is unavailable, which says nothing about the store's health.
 
