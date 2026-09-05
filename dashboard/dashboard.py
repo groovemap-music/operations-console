@@ -188,6 +188,12 @@ class DashboardApp:
             )
             logger.info("🔗 Connected to Neo4j with resilient driver")
 
+            # Neo4j Community serves no Prometheus endpoint, so the console is the program's
+            # observer for the graph store. The gauges read through this same driver, from
+            # this same loop, on the metric reader's schedule — not on the 2-second poll loop
+            # — and never touch the health polling above.
+            console_telemetry.register_neo4j_gauges(self.neo4j_driver)
+
             # Initialize resilient PostgreSQL connection
             # Parse host and port from address (POSTGRES_HOST may embed a port, e.g. a pooler)
             host, port = parse_postgres_host_port(self.config.postgres_host)
@@ -225,6 +231,10 @@ class DashboardApp:
             if self.rabbitmq:
                 await self.rabbitmq.close()
             if self.neo4j_driver:
+                # Detach the gauges before the driver closes, so a collection that lands
+                # mid-shutdown observes nothing rather than reporting a fabricated up=0 for a
+                # console that is simply no longer running.
+                console_telemetry.reset_neo4j_gauges()
                 await self.neo4j_driver.close()
             if self.postgres_conn:
                 await self.postgres_conn.close()

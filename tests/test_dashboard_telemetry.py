@@ -9,6 +9,7 @@ Mirrors groovemap-runtime's own `tests/test_runtime_metrics.py` pattern: an in-m
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -526,3 +527,320 @@ class TestTracesDisabledWithEndpointSet:
         finally:
             telemetry.shutdown_telemetry(timeout_s=0.1)
             console_telemetry.reset_instruments()
+
+
+# ---------------------------------------------------------------------------
+# gm-operations-console-wmi.2 — the Neo4j observable gauges
+# ---------------------------------------------------------------------------
+
+
+class FakeNeo4jResult:
+    """The rows one fake query answers with."""
+
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+
+    async def data(self) -> list[dict[str, Any]]:
+        """Return the rows, mirroring the async driver's `AsyncResult.data()`."""
+        return self._rows
+
+
+class FakeNeo4jSession:
+    """A session that answers each query from a scripted table and counts what it was asked."""
+
+    def __init__(self, driver: FakeNeo4jDriver) -> None:
+        self._driver = driver
+
+    async def __aenter__(self) -> FakeNeo4jSession:
+        return self
+
+    async def __aexit__(self, *_exc: Any) -> None:
+        return None
+
+    async def run(self, query: str) -> FakeNeo4jResult:
+        """Answer one query, applying whatever delay or failure the driver was scripted with."""
+        self._driver.queries.append(query)
+        if self._driver.delay_s:
+            await asyncio.sleep(self._driver.delay_s)
+        if self._driver.fails:
+            raise RuntimeError("Neo4j is unreachable at bolt://neo4j:7687")
+        if query.startswith("CALL dbms.queryJmx"):
+            if not self._driver.jmx_available:
+                raise RuntimeError("There is no procedure with the name `dbms.queryJmx`")
+            return FakeNeo4jResult(self._driver.jmx_rows)
+        if query.startswith("SHOW TRANSACTIONS"):
+            return FakeNeo4jResult([{"count": self._driver.transactions}])
+        if query.startswith("MATCH ()-["):
+            return FakeNeo4jResult([{"name": name, "count": count} for name, count in self._driver.relationships.items()])
+        return FakeNeo4jResult([{"name": name, "count": count} for name, count in self._driver.nodes.items()])
+
+
+class FakeNeo4jDriver:
+    """A scriptable stand-in for `AsyncResilientNeo4jDriver` that opens no connection."""
+
+    def __init__(
+        self,
+        *,
+        nodes: dict[str, int] | None = None,
+        relationships: dict[str, int] | None = None,
+        transactions: int = 3,
+        jmx_rows: list[dict[str, Any]] | None = None,
+        jmx_available: bool = True,
+        delay_s: float = 0.0,
+        fails: bool = False,
+    ) -> None:
+        self.nodes = nodes if nodes is not None else {label: index + 1 for index, label in enumerate(console_telemetry.NEO4J_NODE_LABELS)}
+        self.relationships = (
+            relationships
+            if relationships is not None
+            else {name: (index + 1) * 10 for index, name in enumerate(console_telemetry.NEO4J_RELATIONSHIP_TYPES)}
+        )
+        self.transactions = transactions
+        self.jmx_available = jmx_available
+        self.jmx_rows = jmx_rows if jmx_rows is not None else [{"attributes": {"TotalStoreSize": {"value": 4096}, "NodeStore": {"value": 512}}}]
+        self.delay_s = delay_s
+        self.fails = fails
+        self.sessions = 0
+        self.queries: list[str] = []
+
+    def session(self) -> FakeNeo4jSession:
+        """Open one scripted session."""
+        self.sessions += 1
+        return FakeNeo4jSession(self)
+
+
+@pytest.fixture
+def neo4j_gauges(collector: Collector) -> Iterator[Collector]:
+    """Register the Neo4j gauges against the in-memory provider and clear them afterwards."""
+    console_telemetry.reset_neo4j_gauges()
+    yield collector
+    console_telemetry.reset_neo4j_gauges()
+
+
+async def _collect(collector: Collector) -> dict[str, Any]:
+    """Collect the in-memory reader from a worker thread, as the real exporter does.
+
+    The gauge callbacks block their own thread waiting on the console's event loop, so a
+    collection driven from inside that loop would deadlock. The real periodic reader runs on
+    its own thread; this runs on one too.
+    """
+    return await asyncio.to_thread(collector.metrics)
+
+
+class TestNeo4jSchemaSets:
+    """The label and type sets the gauges report are pinned to the schema, not discovered."""
+
+    def test_node_labels_are_the_closed_schema_set(self) -> None:
+        """Ten labels; database-schema owns them, and a change there must fail here first."""
+        assert console_telemetry.NEO4J_NODE_LABELS == (
+            "Artist",
+            "Genre",
+            "Label",
+            "Master",
+            "MediaFamily",
+            "Medium",
+            "Person",
+            "Release",
+            "Style",
+            "User",
+        )
+
+    def test_relationship_types_are_the_closed_schema_set(self) -> None:
+        """The twenty-one edge types the graph schema defines, Discogs- and MusicBrainz-sourced."""
+        assert set(console_telemetry.NEO4J_RELATIONSHIP_TYPES) == {
+            "ALIAS_OF",
+            "BY",
+            "COLLABORATED_WITH",
+            "COLLECTED",
+            "CREDITED_ON",
+            "DERIVED_FROM",
+            "FOUNDED",
+            "IN_FAMILY",
+            "IS",
+            "ISSUED_ON",
+            "MEMBER_OF",
+            "ON",
+            "PART_OF",
+            "RENAMED_TO",
+            "SAME_AS",
+            "SUBGROUP_OF",
+            "SUBLABEL_OF",
+            "SUPPORTED",
+            "TAUGHT",
+            "TRIBUTE_TO",
+            "WANTS",
+        }
+        assert len(console_telemetry.NEO4J_RELATIONSHIP_TYPES) == 21
+
+    def test_every_count_query_is_a_count_store_query(self) -> None:
+        """No count may scan the graph: at 134 million edges a scan would never finish."""
+        node_branches = console_telemetry.NEO4J_NODE_COUNT_QUERY.split("\nUNION ALL\n")
+        assert node_branches == [f"MATCH (n:{label}) RETURN '{label}' AS name, count(n) AS count" for label in console_telemetry.NEO4J_NODE_LABELS]
+        rel_branches = console_telemetry.NEO4J_RELATIONSHIP_COUNT_QUERY.split("\nUNION ALL\n")
+        assert rel_branches == [
+            f"MATCH ()-[r:{name}]->() RETURN '{name}' AS name, count(r) AS count" for name in console_telemetry.NEO4J_RELATIONSHIP_TYPES
+        ]
+
+    def test_the_query_budget_is_two_seconds(self) -> None:
+        """The bound the slow case relies on, stated once so the tests can shorten it safely."""
+        assert console_telemetry.NEO4J_QUERY_TIMEOUT_S == 2.0
+
+
+class TestNeo4jGaugesHealthy:
+    """A store that answers: every gauge reports, and one refresh serves the whole cycle."""
+
+    @pytest.mark.asyncio
+    async def test_every_gauge_reports_from_a_single_shared_refresh(self, neo4j_gauges: Collector) -> None:
+        """Five callbacks, one session, one set of queries."""
+        driver = FakeNeo4jDriver()
+        console_telemetry.register_neo4j_gauges(driver)
+
+        await _collect(neo4j_gauges)
+
+        assert neo4j_gauges.value(console_telemetry.NEO4J_UP) == 1
+        assert driver.sessions == 1, "the five callbacks share one refresh"
+        assert len(driver.queries) == 4, "nodes, relationships, transactions, store sizes"
+
+        nodes = {dict(point.attributes)["label"]: point.value for point in neo4j_gauges.points(console_telemetry.NEO4J_NODES)}
+        assert nodes == driver.nodes
+        relationships = {dict(point.attributes)["type"]: point.value for point in neo4j_gauges.points(console_telemetry.NEO4J_RELATIONSHIPS)}
+        assert relationships == driver.relationships
+        assert neo4j_gauges.value(console_telemetry.NEO4J_TRANSACTIONS_ACTIVE) == 3
+        stores = {dict(point.attributes)["store"]: point.value for point in neo4j_gauges.points(console_telemetry.NEO4J_STORE_SIZE_BYTES)}
+        assert stores == {"total": 4096, "node": 512}
+
+    @pytest.mark.asyncio
+    async def test_a_second_collection_within_the_interval_reuses_the_snapshot(
+        self, neo4j_gauges: Collector, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ "At most once per export interval" is the point: a spare collection costs no query."""
+        monkeypatch.setenv("OTEL_METRIC_EXPORT_INTERVAL", "600000")
+        driver = FakeNeo4jDriver()
+        console_telemetry.register_neo4j_gauges(driver)
+
+        await _collect(neo4j_gauges)
+        await _collect(neo4j_gauges)
+
+        assert driver.sessions == 1
+
+    @pytest.mark.asyncio
+    async def test_a_collection_after_the_interval_refreshes(self, neo4j_gauges: Collector, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Once the snapshot is older than half an interval the next callback refetches it."""
+        monkeypatch.setenv("OTEL_METRIC_EXPORT_INTERVAL", "2000")
+        driver = FakeNeo4jDriver()
+        console_telemetry.register_neo4j_gauges(driver)
+
+        await _collect(neo4j_gauges)
+        moved_on = time.monotonic() + 5.0
+        monkeypatch.setattr(console_telemetry, "_monotonic", lambda: moved_on)
+        await _collect(neo4j_gauges)
+
+        assert driver.sessions == 2
+
+    @pytest.mark.asyncio
+    async def test_store_sizes_are_omitted_when_the_jmx_procedure_is_absent(self, neo4j_gauges: Collector) -> None:
+        """A Neo4j without dbms.queryJmx is healthy; only its store sizes are unknown."""
+        driver = FakeNeo4jDriver(jmx_available=False)
+        console_telemetry.register_neo4j_gauges(driver)
+
+        await _collect(neo4j_gauges)
+
+        assert neo4j_gauges.value(console_telemetry.NEO4J_UP) == 1
+        assert neo4j_gauges.points(console_telemetry.NEO4J_STORE_SIZE_BYTES) == []
+        assert len(neo4j_gauges.points(console_telemetry.NEO4J_NODES)) == len(console_telemetry.NEO4J_NODE_LABELS)
+
+
+class TestNeo4jGaugesUnavailable:
+    """A store that is down or too slow reports up=0 and nothing else — never a zero count."""
+
+    @pytest.mark.asyncio
+    async def test_a_failing_store_reports_only_up_zero(self, neo4j_gauges: Collector) -> None:
+        """Zeros here would read as "the graph emptied", which is a very different incident."""
+        console_telemetry.register_neo4j_gauges(FakeNeo4jDriver(fails=True))
+
+        await _collect(neo4j_gauges)
+
+        assert neo4j_gauges.value(console_telemetry.NEO4J_UP) == 0
+        assert neo4j_gauges.points(console_telemetry.NEO4J_NODES) == []
+        assert neo4j_gauges.points(console_telemetry.NEO4J_RELATIONSHIPS) == []
+        assert neo4j_gauges.points(console_telemetry.NEO4J_TRANSACTIONS_ACTIVE) == []
+        assert neo4j_gauges.points(console_telemetry.NEO4J_STORE_SIZE_BYTES) == []
+
+    @pytest.mark.asyncio
+    async def test_a_slow_store_is_cut_off_and_reported_down(self, neo4j_gauges: Collector, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The real budget is two seconds; shortened here so the suite does not wait for it."""
+        monkeypatch.setattr(console_telemetry, "NEO4J_QUERY_TIMEOUT_S", 0.05)
+        driver = FakeNeo4jDriver(delay_s=1.0)
+        console_telemetry.register_neo4j_gauges(driver)
+
+        started = time.monotonic()
+        await _collect(neo4j_gauges)
+        elapsed = time.monotonic() - started
+
+        assert neo4j_gauges.value(console_telemetry.NEO4J_UP) == 0
+        assert neo4j_gauges.points(console_telemetry.NEO4J_NODES) == []
+        assert elapsed < 1.0, "a slow store must not hold the export open for its own timeout"
+
+    @pytest.mark.asyncio
+    async def test_the_callbacks_report_nothing_once_the_driver_is_detached(self, neo4j_gauges: Collector) -> None:
+        """After shutdown there is no console to be up or down, so nothing is claimed."""
+        console_telemetry.register_neo4j_gauges(FakeNeo4jDriver())
+        await _collect(neo4j_gauges)
+        console_telemetry.reset_neo4j_gauges()
+
+        await _collect(neo4j_gauges)
+
+        assert neo4j_gauges.points(console_telemetry.NEO4J_UP) == []
+
+    @pytest.mark.asyncio
+    async def test_a_closed_event_loop_never_raises_into_the_exporter(self, neo4j_gauges: Collector, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The loop can go away between two collections; the callbacks still have to return."""
+        console_telemetry.register_neo4j_gauges(FakeNeo4jDriver())
+        await _collect(neo4j_gauges)
+        source = console_telemetry._neo4j_source
+        assert source is not None
+
+        dead = asyncio.new_event_loop()
+        dead.close()
+        source._loop = dead
+        moved_on = time.monotonic() + 3600.0
+        monkeypatch.setattr(console_telemetry, "_monotonic", lambda: moved_on)
+
+        await _collect(neo4j_gauges)
+
+        assert neo4j_gauges.value(console_telemetry.NEO4J_UP) == 0
+
+
+class TestNeo4jGaugeRegistration:
+    """Registration is part of the console's startup and detaches on the way out."""
+
+    @pytest.mark.asyncio
+    async def test_startup_registers_the_gauges_against_the_live_driver(
+        self, mock_dashboard_config: DashboardConfig, dashboard_mock_amqp_connection: AsyncMock, dashboard_mock_psycopg_connect: AsyncMock
+    ) -> None:
+        """The driver the gauges read is the one the console just built, not a second one."""
+        from dashboard.dashboard import DashboardApp
+
+        driver = FakeNeo4jDriver()
+        console_telemetry.reset_neo4j_gauges()
+        with (
+            patch("dashboard.dashboard.get_config", return_value=mock_dashboard_config),
+            patch("dashboard.dashboard.AsyncResilientRabbitMQ", return_value=dashboard_mock_amqp_connection),
+            patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=driver),
+            patch("dashboard.dashboard.AsyncResilientPostgreSQL", return_value=dashboard_mock_psycopg_connect),
+            patch("dashboard.dashboard.DashboardApp.collect_metrics_loop", new_callable=AsyncMock),
+        ):
+            app = DashboardApp()
+            await app.startup()
+            try:
+                source = console_telemetry._neo4j_source
+                assert source is not None
+                assert source._driver is driver
+            finally:
+                app.update_task = None
+                app.rabbitmq = None
+                app.postgres_conn = None
+                driver.close = AsyncMock()
+                await app.shutdown()
+
+        assert console_telemetry._neo4j_source is None, "shutdown detaches the gauges before closing the driver"

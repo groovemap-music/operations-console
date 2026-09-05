@@ -22,20 +22,25 @@ free text, and an error is reported as status ERROR with ``error.type`` and noth
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from threading import RLock
 from typing import TYPE_CHECKING, Any
 
 from common import get_meter, get_tracer
 from common.telemetry import provider_generation
 from opentelemetry.context import Context
+from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.trace import Status, StatusCode
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from asyncio import AbstractEventLoop
+    from collections.abc import Iterable, Iterator
 
 
 logger = logging.getLogger(__name__)
@@ -189,3 +194,381 @@ def poll_span(target: str) -> Iterator[PollOutcome]:
                 span.set_attribute("error.type", outcome.error_type)
                 span.set_status(Status(StatusCode.ERROR))
             record_poll_duration(target, outcome.value, time.perf_counter() - started)
+
+
+# ---------------------------------------------------------------------------
+# Neo4j observable gauges
+#
+# Neo4j Community exposes no Prometheus endpoint, so the console — which already holds a driver
+# and already polls every target — is the program's designated observer for the graph store.
+# ---------------------------------------------------------------------------
+
+NEO4J_UP = "groovemap.neo4j.up"
+NEO4J_NODES = "groovemap.neo4j.nodes"
+NEO4J_RELATIONSHIPS = "groovemap.neo4j.relationships"
+NEO4J_TRANSACTIONS_ACTIVE = "groovemap.neo4j.transactions.active"
+NEO4J_STORE_SIZE_BYTES = "groovemap.neo4j.store.size.bytes"
+
+# The closed node-label and relationship-type sets the GrooveMap graph schema defines.
+# database-schema owns the schema itself; these are the label and type names its constraints
+# and the deployment architecture inventory enumerate, pinned here so a schema change that
+# adds or drops one fails this repository's tests instead of silently changing the metric's
+# attribute set under the dashboards and alert rules that read it.
+NEO4J_NODE_LABELS: tuple[str, ...] = (
+    "Artist",
+    "Genre",
+    "Label",
+    "Master",
+    "MediaFamily",
+    "Medium",
+    "Person",
+    "Release",
+    "Style",
+    "User",
+)
+
+NEO4J_RELATIONSHIP_TYPES: tuple[str, ...] = (
+    # Discogs-sourced and taxonomy edges.
+    "ALIAS_OF",
+    "BY",
+    "COLLECTED",
+    "CREDITED_ON",
+    "DERIVED_FROM",
+    "IN_FAMILY",
+    "IS",
+    "ISSUED_ON",
+    "MEMBER_OF",
+    "ON",
+    "PART_OF",
+    "SAME_AS",
+    "SUBLABEL_OF",
+    "WANTS",
+    # MusicBrainz-sourced edges, all carrying source: 'musicbrainz'.
+    "COLLABORATED_WITH",
+    "FOUNDED",
+    "RENAMED_TO",
+    "SUBGROUP_OF",
+    "SUPPORTED",
+    "TAUGHT",
+    "TRIBUTE_TO",
+)
+
+# The "Store sizes" JMX bean's attributes, mapped to the closed `store` attribute values the
+# gauge reports. Anything the bean returns that is not listed here is dropped rather than
+# passed through, so a Neo4j upgrade cannot widen the attribute set on its own.
+NEO4J_STORE_ATTRIBUTES: dict[str, str] = {
+    "ArrayStore": "array",
+    "CountStore": "count",
+    "IndexStore": "index",
+    "LabelStore": "label",
+    "LogicalLog": "transaction_log",
+    "NodeStore": "node",
+    "PropertyStore": "property",
+    "RelationshipStore": "relationship",
+    "SchemaStore": "schema",
+    "StringStore": "string",
+    "TotalStoreSize": "total",
+}
+
+# One UNION ALL round trip per group instead of thirty-one. Every branch is exactly the
+# count-store form (`MATCH (n:Label) RETURN count(n)`), which Neo4j answers from its counts
+# without touching a node or a relationship, so the whole query is O(labels), not O(graph).
+NEO4J_NODE_COUNT_QUERY = "\nUNION ALL\n".join(f"MATCH (n:{label}) RETURN '{label}' AS name, count(n) AS count" for label in NEO4J_NODE_LABELS)
+NEO4J_RELATIONSHIP_COUNT_QUERY = "\nUNION ALL\n".join(
+    f"MATCH ()-[r:{rel}]->() RETURN '{rel}' AS name, count(r) AS count" for rel in NEO4J_RELATIONSHIP_TYPES
+)
+NEO4J_TRANSACTION_QUERY = "SHOW TRANSACTIONS YIELD transactionId RETURN count(*) AS count"
+NEO4J_STORE_SIZE_QUERY = "CALL dbms.queryJmx('org.neo4j:instance=kernel#0,name=Store sizes')"
+
+# Each query gets its own two-second budget, and the refresh as a whole gets one that covers
+# every query plus the hand-off, so the exporter thread has a hard bound even if the driver
+# stops honouring cancellation.
+NEO4J_QUERY_TIMEOUT_S = 2.0
+NEO4J_REFRESH_BUDGET_S = 10.0
+
+_DEFAULT_EXPORT_INTERVAL_MS = 60000.0
+
+
+@dataclass(frozen=True)
+class Neo4jSnapshot:
+    """One reading of the graph store, shared by every gauge callback in an export cycle.
+
+    `up` false is the only thing reported when a refresh fails: the other fields stay empty so
+    the callbacks observe nothing at all. A zero would be indistinguishable from a genuinely
+    empty graph and would drag every dashboard average and every alert threshold down with it,
+    which is exactly the failure mode the console's own APOC fallback already guards against.
+    """
+
+    up: bool
+    nodes: dict[str, int] = field(default_factory=dict)
+    relationships: dict[str, int] = field(default_factory=dict)
+    transactions_active: int | None = None
+    store_sizes: dict[str, int] = field(default_factory=dict)
+
+
+NEO4J_DOWN = Neo4jSnapshot(up=False)
+
+
+def _export_interval_s() -> float:
+    """Return the configured metric export interval in seconds, defaulting to the SDK's 60."""
+    raw = os.environ.get("OTEL_METRIC_EXPORT_INTERVAL", "")
+    try:
+        interval_ms = float(raw)
+    except ValueError:
+        interval_ms = _DEFAULT_EXPORT_INTERVAL_MS
+    if interval_ms <= 0:
+        interval_ms = _DEFAULT_EXPORT_INTERVAL_MS
+    return interval_ms / 1000.0
+
+
+def _monotonic() -> float:
+    """Return the monotonic clock the snapshot's freshness is measured against.
+
+    Indirected through this function so a test can move the clock forward without patching the
+    `time` module itself, which the event loop also reads.
+    """
+    return time.monotonic()
+
+
+def _refresh_ttl_s() -> float:
+    """Return how long a snapshot stays fresh: half an export interval.
+
+    All five callbacks run back to back inside one collection, milliseconds apart, so half an
+    interval is comfortably long enough for the last of them to reuse what the first fetched
+    and comfortably short enough that the next collection, a full interval later, always
+    refreshes. That is the whole "one refresh per export interval" guarantee.
+    """
+    return max(1.0, _export_interval_s() / 2.0)
+
+
+class _Neo4jGaugeSource:
+    """Owns the shared snapshot and the hand-off from the exporter thread to the event loop.
+
+    The gauge callbacks run on the metric reader's own thread while the driver they need is
+    async and bound to the console's event loop, so every refresh is submitted to that loop
+    with `run_coroutine_threadsafe` and waited on with a hard timeout. Nothing here raises: a
+    failed, timed-out, or un-submittable refresh becomes `NEO4J_DOWN`, which reports up=0 and
+    nothing else.
+    """
+
+    def __init__(self, driver: Any, loop: AbstractEventLoop) -> None:
+        """Bind the source to one driver and the loop that driver's coroutines must run on."""
+        self._driver = driver
+        self._loop = loop
+        self._guard = RLock()
+        self._snapshot: Neo4jSnapshot | None = None
+        self._refreshed_at = 0.0
+
+    def snapshot(self) -> Neo4jSnapshot:
+        """Return the current reading, refreshing it at most once per export interval."""
+        with self._guard:
+            now = _monotonic()
+            if self._snapshot is not None and now - self._refreshed_at < _refresh_ttl_s():
+                return self._snapshot
+            self._snapshot = self._refresh()
+            self._refreshed_at = now
+            return self._snapshot
+
+    def _refresh(self) -> Neo4jSnapshot:
+        """Run one read on the console's event loop, bounded, never raising."""
+        read = self._read()
+        try:
+            pending = asyncio.run_coroutine_threadsafe(read, self._loop)
+        except Exception:
+            # The loop is closed or shutting down — the console is on its way out. Closing the
+            # coroutine that was never scheduled keeps a "never awaited" warning out of the
+            # exporter thread's log.
+            read.close()
+            logger.debug("Could not submit the Neo4j gauge refresh", exc_info=True)
+            return NEO4J_DOWN
+        try:
+            return pending.result(timeout=NEO4J_REFRESH_BUDGET_S)
+        except Exception:
+            pending.cancel()
+            logger.debug("Neo4j gauge refresh did not complete", exc_info=True)
+            return NEO4J_DOWN
+
+    async def _read(self) -> Neo4jSnapshot:
+        """Read every gauge's backing number in one session, or report the store down."""
+        try:
+            async with self._driver.session() as session:
+                nodes = await self._counts(session, NEO4J_NODE_COUNT_QUERY, NEO4J_NODE_LABELS)
+                relationships = await self._counts(session, NEO4J_RELATIONSHIP_COUNT_QUERY, NEO4J_RELATIONSHIP_TYPES)
+                transactions = await self._transactions(session)
+                # The JMX bean is the one optional reading: it is absent on some deployments,
+                # and its absence says nothing about whether the store is healthy.
+                stores = await self._store_sizes(session)
+        except Exception:
+            logger.debug("Neo4j is not answering the gauge queries", exc_info=True)
+            return NEO4J_DOWN
+        return Neo4jSnapshot(up=True, nodes=nodes, relationships=relationships, transactions_active=transactions, store_sizes=stores)
+
+    @staticmethod
+    async def _rows(session: Any, query: str) -> list[dict[str, Any]]:
+        """Run one query and read its rows, both inside a single two-second budget."""
+
+        async def run() -> list[dict[str, Any]]:
+            result = await session.run(query)
+            rows: list[dict[str, Any]] = await result.data()
+            return rows
+
+        return await asyncio.wait_for(run(), NEO4J_QUERY_TIMEOUT_S)
+
+    async def _counts(self, session: Any, query: str, expected: tuple[str, ...]) -> dict[str, int]:
+        """Return {name: count} for the closed set `expected`, ignoring anything else."""
+        allowed = set(expected)
+        counts: dict[str, int] = {}
+        for row in await self._rows(session, query):
+            name = row.get("name")
+            count = row.get("count")
+            if isinstance(name, str) and name in allowed and isinstance(count, int):
+                counts[name] = count
+        return counts
+
+    async def _transactions(self, session: Any) -> int | None:
+        """Return the number of transactions Neo4j currently reports, including this one."""
+        for row in await self._rows(session, NEO4J_TRANSACTION_QUERY):
+            count = row.get("count")
+            if isinstance(count, int):
+                return count
+        return None
+
+    async def _store_sizes(self, session: Any) -> dict[str, int]:
+        """Return {store: bytes} from the JMX bean, or nothing at all when it does not answer.
+
+        Every other reading has already succeeded by the time this runs, so a missing procedure
+        — it is not installed on every Neo4j edition or configuration — must not turn a healthy
+        store into up=0. The sizes are simply omitted.
+        """
+        try:
+            rows = await self._rows(session, NEO4J_STORE_SIZE_QUERY)
+        except Exception:
+            logger.debug("Neo4j did not answer the Store sizes JMX query", exc_info=True)
+            return {}
+        sizes: dict[str, int] = {}
+        for row in rows:
+            attributes = row.get("attributes")
+            if not isinstance(attributes, dict):
+                continue
+            for jmx_name, store in NEO4J_STORE_ATTRIBUTES.items():
+                entry = attributes.get(jmx_name)
+                value = entry.get("value") if isinstance(entry, dict) else entry
+                if isinstance(value, int) and not isinstance(value, bool):
+                    sizes[store] = value
+        return sizes
+
+
+_neo4j_source: _Neo4jGaugeSource | None = None
+_neo4j_gauge_generation = -1
+
+
+def _neo4j_snapshot() -> Neo4jSnapshot | None:
+    """Return the shared snapshot, or None when no driver has been registered."""
+    with _lock:
+        source = _neo4j_source
+    return None if source is None else source.snapshot()
+
+
+def _observe_up(options: CallbackOptions) -> Iterable[Observation]:  # noqa: ARG001
+    """Observe 1 when the last refresh answered, 0 when it did not."""
+    try:
+        snapshot = _neo4j_snapshot()
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("Could not observe %s", NEO4J_UP, exc_info=True)
+        return []
+    return [] if snapshot is None else [Observation(1 if snapshot.up else 0)]
+
+
+def _observe_nodes(options: CallbackOptions) -> Iterable[Observation]:  # noqa: ARG001
+    """Observe one node count per schema label, or nothing while the store is down."""
+    try:
+        snapshot = _neo4j_snapshot()
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("Could not observe %s", NEO4J_NODES, exc_info=True)
+        return []
+    if snapshot is None:
+        return []
+    return [Observation(count, {"label": label}) for label, count in snapshot.nodes.items()]
+
+
+def _observe_relationships(options: CallbackOptions) -> Iterable[Observation]:  # noqa: ARG001
+    """Observe one relationship count per schema type, or nothing while the store is down."""
+    try:
+        snapshot = _neo4j_snapshot()
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("Could not observe %s", NEO4J_RELATIONSHIPS, exc_info=True)
+        return []
+    if snapshot is None:
+        return []
+    return [Observation(count, {"type": name}) for name, count in snapshot.relationships.items()]
+
+
+def _observe_transactions(options: CallbackOptions) -> Iterable[Observation]:  # noqa: ARG001
+    """Observe the active transaction count, or nothing while the store is down."""
+    try:
+        snapshot = _neo4j_snapshot()
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("Could not observe %s", NEO4J_TRANSACTIONS_ACTIVE, exc_info=True)
+        return []
+    if snapshot is None or snapshot.transactions_active is None:
+        return []
+    return [Observation(snapshot.transactions_active)]
+
+
+def _observe_store_sizes(options: CallbackOptions) -> Iterable[Observation]:  # noqa: ARG001
+    """Observe one size per store file, or nothing when the JMX bean did not answer."""
+    try:
+        snapshot = _neo4j_snapshot()
+    except Exception:  # pragma: no cover - defensive
+        logger.debug("Could not observe %s", NEO4J_STORE_SIZE_BYTES, exc_info=True)
+        return []
+    if snapshot is None:
+        return []
+    return [Observation(size, {"store": store}) for store, size in snapshot.store_sizes.items()]
+
+
+def register_neo4j_gauges(driver: Any) -> None:
+    """Point the Neo4j gauges at `driver`, registering them against the current provider.
+
+    Call it from the console's running event loop once telemetry is configured — the callbacks
+    submit their work back to whichever loop is running here. Calling it again swaps the driver
+    without re-registering the instruments, so a restart inside one process cannot make the SDK
+    complain about duplicates or leave a second set of callbacks reading a closed driver.
+    """
+    global _neo4j_source, _neo4j_gauge_generation
+
+    loop = asyncio.get_running_loop()
+    generation = provider_generation()
+    with _lock:
+        _neo4j_source = _Neo4jGaugeSource(driver, loop)
+        if _neo4j_gauge_generation == generation:
+            return
+        _neo4j_gauge_generation = generation
+
+    meter = get_meter(INSTRUMENTATION_SCOPE)
+    meter.create_observable_gauge(NEO4J_UP, callbacks=[_observe_up], description="1 when Neo4j answered the last gauge refresh, 0 when it did not.")
+    meter.create_observable_gauge(NEO4J_NODES, callbacks=[_observe_nodes], description="Number of nodes carrying each schema label.")
+    meter.create_observable_gauge(NEO4J_RELATIONSHIPS, callbacks=[_observe_relationships], description="Number of relationships of each schema type.")
+    meter.create_observable_gauge(
+        NEO4J_TRANSACTIONS_ACTIVE,
+        callbacks=[_observe_transactions],
+        description="Transactions Neo4j currently reports, including this reading's own.",
+    )
+    meter.create_observable_gauge(
+        NEO4J_STORE_SIZE_BYTES, callbacks=[_observe_store_sizes], unit="By", description="On-disk size of each Neo4j store file, when JMX reports it."
+    )
+
+
+def reset_neo4j_gauges() -> None:
+    """Detach the Neo4j gauges from their driver so the callbacks observe nothing.
+
+    Used on shutdown, when the driver is about to close, and as the tests' seam. The
+    instruments themselves stay registered — the SDK has no way to remove one — but with no
+    source behind them they report nothing rather than a fabricated up=0 for a console that is
+    simply no longer running.
+    """
+    global _neo4j_source, _neo4j_gauge_generation
+
+    with _lock:
+        _neo4j_source = None
+        _neo4j_gauge_generation = -1
