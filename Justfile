@@ -8,8 +8,8 @@ setup:
     npm ci --ignore-scripts
 
 source-check:
-    uvx --from ruff==0.16.4 ruff format --check .
-    uvx --from ruff==0.16.4 ruff check .
+    uvx --from ruff==0.16.6 ruff format --check .
+    uvx --from ruff==0.16.6 ruff check .
     python scripts/check-contracts.py
     python scripts/check-brand.py
     python scripts/check-repository-compliance.py
