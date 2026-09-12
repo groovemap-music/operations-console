@@ -19,6 +19,9 @@ The stable repository interface is:
 - `just setup` — install the locked Python and Node environments.
 - `just check` — run the authoritative pre-merge gate.
 - `just test` — run non-browser tests with coverage.
+- `just js-test` — run the browser JavaScript unit tests.
+- `just coverage` — produce Python and JavaScript coverage reports.
+- `just secret-scan` — scan Git history and the working tree without running unrelated checks.
 - `just build` — build deterministic CSS, wheel, and source distribution.
 - `just e2e-setup` / `just e2e` — install Chromium, Firefox, and WebKit, then run the desktop and emulated mobile browser matrix.
 - `just image` — build and inspect the non-root production image.
@@ -31,7 +34,7 @@ The stable repository interface is:
 uv run operations-console
 ```
 
-The service listens on port 8003. Configure the RabbitMQ, Neo4j, PostgreSQL, Redis, and catalog API connections through the deployment repository. Supply credentials through its secret mechanism; never commit them here.
+The service listens on port 8003. Configure its RabbitMQ, Neo4j, PostgreSQL, and catalog API connections through the deployment repository. Supply credentials through its secret mechanism; never commit them here. The exact environment and `_FILE` interfaces are listed in the [configuration guide](docs/configuration.md).
 
 The container build injects its full Git revision into both the OCI metadata and the console's visible source/legal link. A released console therefore links to the corresponding source tree for the exact running revision. Dependency and first-party trademark notices are recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [NOTICE](NOTICE).
 
@@ -80,7 +83,7 @@ Every other span comes from the library: `SERVER` and `CLIENT` spans from the Fa
 
 ## Repository boundary
 
-`catalog-api` owns authentication and operator endpoints. `catalog-ingestion` owns catalog-event exchange and queue naming. `database-schema` owns datastore compatibility. This repository consumes immutable promoted copies of those contracts; it does not import producer source or require sibling checkouts at runtime.
+`catalog-api` owns authentication and operator endpoints. `discogs-ingestion` and `musicbrainz-ingestion` independently own their source-specific catalog-event exchanges and queue contracts. `database-schema` owns datastore compatibility. This repository consumes immutable promoted copies of those contracts; it does not import producer source or require sibling checkouts at runtime.
 
 Canonical editable branding belongs to the public [`groovemap-music/design`](https://github.com/groovemap-music/design) repository. `dashboard/static/brand/` contains promoted deterministic render outputs with recorded hashes and the full design source commit. Run `scripts/promote-brand.sh` against the expected clean design checkout to update them; set `GROOVEMAP_DESIGN_REPO` when that checkout is not at `../design`. Use of the GrooveMap name and logos is governed separately by the design repository's [trademark-use policy](https://github.com/groovemap-music/design/blob/59c9fd3c8bbdfa676e0b7bb3d463fc766c1f3c0d/TRADEMARKS.md).
 
