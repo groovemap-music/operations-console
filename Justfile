@@ -13,6 +13,7 @@ source-check:
     python scripts/check-contracts.py
     python scripts/check-brand.py
     python scripts/check-repository-compliance.py
+    python scripts/check-docs.py
 
 secret-scan:
     gitleaks git --redact --no-banner

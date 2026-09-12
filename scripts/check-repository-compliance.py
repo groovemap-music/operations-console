@@ -173,6 +173,44 @@ active_text = "\n".join(path.read_text() for path in active_paths)
 legacy_product_name = "discogs" + "ography"
 assert legacy_product_name not in active_text.lower()
 assert "```mermaid" in (ROOT / "docs/architecture.md").read_text()
+assert "`catalog-ingestion`" not in active_text
+for producer in ("discogs-ingestion", "musicbrainz-ingestion"):
+    assert producer in active_text
+
+architecture = (ROOT / "docs/architecture.md").read_text()
+assert "DiscogsIngestion[discogs-ingestion]" in architecture
+assert "MusicBrainzIngestion[musicbrainz-ingestion]" in architecture
+for source_path in (
+    ROOT / "contracts/catalog-api/operations-console/v1/source.json",
+    ROOT / "contracts/catalog-events/v1/discogs/source.json",
+    ROOT / "contracts/catalog-events/v1/musicbrainz/source.json",
+    ROOT / "contracts/persistence/v1/source.json",
+    ROOT / "dashboard/static/brand/source.json",
+):
+    promoted_source = json.loads(source_path.read_text())
+    assert promoted_source["producer_commit"] in architecture
+
+admin_guide = (ROOT / "docs/admin-guide.md").read_text()
+for route in (
+    "/admin/api/extractions/trigger",
+    "/admin/api/extractions/trigger-musicbrainz",
+    "/admin/api/queues/history",
+    "/admin/api/health/history",
+    "/admin/api/extraction-analysis/{version}/media-mapping-coverage",
+):
+    assert route in admin_guide
+
+configuration = (ROOT / "docs/configuration.md").read_text()
+for variable in (
+    "NEO4J_HOST",
+    "POSTGRES_HOST",
+    "RABBITMQ_MANAGEMENT_HOST",
+    "DISCOGS_EXCHANGE_PREFIX",
+    "MUSICBRAINZ_EXCHANGE_PREFIX",
+    "API_HOST",
+    "CORS_ORIGINS",
+):
+    assert variable in configuration
 
 source = (ROOT / "dashboard/dashboard.py").read_text()
 assert "GrooveMap operations-console" in source

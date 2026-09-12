@@ -2,6 +2,7 @@
 
 - [Architecture](architecture.md) — runtime boundaries, data flow, monitoring, and privileged actions.
 - [Administrator guide](admin-guide.md) — account, extraction, queue, audit, and health operations.
+- [Configuration](configuration.md) — datastore, service, queue, HTTP, and telemetry variables.
 - [Release compliance](release-compliance.md) — automation, browser, package, image, and publication-readiness controls.
 - [Source-history provenance](extraction.md) — extraction boundary and the separately approved history-sanitation process.
 
