@@ -59,6 +59,7 @@ assert not any(character in path for path in (*coverage_files, *declared_browser
 for required_input in (
     "language: mixed",
     "coverage-command: just coverage",
+    "secret-scan-command: just secret-scan",
     "e2e-setup-command: just e2e-setup",
     "e2e-instrument-command: just e2e-instrument",
     "e2e-command: just e2e-run",
@@ -116,6 +117,13 @@ assert '"[0-9a-f]{64}"' in gitleaks_config
 matrix = (ROOT / "scripts/run-e2e-matrix.sh").read_text()
 justfile = (ROOT / "Justfile").read_text()
 assert "uv run playwright install --with-deps chromium firefox webkit" in justfile
+assert re.search(r"(?m)^secret-scan:\s*$", justfile)
+assert re.search(r"(?m)^check:.*\bsecret-scan\b", justfile)
+assert re.search(r"(?m)^check:.*\bjs-test\b", justfile)
+assert justfile.count("gitleaks git --redact --no-banner") == 1
+assert justfile.count("gitleaks dir . --redact --no-banner") == 1
+assert "cz bump --version-files-only" in justfile
+assert "cz bump --files-only" not in justfile
 projects_match = re.search(r"projects=\(([^)]+)\)", matrix)
 assert projects_match is not None
 assert set(projects_match.group(1).split()) == E2E_PROJECTS

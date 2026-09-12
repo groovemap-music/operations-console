@@ -23,7 +23,7 @@ jobs:
       coverage-command: just coverage
       audit-command: just audit
       license-command: just license-check
-      secret-scan-command: just source-check
+      secret-scan-command: just secret-scan
       package-command: just build
       install-command: just install-check
       image-command: just image
