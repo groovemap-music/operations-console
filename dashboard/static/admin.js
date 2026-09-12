@@ -60,21 +60,16 @@ const QUEUE_CHART_COLORS = [
     '#a78bfa', '#38bdf8', '#fb923c', '#e879f9',
 ];
 
-// generateSparklineSVG is now a DOM-safe method: AdminDashboard._createSparklineSVGElement
-
-// Helper: HTML-escape a value for safe display (use with textContent, not innerHTML)
 function _esc(str) {
     const div = document.createElement('div');
     div.textContent = String(str ?? '');
     return div.innerHTML;
 }
 
-// Helper: shorten queue names by stripping the common "groovemap-" prefix
 function _shortQueueName(name) {
     return name.replace(/^groovemap-/, '');
 }
 
-// Helper: create a table row with a single "no data" cell spanning colSpan columns
 function _emptyRow(colSpan, message) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
@@ -85,22 +80,44 @@ function _emptyRow(colSpan, message) {
     return tr;
 }
 
-class AdminDashboard {
+class AdminDashboardState {
     constructor() {
         this.token = localStorage.getItem('admin_token');
-        this.refreshInterval = null;
         this.activeTab = 'extractions';
         this.queueDepthChart = null;
         this.responseTimeChart = null;
-        this._auditLogPage = 1;
-        this._eaVersions = [];
-        this._eaSelectedRecords = new Map();
-        this._eaParsingErrors = null;
-        this._eaVdRule = '';
-        this._eaVdEntityType = '';
-        this._eaVdPage = 1;
-        this._toastHideTimer = null;
-        this._toastRemoveTimer = null;
+        this.auditLogPage = 1;
+        this.eaVersions = [];
+        this.eaSelectedRecords = new Map();
+        this.eaParsingErrors = null;
+        this.eaVdRule = '';
+        this.eaVdEntityType = '';
+        this.eaVdPage = 1;
+        this.toastHideTimer = null;
+        this.toastRemoveTimer = null;
+    }
+}
+
+class RefreshSubscription {
+    constructor() {
+        this.handle = null;
+    }
+
+    start(callback) {
+        this.stop();
+        this.handle = setInterval(callback, 60000);
+    }
+
+    stop() {
+        if (this.handle) clearInterval(this.handle);
+        this.handle = null;
+    }
+}
+
+class AdminInteractions {
+    constructor() {
+        this.state = new AdminDashboardState();
+        this.refreshSubscription = new RefreshSubscription();
         this.bindEvents();
         if (this.token) {
             this.showPanel();
@@ -108,6 +125,35 @@ class AdminDashboard {
             this.showLogin();
         }
     }
+
+    get token() { return this.state.token; }
+    set token(value) { this.state.token = value; }
+    get refreshInterval() { return this.refreshSubscription.handle; }
+    set refreshInterval(value) { this.refreshSubscription.handle = value; }
+    get activeTab() { return this.state.activeTab; }
+    set activeTab(value) { this.state.activeTab = value; }
+    get queueDepthChart() { return this.state.queueDepthChart; }
+    set queueDepthChart(value) { this.state.queueDepthChart = value; }
+    get responseTimeChart() { return this.state.responseTimeChart; }
+    set responseTimeChart(value) { this.state.responseTimeChart = value; }
+    get _auditLogPage() { return this.state.auditLogPage; }
+    set _auditLogPage(value) { this.state.auditLogPage = value; }
+    get _eaVersions() { return this.state.eaVersions; }
+    set _eaVersions(value) { this.state.eaVersions = value; }
+    get _eaSelectedRecords() { return this.state.eaSelectedRecords; }
+    set _eaSelectedRecords(value) { this.state.eaSelectedRecords = value; }
+    get _eaParsingErrors() { return this.state.eaParsingErrors; }
+    set _eaParsingErrors(value) { this.state.eaParsingErrors = value; }
+    get _eaVdRule() { return this.state.eaVdRule; }
+    set _eaVdRule(value) { this.state.eaVdRule = value; }
+    get _eaVdEntityType() { return this.state.eaVdEntityType; }
+    set _eaVdEntityType(value) { this.state.eaVdEntityType = value; }
+    get _eaVdPage() { return this.state.eaVdPage; }
+    set _eaVdPage(value) { this.state.eaVdPage = value; }
+    get _toastHideTimer() { return this.state.toastHideTimer; }
+    set _toastHideTimer(value) { this.state.toastHideTimer = value; }
+    get _toastRemoveTimer() { return this.state.toastRemoveTimer; }
+    set _toastRemoveTimer(value) { this.state.toastRemoveTimer = value; }
 
     // ─── Event binding ───────────────────────────────────────────────────────
 
@@ -146,12 +192,10 @@ class AdminDashboard {
             triggerMusicbrainzBtn.addEventListener('click', () => this.triggerExtraction('musicbrainz'));
         }
 
-        // Tab navigation
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.addEventListener('click', () => this.switchTab(btn.dataset.tab));
         });
 
-        // Collapsible sections
         document.querySelectorAll('.collapsible-header').forEach(header => {
             header.addEventListener('click', () => {
                 const targetId = header.dataset.target;
@@ -165,7 +209,6 @@ class AdminDashboard {
             });
         });
 
-        // Manual refresh buttons
         const usersRefreshBtn = document.getElementById('users-refresh-btn');
         if (usersRefreshBtn) {
             usersRefreshBtn.addEventListener('click', () => {
@@ -179,19 +222,16 @@ class AdminDashboard {
             storageRefreshBtn.addEventListener('click', () => this.fetchStorage());
         }
 
-        // Queue Trends refresh
         const qtRefreshBtn = document.getElementById('qt-refresh-btn');
         if (qtRefreshBtn) {
             qtRefreshBtn.addEventListener('click', () => this.fetchQueueHistory(this._getRange('queue-trends')));
         }
 
-        // System Health refresh
         const shRefreshBtn = document.getElementById('sh-refresh-btn');
         if (shRefreshBtn) {
             shRefreshBtn.addEventListener('click', () => this.fetchHealthHistory(this._getRange('system-health')));
         }
 
-        // Audit Log refresh and controls
         const alRefreshBtn = document.getElementById('al-refresh-btn');
         if (alRefreshBtn) alRefreshBtn.addEventListener('click', () => this.fetchAuditLog());
 
@@ -204,12 +244,10 @@ class AdminDashboard {
         const alNextBtn = document.getElementById('al-next-btn');
         if (alNextBtn) alNextBtn.addEventListener('click', () => { this._auditLogPage++; this.fetchAuditLog(); });
 
-        // Range selector buttons
         document.querySelectorAll('.range-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const range = btn.dataset.range;
                 const tabRange = btn.dataset.tabRange;
-                // Update active state for this tab's range buttons
                 document.querySelectorAll(`.range-btn[data-tab-range="${tabRange}"]`).forEach(b => {
                     b.classList.toggle('active', b === btn);
                 });
@@ -222,7 +260,6 @@ class AdminDashboard {
             });
         });
 
-        // Restore persisted range selections
         ['queue-trends', 'system-health'].forEach(tab => {
             const saved = localStorage.getItem(`admin_range_${tab}`);
             if (saved) {
@@ -231,7 +268,6 @@ class AdminDashboard {
             }
         });
 
-        // Extraction Analysis bindings
         document.querySelectorAll('.ea-view-btn').forEach(btn => {
             btn.addEventListener('click', () => this._eaSwitchView(btn.dataset.eaView));
         });
@@ -265,7 +301,6 @@ class AdminDashboard {
             if (modal) modal.style.display = 'none';
         });
 
-        // Violations detail pagination
         const eaVdClose = document.getElementById('ea-vd-close');
         if (eaVdClose) eaVdClose.addEventListener('click', () => {
             const section = document.getElementById('ea-violations-detail');
@@ -290,19 +325,16 @@ class AdminDashboard {
     switchTab(tabName) {
         this.activeTab = tabName;
 
-        // Update button active states
         document.querySelectorAll('.tab-btn').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.tab === tabName);
         });
 
-        // Show/hide panels
         const panels = ['extractions', 'dlq', 'users', 'storage', 'queue-trends', 'system-health', 'audit-log', 'extraction-analysis'];
         panels.forEach(name => {
             const el = document.getElementById(`tab-${name}`);
             if (el) el.style.display = name === tabName ? 'block' : 'none';
         });
 
-        // Fetch data when switching to a tab that needs it
         if (tabName === 'users') {
             this.fetchUserStats();
             this.fetchSyncActivity();
@@ -337,7 +369,6 @@ class AdminDashboard {
         this.loadExtractions();
         this.startAutoRefresh();
 
-        // Show email if stored
         const email = localStorage.getItem('admin_email');
         const emailEl = document.getElementById('admin-email');
         if (emailEl && email) {
@@ -414,8 +445,9 @@ class AdminDashboard {
         }
         return response;
     }
+}
 
-    // ─── Extractions ─────────────────────────────────────────────────────────
+class AdminExtractions extends AdminInteractions {
 
     async loadExtractions() {
         try {
@@ -469,7 +501,6 @@ class AdminDashboard {
 
             historyBody.replaceChildren(...rows);
 
-            // Update current status badge
             const latest = extractions[0];
             if (latest) {
                 const statusEl = document.getElementById('extraction-status');
@@ -515,8 +546,9 @@ class AdminDashboard {
             spinner.style.display = 'none';
         }
     }
+}
 
-    // ─── DLQ Management ──────────────────────────────────────────────────────
+class AdminQueues extends AdminExtractions {
 
     renderDlqList() {
         const container = document.getElementById('dlq-list');
@@ -587,8 +619,9 @@ class AdminDashboard {
             this.showToast('Connection error', 'error');
         }
     }
+}
 
-    // ─── User Activity ────────────────────────────────────────────────────────
+class AdminServices extends AdminQueues {
 
     async fetchUserStats() {
         const loadingEl = document.getElementById('users-loading');
@@ -612,7 +645,6 @@ class AdminDashboard {
             this._setText('stat-active-30d', data.active_30d != null ? Number(data.active_30d).toLocaleString() : '—');
             this._setText('stat-oauth-rate', data.oauth_rate != null ? `${data.oauth_rate.toFixed(1)}%` : '—');
 
-            // Render daily registrations table
             const tbody = document.getElementById('registrations-body');
             if (tbody) {
                 const rows = data.daily_registrations || [];
@@ -879,8 +911,9 @@ class AdminDashboard {
             }
         }
     }
+}
 
-    // ─── Toast ───────────────────────────────────────────────────────────────
+class AdminFeedback extends AdminServices {
 
     showToast(message, type = 'success') {
         const toast = document.getElementById('toast');
@@ -909,13 +942,11 @@ class AdminDashboard {
             toast.style.color = '#fff';
         }
 
-        // Animate in
         requestAnimationFrame(() => {
             toast.style.opacity = '1';
             toast.style.transform = 'translateY(0)';
         });
 
-        // Animate out after 3 seconds
         this._toastHideTimer = setTimeout(() => {
             toast.style.opacity = '0';
             toast.style.transform = 'translateY(0.5rem)';
@@ -930,8 +961,7 @@ class AdminDashboard {
     // ─── Auto-refresh ────────────────────────────────────────────────────────
 
     startAutoRefresh() {
-        this.stopAutoRefresh();
-        this.refreshInterval = setInterval(() => {
+        this.refreshSubscription.start(() => {
             this.loadExtractions();
             if (this.activeTab === 'users') {
                 this.fetchUserStats();
@@ -945,17 +975,15 @@ class AdminDashboard {
             } else if (this.activeTab === 'audit-log') {
                 this.fetchAuditLog();
             }
-        }, 60000);
+        });
     }
 
     stopAutoRefresh() {
-        if (this.refreshInterval) {
-            clearInterval(this.refreshInterval);
-            this.refreshInterval = null;
-        }
+        this.refreshSubscription.stop();
     }
+}
 
-    // ─── Queue Trends ───────────────────────────────────────────────────
+class AdminQueueHistory extends AdminFeedback {
 
     async fetchQueueHistory(range) {
         const loadingEl = document.getElementById('qt-loading');
@@ -1165,8 +1193,9 @@ class AdminDashboard {
             return card;
         }));
     }
+}
 
-    // ─── System Health ────────────────────────────────────────────────────
+class AdminServiceHealth extends AdminQueueHistory {
 
     async fetchHealthHistory(range) {
         const loadingEl = document.getElementById('sh-loading');
@@ -1554,8 +1583,9 @@ class AdminDashboard {
         }
         return formatted.trim();
     }
+}
 
-    // ─── Audit Log ───────────────────────────────────────────────────────────
+class AdminContracts extends AdminServiceHealth {
 
     async fetchAuditLog() {
         const loading = document.getElementById('al-loading');
@@ -2520,6 +2550,8 @@ class AdminDashboard {
         }
     }
 }
+
+class AdminDashboard extends AdminContracts {}
 
 document.addEventListener('DOMContentLoaded', () => {
     window.adminDashboard = new AdminDashboard();

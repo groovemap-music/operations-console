@@ -128,6 +128,66 @@ class SystemMetrics(BaseModel):
     timestamp: datetime
 
 
+class WebSocketConnections:
+    """Own the synchronized set of dashboard WebSocket connections."""
+
+    def __init__(self) -> None:
+        self.connections: set[WebSocket] = set()
+        self.lock: asyncio.Lock | None = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        if self.lock is None:
+            self.lock = asyncio.Lock()
+        return self.lock
+
+    async def add(self, websocket: WebSocket) -> None:
+        async with self._get_lock():
+            self.connections.add(websocket)
+            console_telemetry.record_websocket_connection_delta(1)
+
+    async def discard(self, websocket: WebSocket) -> None:
+        async with self._get_lock():
+            if websocket in self.connections:
+                self.connections.discard(websocket)
+                console_telemetry.record_websocket_connection_delta(-1)
+
+    async def close_all(self) -> None:
+        async with self._get_lock():
+            targets = list(self.connections)
+            self.connections.clear()
+            console_telemetry.record_websocket_connection_delta(-len(targets))
+        for websocket in targets:
+            with contextlib.suppress(Exception):
+                await websocket.close()
+
+    async def broadcast(self, message: str) -> None:
+        if not self.connections:
+            return
+
+        async with self._get_lock():
+            targets = list(self.connections)
+
+        async def send(websocket: WebSocket) -> WebSocket | None:
+            try:
+                await asyncio.wait_for(websocket.send_text(message), timeout=_WS_SEND_TIMEOUT_SECONDS)
+            except Exception:
+                return websocket
+            return None
+
+        results = await asyncio.gather(*(send(websocket) for websocket in targets))
+        disconnected = {websocket for websocket in results if websocket is not None}
+        if not disconnected:
+            return
+
+        async with self._get_lock():
+            self.connections -= disconnected
+            console_telemetry.record_websocket_connection_delta(-len(disconnected))
+
+        for websocket in disconnected:
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1011)
+
+
 # Queue prefixes are ALWAYS env-derived by the generated catalog contract, exactly like
 # the extractor and all four consumers.
 # Hardcoding the defaults here made the dashboard the only component that ignored a
@@ -162,8 +222,7 @@ class DashboardApp:
     def __init__(self) -> None:
         """Initialize the dashboard application."""
         self.config = get_config()
-        self.websocket_connections: set[WebSocket] = set()
-        self._ws_lock: asyncio.Lock | None = None  # lazy init to avoid binding to wrong event loop
+        self.websockets = WebSocketConnections()
         self.latest_metrics: SystemMetrics | None = None
         self.rabbitmq: AsyncResilientRabbitMQ | None = None
         self.neo4j_driver: AsyncResilientNeo4jDriver | None = None
@@ -171,15 +230,30 @@ class DashboardApp:
         self.update_task: asyncio.Task | None = None
         self._db_info_lock: asyncio.Lock | None = None
 
+    @property
+    def websocket_connections(self) -> set[WebSocket]:
+        """Compatibility view of the connection set owned by ``websockets``."""
+        return self.websockets.connections
+
+    @websocket_connections.setter
+    def websocket_connections(self, connections: set[WebSocket]) -> None:
+        self.websockets.connections = connections
+
+    @property
+    def _ws_lock(self) -> asyncio.Lock | None:
+        return self.websockets.lock
+
+    @_ws_lock.setter
+    def _ws_lock(self, lock: asyncio.Lock | None) -> None:
+        self.websockets.lock = lock
+
     async def startup(self) -> None:
         """Initialize connections on startup."""
         try:
-            # Initialize resilient RabbitMQ connection
             self.rabbitmq = AsyncResilientRabbitMQ(connection_url=self.config.amqp_connection, heartbeat=600, connection_attempts=10, retry_delay=5.0)
             await self.rabbitmq.connect()
             logger.info("🐰 Connected to RabbitMQ with resilient connection")
 
-            # Initialize resilient Neo4j driver
             self.neo4j_driver = AsyncResilientNeo4jDriver(
                 uri=self.config.neo4j_host,
                 auth=(self.config.neo4j_username, self.config.neo4j_password),
@@ -188,14 +262,8 @@ class DashboardApp:
             )
             logger.info("🔗 Connected to Neo4j with resilient driver")
 
-            # Neo4j Community serves no Prometheus endpoint, so the console is the program's
-            # observer for the graph store. The gauges read through this same driver, from
-            # this same loop, on the metric reader's schedule — not on the 2-second poll loop
-            # — and never touch the health polling above.
             console_telemetry.register_neo4j_gauges(self.neo4j_driver)
 
-            # Initialize resilient PostgreSQL connection
-            # Parse host and port from address (POSTGRES_HOST may embed a port, e.g. a pooler)
             host, port = parse_postgres_host_port(self.config.postgres_host)
 
             self.postgres_conn = AsyncResilientPostgreSQL(
@@ -210,7 +278,6 @@ class DashboardApp:
             )
             logger.info("🐘 Connected to PostgreSQL with resilient connection")
 
-            # Start background metrics collection
             self.update_task = asyncio.create_task(self.collect_metrics_loop())
             logger.info("📊 Started metrics collection")
 
@@ -221,45 +288,20 @@ class DashboardApp:
     async def shutdown(self) -> None:
         """Clean up connections on shutdown."""
         try:
-            # Cancel update task
             if self.update_task:
                 self.update_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self.update_task
 
-            # Close connections
             if self.rabbitmq:
                 await self.rabbitmq.close()
             if self.neo4j_driver:
-                # Detach the gauges before the driver closes, so a collection that lands
-                # mid-shutdown observes nothing rather than reporting a fabricated up=0 for a
-                # console that is simply no longer running.
                 console_telemetry.reset_neo4j_gauges()
                 await self.neo4j_driver.close()
             if self.postgres_conn:
                 await self.postgres_conn.close()
 
-            # Close all websocket connections. Every OTHER access to
-            # websocket_connections (add in websocket_endpoint, discard() on
-            # disconnect, broadcast_metrics' snapshot) holds `_ws_lock` per
-            # the repo's lock-scope-discipline rule — this loop is the one
-            # site that used to iterate the live set directly. `await
-            # ws.close()` yields on every iteration, and a still-alive
-            # websocket_endpoint coroutine that wakes with a
-            # WebSocketDisconnect during that window runs `discard()` under
-            # the lock concurrently, mutating the set mid-iteration
-            # (`RuntimeError: Set changed size during iteration`), which the
-            # broad `except Exception` below swallows — leaving the
-            # remaining sockets never closed (retained shutdown regression).
-            if self._ws_lock is None:
-                self._ws_lock = asyncio.Lock()
-            async with self._ws_lock:
-                targets = list(self.websocket_connections)
-                self.websocket_connections.clear()
-                console_telemetry.record_websocket_connection_delta(-len(targets))
-            for ws in targets:
-                with contextlib.suppress(Exception):
-                    await ws.close()
+            await self.websockets.close_all()
 
             logger.info("✅ Shutdown complete")
 
@@ -324,61 +366,41 @@ class DashboardApp:
             timestamp=datetime.now(UTC),
         )
 
+    @staticmethod
+    async def _poll_service(client: httpx.AsyncClient, name: str, url: str) -> ServiceStatus:
+        with console_telemetry.poll_span(name) as poll:
+            try:
+                response = await client.get(url)
+                if response.status_code != 200:
+                    poll.failed()
+                    return ServiceStatus(
+                        name=name,
+                        status="unhealthy",
+                        last_seen=datetime.now(UTC),
+                        current_task=None,
+                        progress=None,
+                        error=f"HTTP {response.status_code}",
+                    )
+
+                data = response.json()
+                return ServiceStatus(
+                    name=name,
+                    status=data.get("status", "healthy"),
+                    last_seen=datetime.now(UTC),
+                    current_task=data.get("current_task"),
+                    progress=data.get("progress"),
+                    error=None,
+                    extraction_progress=data.get("extraction_progress"),
+                    last_extraction_time=data.get("last_extraction_time"),
+                )
+            except Exception as error:
+                poll.failed(error)
+                return ServiceStatus(name=name, status="unknown", last_seen=None, current_task=None, progress=None, error=str(error))
+
     async def get_service_statuses(self, service_configs: list[tuple[str, str]]) -> list[ServiceStatus]:
-        """Get status of all services."""
-        services = []
-
-        # The client is built outside the per-service span so the connection pool is shared
-        # across the whole batch; each request is issued inside its own span, which is what
-        # makes the httpx instrumentor's CLIENT span a child of `console.poll {name}`.
+        """Poll services in configuration order through one shared client."""
         async with httpx.AsyncClient(timeout=5.0) as client:
-            for name, url in service_configs:
-                with console_telemetry.poll_span(name) as poll:
-                    try:
-                        response = await client.get(url)
-                        if response.status_code == 200:
-                            data = response.json()
-                            # Use actual status from service health response
-                            # Valid statuses: healthy, unhealthy, starting
-                            service_status = data.get("status", "healthy")
-                            services.append(
-                                ServiceStatus(
-                                    name=name,
-                                    status=service_status,
-                                    last_seen=datetime.now(UTC),
-                                    current_task=data.get("current_task"),
-                                    progress=data.get("progress"),
-                                    error=None,
-                                    extraction_progress=data.get("extraction_progress"),
-                                    last_extraction_time=data.get("last_extraction_time"),
-                                )
-                            )
-                        else:
-                            services.append(
-                                ServiceStatus(
-                                    name=name,
-                                    status="unhealthy",
-                                    last_seen=datetime.now(UTC),
-                                    current_task=None,
-                                    progress=None,
-                                    error=f"HTTP {response.status_code}",
-                                )
-                            )
-                            poll.failed()
-                    except Exception as e:
-                        services.append(
-                            ServiceStatus(
-                                name=name,
-                                status="unknown",
-                                last_seen=None,
-                                current_task=None,
-                                progress=None,
-                                error=str(e),
-                            )
-                        )
-                        poll.failed(e)
-
-        return services
+            return [await self._poll_service(client, name, url) for name, url in service_configs]
 
     async def get_queue_info(self, prefix: str) -> list[QueueInfo]:
         """Get RabbitMQ queue information."""
@@ -553,55 +575,13 @@ class DashboardApp:
         """Broadcast metrics to all connected websockets."""
         if not self.websocket_connections:
             return
-
         message = orjson.dumps(
             {
                 "type": "metrics_update",
                 "data": metrics.model_dump(mode="json"),
             }
         ).decode()
-
-        if self._ws_lock is None:
-            self._ws_lock = asyncio.Lock()
-
-        # Snapshot the connection set under the lock only (cheap, non-blocking).
-        # send_text is done OUTSIDE the lock: it applies TCP backpressure and can
-        # block on a stalled client, and holding the lock across that await would
-        # also block new /ws registrations (websocket_endpoint) and stall the 2s
-        # collect_metrics_loop for every other client, not just the stalled one.
-        async with self._ws_lock:
-            targets = list(self.websocket_connections)
-
-        async def _send(websocket: WebSocket) -> WebSocket | None:
-            try:
-                await asyncio.wait_for(websocket.send_text(message), timeout=_WS_SEND_TIMEOUT_SECONDS)
-            except Exception:
-                return websocket
-            return None
-
-        results = await asyncio.gather(*(_send(websocket) for websocket in targets))
-        disconnected = {websocket for websocket in results if websocket is not None}
-
-        if disconnected:
-            # Re-acquire the lock only to discard the failed sockets.
-            async with self._ws_lock:
-                self.websocket_connections -= disconnected
-                console_telemetry.record_websocket_connection_delta(-len(disconnected))
-
-            # A send failure here can mean either a genuinely dead socket OR
-            # a still-live one that merely stalled past _WS_SEND_TIMEOUT_SECONDS
-            # (asyncio.wait_for cancels send_text but never closes the
-            # connection). Eviction from websocket_connections alone leaves
-            # that second case as a zombie: the endpoint's keep-alive loop
-            # (`while True: await websocket.receive_text()`) blocks forever on
-            # a healthy connection, so it never notices and never closes, and
-            # the client's `ws.onclose` — its ONLY reconnect trigger — never
-            # fires. The dashboard then shows a live-looking, permanently
-            # frozen UI. Close each evicted socket best-effort, outside the
-            # lock (mirroring the send path), so the client always reconnects.
-            for websocket in disconnected:
-                with contextlib.suppress(Exception):
-                    await websocket.close(code=1011)
+        await self.websockets.broadcast(message)
 
 
 # Create the dashboard app instance
@@ -632,9 +612,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     global dashboard
     dashboard = DashboardApp()
     await dashboard.startup()
-    yield
-    await dashboard.shutdown()
-    shutdown_telemetry()
+    try:
+        yield
+    finally:
+        await dashboard.shutdown()
+        shutdown_telemetry()
 
 
 app = FastAPI(
