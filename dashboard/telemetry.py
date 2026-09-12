@@ -492,62 +492,48 @@ def _neo4j_snapshot() -> Neo4jSnapshot | None:
     return None if source is None else source.snapshot()
 
 
-def _observe_up(options: CallbackOptions) -> Iterable[Observation]:  # noqa: ARG001
-    """Observe 1 when the last refresh answered, 0 when it did not."""
+def _observe(metric_name: str, project: Any) -> Iterable[Observation]:
+    """Read one shared snapshot defensively and project its observations."""
     try:
         snapshot = _neo4j_snapshot()
     except Exception:  # pragma: no cover - defensive
-        logger.debug("Could not observe %s", NEO4J_UP, exc_info=True)
+        logger.debug("Could not observe %s", metric_name, exc_info=True)
         return []
-    return [] if snapshot is None else [Observation(1 if snapshot.up else 0)]
+    return [] if snapshot is None else project(snapshot)
+
+
+def _observe_up(options: CallbackOptions) -> Iterable[Observation]:  # noqa: ARG001
+    """Observe 1 when the last refresh answered, 0 when it did not."""
+    return _observe(NEO4J_UP, lambda snapshot: [Observation(1 if snapshot.up else 0)])
 
 
 def _observe_nodes(options: CallbackOptions) -> Iterable[Observation]:  # noqa: ARG001
     """Observe one node count per schema label, or nothing while the store is down."""
-    try:
-        snapshot = _neo4j_snapshot()
-    except Exception:  # pragma: no cover - defensive
-        logger.debug("Could not observe %s", NEO4J_NODES, exc_info=True)
-        return []
-    if snapshot is None:
-        return []
-    return [Observation(count, {"label": label}) for label, count in snapshot.nodes.items()]
+    return _observe(NEO4J_NODES, lambda snapshot: [Observation(count, {"label": label}) for label, count in snapshot.nodes.items()])
 
 
 def _observe_relationships(options: CallbackOptions) -> Iterable[Observation]:  # noqa: ARG001
     """Observe one relationship count per schema type, or nothing while the store is down."""
-    try:
-        snapshot = _neo4j_snapshot()
-    except Exception:  # pragma: no cover - defensive
-        logger.debug("Could not observe %s", NEO4J_RELATIONSHIPS, exc_info=True)
-        return []
-    if snapshot is None:
-        return []
-    return [Observation(count, {"type": name}) for name, count in snapshot.relationships.items()]
+    return _observe(
+        NEO4J_RELATIONSHIPS,
+        lambda snapshot: [Observation(count, {"type": name}) for name, count in snapshot.relationships.items()],
+    )
 
 
 def _observe_transactions(options: CallbackOptions) -> Iterable[Observation]:  # noqa: ARG001
     """Observe the active transaction count, or nothing while the store is down."""
-    try:
-        snapshot = _neo4j_snapshot()
-    except Exception:  # pragma: no cover - defensive
-        logger.debug("Could not observe %s", NEO4J_TRANSACTIONS_ACTIVE, exc_info=True)
-        return []
-    if snapshot is None or snapshot.transactions_active is None:
-        return []
-    return [Observation(snapshot.transactions_active)]
+    return _observe(
+        NEO4J_TRANSACTIONS_ACTIVE,
+        lambda snapshot: [] if snapshot.transactions_active is None else [Observation(snapshot.transactions_active)],
+    )
 
 
 def _observe_store_sizes(options: CallbackOptions) -> Iterable[Observation]:  # noqa: ARG001
     """Observe one size per store file, or nothing when the JMX bean did not answer."""
-    try:
-        snapshot = _neo4j_snapshot()
-    except Exception:  # pragma: no cover - defensive
-        logger.debug("Could not observe %s", NEO4J_STORE_SIZE_BYTES, exc_info=True)
-        return []
-    if snapshot is None:
-        return []
-    return [Observation(size, {"store": store}) for store, size in snapshot.store_sizes.items()]
+    return _observe(
+        NEO4J_STORE_SIZE_BYTES,
+        lambda snapshot: [Observation(size, {"store": store}) for store, size in snapshot.store_sizes.items()],
+    )
 
 
 def register_neo4j_gauges(driver: Any) -> None:
