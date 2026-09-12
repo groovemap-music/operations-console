@@ -94,6 +94,44 @@ def _build_url(api_path: str) -> str:
     return f"{_api_base_url}{api_path}"
 
 
+async def _proxy_request(
+    request: Request,
+    method: str,
+    api_path: str,
+    *,
+    params: dict[str, str] | None = None,
+    content: bytes | None = None,
+    timeout: float = 30.0,
+    client: httpx.AsyncClient | None = None,
+) -> Response:
+    """Forward one request while keeping endpoint policy in the route handler."""
+    url = _build_url(api_path)
+    headers = _auth_headers(request)
+    if content:
+        headers["Content-Type"] = "application/json"
+
+    async def send(active_client: httpx.AsyncClient) -> httpx.Response:
+        kwargs: dict[str, Any] = {"headers": headers}
+        if params is not None:
+            kwargs["params"] = params
+        if content:
+            kwargs["content"] = content
+        if method == "GET":
+            return await active_client.get(url, **kwargs)
+        return await active_client.post(url, **kwargs)
+
+    try:
+        if client is not None:
+            response = await send(client)
+        else:
+            async with httpx.AsyncClient(timeout=timeout) as owned_client:
+                response = await send(owned_client)
+    except (httpx.ConnectError, httpx.RequestError) as exc:
+        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
+        return _unavailable_response()
+    return _ok_response(response)
+
+
 async def _validated_json_body(request: Request) -> bytes | None:
     """Read the request body, validate it as JSON, and re-serialise.
 
@@ -127,51 +165,23 @@ async def _validated_json_body(request: Request) -> bytes | None:
 @router.post("/admin/api/login")
 async def proxy_login(request: Request) -> Response:
     """Proxy login requests to the API service."""
-    url = _build_url(catalog_admin_contract.ADMIN_LOGIN_PATH)
-    headers = _auth_headers(request)
     try:
         sanitised_body = await _validated_json_body(request)
     except json.JSONDecodeError:
         return JSONResponse(content={"detail": "Malformed JSON in request body"}, status_code=400)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            if sanitised_body:
-                headers["Content-Type"] = "application/json"
-                resp = await client.post(url, headers=headers, content=sanitised_body)
-            else:
-                resp = await client.post(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_LOGIN_PATH, content=sanitised_body)
 
 
 @router.post("/admin/api/logout")
 async def proxy_logout(request: Request) -> Response:
     """Proxy logout requests to the API service."""
-    url = _build_url(catalog_admin_contract.ADMIN_LOGOUT_PATH)
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_LOGOUT_PATH)
 
 
 @router.get("/admin/api/extractions")
 async def proxy_list_extractions(request: Request) -> Response:
     """Proxy extraction list requests to the API service."""
-    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTIONS_PATH)
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_EXTRACTIONS_PATH)
 
 
 @router.get("/admin/api/extractions/{extraction_id}")
@@ -179,44 +189,23 @@ async def proxy_get_extraction(extraction_id: str, request: Request) -> Response
     """Proxy extraction detail requests to the API service."""
     if not _validate_path_segment(extraction_id):
         return Response(content=b'{"detail":"Invalid extraction ID"}', status_code=400, media_type="application/json")
-    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_PATH.format(extraction_id=extraction_id))
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    path = catalog_admin_contract.ADMIN_EXTRACTION_PATH.format(extraction_id=extraction_id)
+    return await _proxy_request(request, "GET", path)
 
 
 @router.post("/admin/api/extractions/trigger")
 async def proxy_trigger(request: Request) -> Response:
     """Proxy extraction trigger requests to the API service."""
-    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_TRIGGER_PATH)
-    headers = _auth_headers(request)
     try:
         sanitised_body = await _validated_json_body(request)
     except json.JSONDecodeError:
         return JSONResponse(content={"detail": "Malformed JSON in request body"}, status_code=400)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            if sanitised_body:
-                headers["Content-Type"] = "application/json"
-                resp = await client.post(url, headers=headers, content=sanitised_body)
-            else:
-                resp = await client.post(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_EXTRACTION_TRIGGER_PATH, content=sanitised_body)
 
 
 @router.post("/admin/api/extractions/trigger-musicbrainz")
 async def proxy_trigger_musicbrainz(request: Request) -> Response:
     """Proxy MusicBrainz extraction trigger requests to the API service."""
-    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_TRIGGER_PATH)
-    headers = _auth_headers(request)
     try:
         sanitised_body = await _validated_json_body(request)
     except json.JSONDecodeError:
@@ -230,14 +219,7 @@ async def proxy_trigger_musicbrainz(request: Request) -> Response:
     body_dict: dict = parsed
     body_dict["source"] = "musicbrainz"
     payload = json.dumps(body_dict, separators=(",", ":")).encode()
-    headers["Content-Type"] = "application/json"
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, headers=headers, content=payload)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_EXTRACTION_TRIGGER_PATH, content=payload)
 
 
 # ---------------------------------------------------------------------------
@@ -248,43 +230,19 @@ async def proxy_trigger_musicbrainz(request: Request) -> Response:
 @router.get("/admin/api/users/stats")
 async def proxy_user_stats(request: Request) -> Response:
     """Proxy user stats requests to the API service."""
-    url = _build_url(catalog_admin_contract.ADMIN_USER_STATS_PATH)
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_USER_STATS_PATH)
 
 
 @router.get("/admin/api/users/sync-activity")
 async def proxy_sync_activity(request: Request) -> Response:
     """Proxy sync activity requests to the API service."""
-    url = _build_url(catalog_admin_contract.ADMIN_SYNC_ACTIVITY_PATH)
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_SYNC_ACTIVITY_PATH)
 
 
 @router.get("/admin/api/storage")
 async def proxy_storage(request: Request) -> Response:
     """Proxy storage utilization requests to the API service."""
-    url = _build_url(catalog_admin_contract.ADMIN_STORAGE_PATH)
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_STORAGE_PATH)
 
 
 @router.post("/admin/api/dlq/purge/{queue}")
@@ -292,15 +250,8 @@ async def proxy_dlq_purge(queue: str, request: Request) -> Response:
     """Proxy DLQ purge requests to the API service."""
     if not _validate_path_segment(queue):
         return Response(content=b'{"detail":"Invalid queue name"}', status_code=400, media_type="application/json")
-    url = _build_url(catalog_admin_contract.ADMIN_DLQ_PURGE_PATH.format(queue=queue))
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    path = catalog_admin_contract.ADMIN_DLQ_PURGE_PATH.format(queue=queue)
+    return await _proxy_request(request, "POST", path)
 
 
 # ---------------------------------------------------------------------------
@@ -315,20 +266,12 @@ async def proxy_queue_history(
     granularity: str | None = Query(default=None, pattern=r"^[0-9]+(min|hour|day)$"),
 ) -> Response:
     """Proxy queue history requests to the API service."""
-    url = _build_url(catalog_admin_contract.ADMIN_QUEUE_HISTORY_PATH)
     params: dict[str, str] = {}
     if range is not None:
         params["range"] = range
     if granularity is not None:
         params["granularity"] = granularity
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers, params=params)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_QUEUE_HISTORY_PATH, params=params)
 
 
 @router.get("/admin/api/health/history")
@@ -338,20 +281,12 @@ async def proxy_health_history(
     granularity: str | None = Query(default=None, pattern=r"^[0-9]+(min|hour|day)$"),
 ) -> Response:
     """Proxy health history requests to the API service."""
-    url = _build_url(catalog_admin_contract.ADMIN_HEALTH_HISTORY_PATH)
     params: dict[str, str] = {}
     if range is not None:
         params["range"] = range
     if granularity is not None:
         params["granularity"] = granularity
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers, params=params)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_HEALTH_HISTORY_PATH, params=params)
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +303,6 @@ async def proxy_audit_log(
     admin_id: str | None = Query(default=None, pattern=r"^[a-f0-9-]+$"),
 ) -> Response:
     """Proxy audit log requests to the API service."""
-    url = _build_url(catalog_admin_contract.ADMIN_AUDIT_LOG_PATH)
     params: dict[str, str] = {}
     if page is not None:
         params["page"] = str(page)
@@ -378,14 +312,7 @@ async def proxy_audit_log(
         params["action"] = action
     if admin_id is not None:
         params["admin_id"] = admin_id
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers, params=params)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_AUDIT_LOG_PATH, params=params)
 
 
 # ---------------------------------------------------------------------------
@@ -396,15 +323,7 @@ async def proxy_audit_log(
 @router.get("/admin/api/extraction-analysis/versions")
 async def proxy_ea_versions(request: Request) -> Response:
     """Proxy extraction analysis versions list to the API service."""
-    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_VERSIONS_PATH)
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_VERSIONS_PATH)
 
 
 @router.get("/admin/api/extraction-analysis/{version}/summary")
@@ -412,15 +331,8 @@ async def proxy_ea_summary(version: str, request: Request) -> Response:
     """Proxy extraction analysis summary for a single version."""
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
-    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_SUMMARY_PATH.format(version=version))
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    path = catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_SUMMARY_PATH.format(version=version)
+    return await _proxy_request(request, "GET", path)
 
 
 @router.get("/admin/api/extraction-analysis/{version}/violations/{record_id}")
@@ -430,15 +342,8 @@ async def proxy_ea_violation_detail(version: str, record_id: str, request: Reque
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
     if not _validate_path_segment(record_id):
         return Response(content=b'{"detail":"Invalid record ID"}', status_code=400, media_type="application/json")
-    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_VIOLATION_PATH.format(version=version, record_id=record_id))
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    path = catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_VIOLATION_PATH.format(version=version, record_id=record_id)
+    return await _proxy_request(request, "GET", path)
 
 
 @router.get("/admin/api/extraction-analysis/{version}/skipped")
@@ -452,7 +357,7 @@ async def proxy_ea_skipped(
     """Proxy extraction analysis skipped records list with optional query param filtering."""
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
-    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_SKIPPED_PATH.format(version=version))
+    path = catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_SKIPPED_PATH.format(version=version)
     params: dict[str, str] = {}
     if entity_type is not None:
         params["entity_type"] = entity_type
@@ -460,14 +365,7 @@ async def proxy_ea_skipped(
         params["page"] = str(page)
     if page_size is not None:
         params["page_size"] = str(page_size)
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers, params=params)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "GET", path, params=params)
 
 
 @router.get("/admin/api/extraction-analysis/{version}/violations")
@@ -483,7 +381,7 @@ async def proxy_ea_violations(
     """Proxy extraction analysis violations list with optional query param filtering."""
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
-    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_VIOLATIONS_PATH.format(version=version))
+    path = catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_VIOLATIONS_PATH.format(version=version)
     params: dict[str, str] = {}
     if entity_type is not None:
         params["entity_type"] = entity_type
@@ -495,14 +393,7 @@ async def proxy_ea_violations(
         params["page"] = str(page)
     if page_size is not None:
         params["page_size"] = str(page_size)
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers, params=params)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "GET", path, params=params)
 
 
 @router.get("/admin/api/extraction-analysis/{version}/parsing-errors")
@@ -510,15 +401,8 @@ async def proxy_ea_parsing_errors(version: str, request: Request) -> Response:
     """Proxy extraction analysis parsing errors — uses longer timeout as parsing can be slow."""
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
-    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_PARSING_ERRORS_PATH.format(version=version))
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.get(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    path = catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_PARSING_ERRORS_PATH.format(version=version)
+    return await _proxy_request(request, "GET", path, timeout=60.0)
 
 
 @router.get("/admin/api/extraction-analysis/{version}/compare/{other_version}")
@@ -528,15 +412,8 @@ async def proxy_ea_compare(version: str, other_version: str, request: Request) -
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
     if not _validate_path_segment(other_version):
         return Response(content=b'{"detail":"Invalid other_version"}', status_code=400, media_type="application/json")
-    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_COMPARE_PATH.format(version=version, other_version=other_version))
-    headers = _auth_headers(request)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.get(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    path = catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_COMPARE_PATH.format(version=version, other_version=other_version)
+    return await _proxy_request(request, "GET", path)
 
 
 @router.post("/admin/api/extraction-analysis/{version}/prompt-context")
@@ -544,23 +421,12 @@ async def proxy_ea_prompt_context(version: str, request: Request) -> Response:
     """Proxy extraction analysis prompt context generation."""
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
-    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_PROMPT_CONTEXT_PATH.format(version=version))
-    headers = _auth_headers(request)
+    path = catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_PROMPT_CONTEXT_PATH.format(version=version)
     try:
         sanitised_body = await _validated_json_body(request)
     except json.JSONDecodeError:
         return JSONResponse(content={"detail": "Malformed JSON in request body"}, status_code=400)
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            if sanitised_body:
-                headers["Content-Type"] = "application/json"
-                resp = await client.post(url, headers=headers, content=sanitised_body)
-            else:
-                resp = await client.post(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "POST", path, content=sanitised_body)
 
 
 @router.post("/admin/api/extraction-analysis/{version}/generate-ai-prompt")
@@ -568,23 +434,12 @@ async def proxy_ea_generate_ai_prompt(version: str, request: Request) -> Respons
     """Proxy AI-powered prompt generation — may take longer due to Claude API call."""
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
-    url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_GENERATE_AI_PROMPT_PATH.format(version=version))
-    headers = _auth_headers(request)
+    path = catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_GENERATE_AI_PROMPT_PATH.format(version=version)
     try:
         sanitised_body = await _validated_json_body(request)
     except json.JSONDecodeError:
         return JSONResponse(content={"detail": "Malformed JSON in request body"}, status_code=400)
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            if sanitised_body:
-                headers["Content-Type"] = "application/json"
-                resp = await client.post(url, headers=headers, content=sanitised_body)
-            else:
-                resp = await client.post(url, headers=headers)
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
-        return _unavailable_response()
-    return _ok_response(resp)
+    return await _proxy_request(request, "POST", path, content=sanitised_body, timeout=120.0)
 
 
 # ---------------------------------------------------------------------------
@@ -704,31 +559,26 @@ async def proxy_ea_media_mapping_coverage(version: str, request: Request) -> Res
     if not _validate_path_segment(version):
         return Response(content=b'{"detail":"Invalid version"}', status_code=400, media_type="application/json")
 
-    headers = _auth_headers(request)
-    summary_url = _build_url(catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_SUMMARY_PATH.format(version=version))
-    unmapped_url = _build_url(catalog_admin_contract.ADMIN_UNMAPPED_MEDIA_PATH)
+    summary_path = catalog_admin_contract.ADMIN_EXTRACTION_ANALYSIS_SUMMARY_PATH.format(version=version)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        summary_response = await _proxy_request(request, "GET", summary_path, client=client)
+        if summary_response.status_code != 200:
+            return summary_response
+        summary = json.loads(bytes(summary_response.body))
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            summary_resp = await client.get(summary_url, headers=headers)
-            if summary_resp.status_code != 200:
-                return _ok_response(summary_resp)
-            summary = summary_resp.json()
+        source = summary.get("source")
+        if source not in _MEDIA_MAPPING_PROVIDERS:
+            return JSONResponse(content=_media_mapping_unavailable(version, source))
 
-            source = summary.get("source")
-            if source not in _MEDIA_MAPPING_PROVIDERS:
-                return JSONResponse(content=_media_mapping_unavailable(version, source))
-
-            coverage_resp = await client.get(
-                unmapped_url,
-                headers=headers,
-                params={"provider": source, "limit": str(_MEDIA_MAPPING_TOP_N)},
-            )
-            if coverage_resp.status_code != 200:
-                return _ok_response(coverage_resp)
-            coverage = coverage_resp.json()
-    except (httpx.ConnectError, httpx.RequestError) as exc:
-        logger.error("❌ API service unreachable", url=unmapped_url, error=describe_exception(exc))
-        return _unavailable_response()
+        coverage_response = await _proxy_request(
+            request,
+            "GET",
+            catalog_admin_contract.ADMIN_UNMAPPED_MEDIA_PATH,
+            params={"provider": source, "limit": str(_MEDIA_MAPPING_TOP_N)},
+            client=client,
+        )
+        if coverage_response.status_code != 200:
+            return coverage_response
+        coverage = json.loads(bytes(coverage_response.body))
 
     return JSONResponse(content=_compose_media_mapping_coverage(summary, coverage))

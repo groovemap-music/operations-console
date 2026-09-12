@@ -13,14 +13,13 @@ source-check:
     python scripts/check-contracts.py
     python scripts/check-brand.py
     python scripts/check-repository-compliance.py
-    npm ci --ignore-scripts
-    npm run build:css
-    npm test
-    test -s dashboard/static/tailwind.css
+    python scripts/check-docs.py
+
+secret-scan:
     gitleaks git --redact --no-banner
     gitleaks dir . --redact --no-banner
 
-check: source-check typecheck test build install-check license-check release-artifacts bump-preview
+check: source-check secret-scan typecheck test js-test build install-check license-check release-artifacts bump-preview
 
 format:
     uv run ruff format .
@@ -32,10 +31,10 @@ typecheck:
 test:
     uv run pytest -m 'not e2e' --cov=dashboard --cov-report=term-missing --cov-report=xml
 
-js-test:
+js-test: web-dependencies
     npm test
 
-coverage: test
+coverage: test web-dependencies
     npm run test:coverage
 
 e2e-setup:
@@ -53,10 +52,13 @@ e2e-post:
 e2e:
     bash scripts/e2e-with-coverage.sh
 
-web-build:
-    npm ci --ignore-scripts
+web-build: web-dependencies
     npm run build:css
     test -s dashboard/static/tailwind.css
+
+[private]
+web-dependencies:
+    npm ci --ignore-scripts
 
 build: web-build
     uv build --out-dir dist --clear
@@ -92,7 +94,7 @@ bump-preview:
 
 # Update local version metadata and changelog only; do not commit, tag, push, or publish.
 bump:
-    uv run cz bump --files-only --changelog --yes --check-consistency
+    uv run cz bump --version-files-only --changelog --yes --check-consistency
     npm version "$(uv run cz version --project)" --no-git-tag-version
     uv lock
 

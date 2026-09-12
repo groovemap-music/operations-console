@@ -1,11 +1,11 @@
 # Operations-console administrator guide
 
-## Creating an Admin Account
+## Creating an admin account
 
 Admin accounts are created via the `admin-setup` CLI tool inside the API container:
 
 ```bash
-docker exec -it groovemap-catalog-api admin-setup --email admin@example.com
+docker exec -it groovemap-api admin-setup --email admin@example.com
 ```
 
 `admin-setup` never accepts the password as a CLI argument (command-line
@@ -17,39 +17,46 @@ environment instead.
 
 Passwords must be at least 8 characters. If the email already exists, the password is updated.
 
-## Listing Admin Accounts
+## Listing admin accounts
 
 ```bash
-docker exec -it groovemap-catalog-api admin-setup --list
+docker exec -it groovemap-api admin-setup --list
 ```
 
-## Accessing the Admin Panel
+## Accessing the admin panel
 
 Navigate to `http://<host>:8003/admin` and log in with your admin credentials.
 
 The monitoring dashboard at `http://<host>:8003` remains public — no login required.
 
-## Triggering an Extraction
+## Triggering an extraction
 
-Click **Trigger Extraction** in the admin panel. This forces a full reprocessing of all Discogs data files:
+Use **Trigger Discogs Extraction** or **Trigger MusicBrainz Extraction** in the admin panel.
+The console sends these requests through fixed proxy routes; `catalog-api` owns authorization
+and dispatches the trigger to the selected source-owned producer.
 
-- Downloads the latest monthly data from the Discogs S3 bucket
-- Reprocesses all files regardless of existing state markers
-- Publishes records to RabbitMQ for the `discogs-graph-enricher` and `discogs-sql-loader` consumers
+| Source | Console route | Producer | Published exchanges |
+| --- | --- | --- | --- |
+| Discogs | `POST /admin/api/extractions/trigger` | `discogs-ingestion` | `groovemap-discogs-{artists,labels,masters,releases}` |
+| MusicBrainz | `POST /admin/api/extractions/trigger-musicbrainz` | `musicbrainz-ingestion` | `groovemap-musicbrainz-{artists,labels,release-groups,releases}` |
 
-The admin panel also supports triggering a **MusicBrainz extraction**, which downloads the latest MusicBrainz JSONL dumps and publishes records to the `groovemap-musicbrainz-{artists,labels,release-groups,releases}` exchanges for the `musicbrainz-graph-enricher` and `musicbrainz-sql-loader` consumers.
+Both console routes map to the promoted `catalog-api` operation
+`POST /api/admin/extractions/trigger`; the MusicBrainz adapter adds
+`"source":"musicbrainz"` to the validated JSON object. Each ingestion service owns its own
+download, state, normalization, and publication lifecycle. There is no combined ingestion
+runtime or shared producer lock.
 
 Use this when:
 
 - A previous extraction failed and you want to retry
 - You suspect data corruption and want a clean reprocess
-- A new Discogs monthly dump (or MusicBrainz twice-weekly dump) has been published and you don't want to wait for the periodic check
+- A new source dump has been published and you do not want to wait for its producer's periodic check
 
 The extraction runs asynchronously. Progress is tracked in the extraction history table.
 
 If an extraction is already running, the trigger returns an error — wait for it to complete first.
 
-## DLQ Management
+## DLQ management
 
 Dead-letter queues (DLQs) collect messages that consumers failed to process. Each data type has a DLQ per consumer:
 
@@ -79,18 +86,24 @@ Dead-letter queues (DLQs) collect messages that consumers failed to process. Eac
 
 Purging cannot be undone.
 
-DLQ names follow the pattern `{exchange-prefix}-{consumer}-{data-type}.dlq`, using the `DISCOGS_EXCHANGE_PREFIX` and `MUSICBRAINZ_EXCHANGE_PREFIX` env vars as the base.
+DLQ names follow the promoted producer-contract pattern
+`{exchange-prefix}-{consumer}-{entity}.dlq`. The consumer keys in the queue names
+(`graphinator`, `tableinator`, `brainzgraphinator`, and `brainztableinator`) are stable wire
+identifiers even though the owning repositories have descriptive names. The optional
+`DISCOGS_EXCHANGE_PREFIX` and `MUSICBRAINZ_EXCHANGE_PREFIX` overrides are documented in
+[configuration](configuration.md).
 
-## Phase 3: Metrics History and Trend Analysis
+## Metrics history and trend analysis
 
-### Queue and Health History Endpoints
+### Queue and health history endpoints
 
-Two new endpoints expose time-series metrics for queue depths and service health:
+The browser calls the console routes below. The console forwards them to the corresponding
+fixed paths in the promoted `catalog-api` contract.
 
-```http
-GET /api/admin/queues/history?range=<range>
-GET /api/admin/health/history?range=<range>
-```
+| Data | Console route | Upstream `catalog-api` route |
+| --- | --- | --- |
+| Queue history | `GET /admin/api/queues/history?range=<range>` | `GET /api/admin/queues/history?range=<range>` |
+| Service health | `GET /admin/api/health/history?range=<range>` | `GET /api/admin/health/history?range=<range>` |
 
 Both endpoints require admin authentication (Bearer token).
 
@@ -108,29 +121,32 @@ Both endpoints require admin authentication (Bearer token).
 
 Granularity is selected automatically based on the requested range. Omitting the `range` parameter defaults to `24h`.
 
-### Background Metrics Collector
+### Historical metrics collector
 
-A background collector runs inside the API service and periodically samples queue depths and service health. Collected data is stored in PostgreSQL for historical querying.
+A background collector runs inside `catalog-api`, not operations-console, and periodically
+samples queue depths and service health. It stores history in PostgreSQL for these queries.
 
 The collector interval is controlled by the `METRICS_COLLECTION_INTERVAL` environment variable (default: 300 seconds / 5 minutes).
 
-### New Environment Variables
+### Collector environment variables
 
 | Variable                      | Default | Description                                                                              |
 | ----------------------------- | ------- | ---------------------------------------------------------------------------------------- |
 | `METRICS_RETENTION_DAYS`      | `366`   | How many days of metrics to retain in the database. Older rows are pruned automatically. |
 | `METRICS_COLLECTION_INTERVAL` | `300`   | Seconds between each metrics collection cycle in the background collector.               |
 
-Set these in your `docker-compose.yml` or environment file:
+These variables configure `catalog-api`; they are not operations-console variables. Set them
+on the API service through deployment configuration:
 
 ```dotenv
 METRICS_RETENTION_DAYS=366
 METRICS_COLLECTION_INTERVAL=300
 ```
 
-### New Database Tables
+### Database tables
 
-Metrics are stored in two PostgreSQL tables:
+`database-schema` owns the persistence definitions. `catalog-api` writes and queries two
+PostgreSQL tables:
 
 **`queue_metrics`** — RabbitMQ queue depth snapshots:
 
@@ -158,9 +174,9 @@ Metrics are stored in two PostgreSQL tables:
 
 Both tables are indexed on `recorded_at` for efficient range queries. Rows older than `METRICS_RETENTION_DAYS` are pruned automatically.
 
-### Dashboard: Queue Trends and System Health Tabs
+### Queue Trends and System Health tabs
 
-The admin panel (`http://<host>:8003/admin`) exposes two new tabs backed by the history endpoints:
+The admin panel (`http://<host>:8003/admin`) exposes two tabs backed by the history endpoints:
 
 - **Queue Trends** — Line charts showing message depth over time for each RabbitMQ queue. Use the range selector (1h / 6h / 24h / 7d / 30d / 90d / 365d) to zoom in or out.
 - **System Health** — Status timeline showing per-service health over the selected range. Unhealthy periods are highlighted in red; response time is shown as a secondary series.
