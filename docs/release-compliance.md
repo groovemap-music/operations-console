@@ -9,8 +9,8 @@ Python type checking and coverage, `js-test`, the deterministic web and Python b
 installation, legal and dependency policy, release artifacts, and the non-mutating version
 preview. `source-check` is limited to formatting, linting, promoted contracts, brand assets,
 and repository policy. `secret-scan` is the narrow Git-history and working-tree scan used by
-the hosted secret-scanning job. A shared private prerequisite installs locked Node dependencies
-once when JavaScript tests and the web build run in the same invocation.
+the hosted secret-scanning job. The internal `web-dependencies` prerequisite installs locked Node
+dependencies once when JavaScript tests and the web build run in the same invocation.
 
 `just coverage` emits both `coverage.xml` and `coverage/javascript/lcov.info`. `just image`
 builds and inspects the local OCI image. `just audit` performs the network-backed Python and
@@ -28,7 +28,17 @@ fallback exists. The hosted E2E lifecycle remains split into `e2e-setup`, `e2e-i
 `e2e-run`, and `e2e-post` so setup, browser-specific evidence, and source restoration remain
 visible to the reusable workflow.
 
-Full validation requires read access to the pinned `python-libraries` revision. `GROOVEMAP_CI_APP_CLIENT_ID` and `GROOVEMAP_CI_APP_PRIVATE_KEY` supply that read-only checkout. `CODECOV_TOKEN` is mapped explicitly and uploads fail closed. Infrastructure must provide both secrets to Dependabot as well as ordinary Actions; until that external rollout is verified, the full dependency-update graph is expected to fail rather than silently weaken.
+**Public-library cutover: complete.** Full validation resolves `python-libraries` from its public
+repository at the immutable revision recorded in `pyproject.toml`; no first-party repository
+credential is required. `CODECOV_TOKEN` remains explicitly mapped and uploads fail closed, while
+the release caller passes no inherited secrets. Dependabot-authored pull requests use the same
+complete required graph as every other pull request.
+
+The release caller retains the supported `prepare-image-command: just prepare-runtime-wheel`
+interface so the pinned public runtime wheel is staged in the local image context. For local
+builds, `GROOVEMAP_RUNTIME_REPO` remains an optional override for an explicit clean checkout at
+that revision; without it, the preparation script uses a matching adjacent checkout or creates a
+temporary checkout from the public source.
 
 ## Package and image evidence
 
