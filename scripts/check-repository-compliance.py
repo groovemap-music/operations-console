@@ -105,6 +105,15 @@ pyproject = (ROOT / "pyproject.toml").read_text()
 assert "https://github.com/groovemap-music/python-libraries.git" in pyproject
 assert PYTHON_LIBRARIES_REVISION in pyproject
 
+release_compliance = (ROOT / "docs/release-compliance.md").read_text()
+release_compliance_prose = " ".join(release_compliance.split())
+assert "**Public-library cutover: complete.**" in release_compliance
+assert "no first-party repository credential is required" in release_compliance_prose
+assert "prepare-image-command: just prepare-runtime-wheel" in release_compliance
+assert "`GROOVEMAP_RUNTIME_REPO` remains an optional override" in release_compliance
+for retired_credential in ("GROOVEMAP_CI_APP_CLIENT_ID", "GROOVEMAP_CI_APP_PRIVATE_KEY"):
+    assert retired_credential not in release_compliance
+
 workflow_names = {path.name.lower() for path in (ROOT / ".github/workflows").iterdir()}
 assert not any("renovate" in name or "claude" in name for name in workflow_names)
 assert not any(path.name.lower().startswith("renovate") for path in ROOT.iterdir())
