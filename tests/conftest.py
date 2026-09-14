@@ -10,11 +10,14 @@ import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, create_autospec
 
 import httpx
 import pytest
+from common import AsyncResilientNeo4jDriver, AsyncResilientPostgreSQL
+from neo4j import AsyncResult, AsyncSession
 from playwright.sync_api import Browser, Page, sync_playwright
+from psycopg import AsyncConnection, AsyncCursor
 
 from dashboard.config import DashboardConfig
 
@@ -310,21 +313,30 @@ def dashboard_mock_amqp_connection() -> AsyncMock:
 
 
 @pytest.fixture
-def dashboard_mock_neo4j_driver() -> MagicMock:
-    """Create a mock Neo4j driver for dashboard tests."""
-    mock = MagicMock()
-    mock.close = AsyncMock()
+def dashboard_mock_neo4j_result() -> MagicMock:
+    """Create an await-faithful Neo4j result restricted to the driver API."""
+    result = create_autospec(AsyncResult, instance=True, spec_set=True)
+    result.data.return_value = [{"count": 10}]
+    result.single.return_value = None
+    return result
 
-    # Mock session
-    mock_session = AsyncMock()
-    mock.session = MagicMock(return_value=mock_session)
 
-    # Mock query results
-    mock_result = AsyncMock()
-    mock_result.data = AsyncMock(return_value=[{"count": 10}])
-    mock_session.run = AsyncMock(return_value=mock_result)
+@pytest.fixture
+def dashboard_mock_neo4j_session(dashboard_mock_neo4j_result: MagicMock) -> MagicMock:
+    """Create an async-context-manager Neo4j session restricted to the driver API."""
+    session = create_autospec(AsyncSession, instance=True, spec_set=True)
+    session.__aenter__.return_value = session
+    session.__aexit__.return_value = None
+    session.run.return_value = dashboard_mock_neo4j_result
+    return session
 
-    return mock
+
+@pytest.fixture
+def dashboard_mock_neo4j_driver(dashboard_mock_neo4j_session: MagicMock) -> MagicMock:
+    """Create a resilient Neo4j driver restricted to its runtime interface."""
+    driver = create_autospec(AsyncResilientNeo4jDriver, instance=True, spec_set=True)
+    driver.session.return_value = dashboard_mock_neo4j_session
+    return driver
 
 
 @pytest.fixture
@@ -373,16 +385,26 @@ def dashboard_mock_httpx_client() -> MagicMock:
 
 
 @pytest.fixture
-def dashboard_mock_psycopg_connect() -> AsyncMock:
-    """Create a mock PostgreSQL connection for dashboard tests."""
-    mock_conn = AsyncMock()
+def dashboard_mock_psycopg_cursor() -> MagicMock:
+    """Create an await-faithful psycopg cursor restricted to its runtime API."""
+    cursor = create_autospec(AsyncCursor, instance=True, spec_set=True)
+    cursor.__aenter__.return_value = cursor
+    cursor.__aexit__.return_value = None
+    cursor.fetchone.return_value = (10,)
+    return cursor
 
-    # Mock cursor
-    mock_cursor = AsyncMock()
-    mock_cursor.fetchone = AsyncMock(return_value=(10,))
-    mock_cursor.close = AsyncMock()
 
-    mock_conn.cursor = AsyncMock(return_value=mock_cursor)
-    mock_conn.close = AsyncMock()
+@pytest.fixture
+def dashboard_mock_psycopg_connection(dashboard_mock_psycopg_cursor: MagicMock) -> MagicMock:
+    """Create a psycopg connection whose cursor is an async context manager."""
+    connection = create_autospec(AsyncConnection, instance=True, spec_set=True)
+    connection.cursor.return_value = dashboard_mock_psycopg_cursor
+    return connection
 
-    return mock_conn
+
+@pytest.fixture
+def dashboard_mock_psycopg_connect(dashboard_mock_psycopg_connection: MagicMock) -> MagicMock:
+    """Create the resilient PostgreSQL wrapper used by the dashboard."""
+    resilient = create_autospec(AsyncResilientPostgreSQL, instance=True, spec_set=True)
+    resilient.get_connection.return_value = dashboard_mock_psycopg_connection
+    return resilient
