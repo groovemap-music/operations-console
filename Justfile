@@ -78,7 +78,7 @@ prepare-runtime-wheel:
     bash scripts/prepare-runtime-wheel.sh
 
 brand:
-    python scripts/check-brand.py
+    uv run python scripts/check-brand.py
 
 brand-promote:
     bash scripts/promote-brand.sh

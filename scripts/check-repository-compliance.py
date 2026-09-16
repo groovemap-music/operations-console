@@ -126,6 +126,7 @@ assert '"[0-9a-f]{64}"' in gitleaks_config
 matrix = (ROOT / "scripts/run-e2e-matrix.sh").read_text()
 justfile = (ROOT / "Justfile").read_text()
 assert "uv run playwright install --with-deps chromium firefox webkit" in justfile
+assert not re.search(r"(?m)^[ \t]+python\b", justfile), "Justfile recipe invokes bare python; use 'uv run python' instead"
 assert re.search(r"(?m)^secret-scan:\s*$", justfile)
 assert re.search(r"(?m)^check:.*\bsecret-scan\b", justfile)
 assert re.search(r"(?m)^check:.*\bjs-test\b", justfile)
