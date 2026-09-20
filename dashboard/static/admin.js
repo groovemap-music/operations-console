@@ -1799,7 +1799,7 @@ class AdminContracts extends AdminServiceHealth {
                 this._eaRenderMediaMappingCoverage(null);
             }
         } catch {
-            // Silently fail
+            // Coverage is optional; leave the existing view unchanged if it cannot load.
         } finally {
             if (spinner) spinner.style.display = 'none';
         }
