@@ -42,8 +42,6 @@ dashboard code does not open a Redis client or perform cache warming.
 | --- | --- | --- |
 | `CORS_ORIGINS` | `http://localhost:3000,http://localhost:8003` | Comma-separated allowed origins. |
 | `LOG_LEVEL` | `INFO` | Uvicorn log level. |
-| `LOG_FILE_MAX_BYTES` | `104857600` (100 MiB) | Size, in bytes, at which the `/logs/dashboard.log` file sink rolls over. Read by the shared runtime's `setup_logging` at handler-construction time; a non-numeric or non-positive override falls back to the default. |
-| `LOG_FILE_BACKUP_COUNT` | `5` | Number of rotated `/logs/dashboard.log` backups the shared runtime retains. Same override rules as `LOG_FILE_MAX_BYTES`. |
 | `GROOVEMAP_SOURCE_REVISION` | unset | Full source revision used for the browser-visible corresponding-source link; the image build injects it. |
 
 Telemetry uses the standard OpenTelemetry variables documented in the

@@ -14,7 +14,7 @@
       "postgres"
     ],
     "tested_version": "0.1.0",
-    "tested_commit": "9bac0220df80fdb550fde78d4db8228ca4273625"
+    "tested_commit": "455523ec388fdb9862d7aca65d9434aa7073dcb5"
   },
   "contract": "groovemap.persistence",
   "owners": [
