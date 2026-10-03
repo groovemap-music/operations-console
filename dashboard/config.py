@@ -8,7 +8,6 @@ from common.config import (
     _build_amqp_url,
     _build_neo4j_uri,
     _build_postgres_connstr,
-    _build_redis_url,
     _coerce_port,
     _is_truthy,
     get_secret,
@@ -29,7 +28,6 @@ class DashboardConfig:
     postgres_database: str
     rabbitmq_username: str
     rabbitmq_password: str = field(repr=False)
-    redis_host: str = "redis://localhost:6379/0"
     rabbitmq_management_host: str = "rabbitmq"
     rabbitmq_management_port: int = 15672
     cors_origins: list[str] | None = None
@@ -71,7 +69,6 @@ class DashboardConfig:
             postgres_username=cast("str", postgres_username),
             postgres_password=cast("str", postgres_password),
             postgres_database=cast("str", postgres_database),
-            redis_host=_build_redis_url(),
             rabbitmq_username=get_secret("RABBITMQ_USERNAME", "groovemap"),
             rabbitmq_password=get_secret("RABBITMQ_PASSWORD", "groovemap"),
             rabbitmq_management_host=getenv("RABBITMQ_MANAGEMENT_HOST", getenv("RABBITMQ_HOST", "rabbitmq")),
