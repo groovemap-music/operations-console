@@ -721,7 +721,8 @@ class AdminServices extends AdminQueues {
             const data = await response.json();
             this._renderNeo4j(data.neo4j || {});
             this._renderPostgres(data.postgresql || {});
-            this._renderRedis(data.redis || {});
+            // Accept the older storage payload while catalog-api rolls out Valkey.
+            this._renderValkey(data.valkey ?? data.redis ?? {});
         } catch {
             this._showInlineError(errorEl, errorMsgEl, 'Failed to load storage data');
         } finally {
@@ -875,23 +876,23 @@ class AdminServices extends AdminQueues {
         }
     }
 
-    _renderRedis(redis) {
-        const badge = document.getElementById('redis-status-badge');
+    _renderValkey(valkey) {
+        const badge = document.getElementById('valkey-status-badge');
         if (badge) {
-            const ok = redis.status === 'ok';
+            const ok = valkey.status === 'ok';
             badge.className = `text-[10px] px-2 py-0.5 rounded uppercase font-bold ${ok ? 'badge-ok' : 'badge-error'}`;
-            badge.textContent = redis.status || '—';
+            badge.textContent = valkey.status || '—';
         }
 
-        if (redis.status !== 'ok') return;
+        if (valkey.status !== 'ok') return;
 
-        this._setText('redis-mem-used', redis.memory_used || '—');
-        this._setText('redis-mem-peak', redis.memory_peak || '—');
-        this._setText('redis-total-keys', redis.total_keys != null ? Number(redis.total_keys).toLocaleString() : '—');
+        this._setText('valkey-mem-used', valkey.memory_used || '—');
+        this._setText('valkey-mem-peak', valkey.memory_peak || '—');
+        this._setText('valkey-total-keys', valkey.total_keys != null ? Number(valkey.total_keys).toLocaleString() : '—');
 
-        const tbody = document.getElementById('redis-keys-body');
+        const tbody = document.getElementById('valkey-keys-body');
         if (tbody) {
-            const prefixes = redis.keys_by_prefix || {};
+            const prefixes = valkey.keys_by_prefix || {};
             const entries = Object.entries(prefixes);
             if (entries.length === 0) {
                 tbody.replaceChildren(_emptyRow(2, 'No key data'));

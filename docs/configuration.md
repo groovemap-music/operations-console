@@ -32,9 +32,9 @@ unless `NEO4J_TLS_VERIFY` is explicitly `false`, `0`, or `no`.
 | `API_HOST` | `api` | Internal `catalog-api` host used only by the constrained admin proxy. |
 | `API_PORT` | `8004` | Internal `catalog-api` port. |
 
-The console also parses `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`,
-`CACHE_WARMING_ENABLED`, and `CACHE_WEBHOOK_SECRET` for configuration compatibility. Current
-dashboard code does not open a Redis client or perform cache warming.
+The console parses `CACHE_WARMING_ENABLED` and `CACHE_WEBHOOK_SECRET` for configuration
+compatibility. Current dashboard code does not open a Valkey client or perform cache warming;
+the admin storage panel displays measurements supplied by `catalog-api`.
 
 ## HTTP, logging, source, and telemetry
 

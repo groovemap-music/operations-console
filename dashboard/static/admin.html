@@ -525,31 +525,31 @@
                     </div>
                 </div>
 
-                <!-- Redis collapsible -->
+                <!-- Valkey collapsible -->
                 <div class="border b-theme rounded-lg overflow-hidden">
-                    <div class="collapsible-header flex items-center justify-between px-4 py-3 bg-inner" data-target="storage-redis-body">
+                    <div class="collapsible-header flex items-center justify-between px-4 py-3 bg-inner" data-target="storage-valkey-body">
                         <div class="flex items-center gap-3">
                             <span class="material-symbols-outlined text-sm t-dim">memory</span>
-                            <span class="text-sm font-semibold">Redis</span>
-                            <span id="redis-status-badge" class="text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-idle">—</span>
+                            <span class="text-sm font-semibold">Valkey</span>
+                            <span id="valkey-status-badge" class="text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-idle">—</span>
                         </div>
                         <span class="material-symbols-outlined text-sm t-dim collapsible-chevron">expand_more</span>
                     </div>
-                    <div class="collapsible-body" id="storage-redis-body">
+                    <div class="collapsible-body" id="storage-valkey-body">
                         <div class="p-4 space-y-4">
                             <!-- Memory summary cards -->
-                            <div class="flex gap-4" id="redis-memory-cards">
+                            <div class="flex gap-4" id="valkey-memory-cards">
                                 <div class="stat-card">
                                     <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1">Memory Used</p>
-                                    <p class="text-xl font-semibold mono t-high" id="redis-mem-used">—</p>
+                                    <p class="text-xl font-semibold mono t-high" id="valkey-mem-used">—</p>
                                 </div>
                                 <div class="stat-card">
                                     <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1">Memory Peak</p>
-                                    <p class="text-xl font-semibold mono t-high" id="redis-mem-peak">—</p>
+                                    <p class="text-xl font-semibold mono t-high" id="valkey-mem-peak">—</p>
                                 </div>
                                 <div class="stat-card">
                                     <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1">Total Keys</p>
-                                    <p class="text-xl font-semibold mono t-high" id="redis-total-keys">—</p>
+                                    <p class="text-xl font-semibold mono t-high" id="valkey-total-keys">—</p>
                                 </div>
                             </div>
                             <!-- Keys by prefix -->
@@ -562,7 +562,7 @@
                                             <th class="text-right py-1.5">Count</th>
                                         </tr>
                                     </thead>
-                                    <tbody id="redis-keys-body">
+                                    <tbody id="valkey-keys-body">
                                         <tr><td colspan="2" class="py-3 text-center t-muted">Loading...</td></tr>
                                     </tbody>
                                 </table>
