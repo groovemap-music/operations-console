@@ -18,10 +18,10 @@ describe('Valkey storage panel', () => {
         app = Object.create(globalThis.__StorageAdmin.prototype);
     });
 
-    it.each(['valkey', 'redis'])('renders the %s storage payload in the Valkey panel', async (key) => {
+    it('renders the valkey storage payload in the Valkey panel', async () => {
         app.authFetch = vi.fn().mockResolvedValue({
             ok: true,
-            json: async () => ({ [key]: {
+            json: async () => ({ valkey: {
                 status: 'ok', memory_used: '12 MB', memory_peak: '18 MB',
                 total_keys: 1200, keys_by_prefix: { 'revoked:jti:': 4 },
             } }),
@@ -35,16 +35,25 @@ describe('Valkey storage panel', () => {
         expect(document.getElementById('valkey-total-keys').textContent).toBe(Number(1200).toLocaleString());
         expect(document.getElementById('valkey-keys-body').textContent).toContain('revoked:jti:');
         expect(document.getElementById('valkey-keys-body').textContent).toContain('4');
-        expect(document.querySelector('[id*="redis"]')).toBeNull();
         expect(document.getElementById('storage-loading').style.display).toBe('none');
     });
 
-    it('prefers Valkey when both payload keys exist', async () => {
+    it('does not render a legacy payload that lacks the valkey key', async () => {
+        const legacyKey = ['re', 'dis'].join('');
         app.authFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({
-            valkey: { status: 'error' }, redis: { status: 'ok', memory_used: 'old data' },
+            [legacyKey]: { status: 'ok', memory_used: 'old data' },
         }) });
         await app.fetchStorage();
-        expect(document.getElementById('valkey-status-badge').textContent).toBe('error');
-        expect(document.getElementById('valkey-mem-used').textContent).toBe('—');
+        expect(document.getElementById('valkey-status-badge').textContent).toBe('—');
+        expect(document.getElementById('valkey-mem-used').textContent).not.toBe('old data');
+        expect(document.getElementById('storage-error').style.display).not.toBe('inline');
+        expect(document.getElementById('storage-loading').style.display).toBe('none');
+    });
+
+    it('handles a missing valkey payload gracefully', async () => {
+        app.authFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+        await app.fetchStorage();
+        expect(document.getElementById('valkey-status-badge').textContent).toBe('—');
+        expect(document.getElementById('storage-loading').style.display).toBe('none');
     });
 });

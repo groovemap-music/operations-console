@@ -721,8 +721,7 @@ class AdminServices extends AdminQueues {
             const data = await response.json();
             this._renderNeo4j(data.neo4j || {});
             this._renderPostgres(data.postgresql || {});
-            // Accept the older storage payload while catalog-api rolls out Valkey.
-            this._renderValkey(data.valkey ?? data.redis ?? {});
+            this._renderValkey(data.valkey || {});
         } catch {
             this._showInlineError(errorEl, errorMsgEl, 'Failed to load storage data');
         } finally {
