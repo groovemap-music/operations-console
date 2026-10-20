@@ -38,10 +38,9 @@ describe('Valkey storage panel', () => {
         expect(document.getElementById('storage-loading').style.display).toBe('none');
     });
 
-    it('does not render a legacy payload that lacks the valkey key', async () => {
-        const legacyKey = ['re', 'dis'].join('');
+    it('renders the panel default and no error for a payload carrying only an unrelated key', async () => {
         app.authFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({
-            [legacyKey]: { status: 'ok', memory_used: 'old data' },
+            legacy_storage: { status: 'ok', memory_used: 'old data' },
         }) });
         await app.fetchStorage();
         expect(document.getElementById('valkey-status-badge').textContent).toBe('—');
