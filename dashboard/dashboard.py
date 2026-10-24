@@ -244,31 +244,46 @@ class WebSocketConnections:
 # prefix override: the queue-name filter matched nothing, and get_queue_info logs
 # nothing on a zero-match 200, so both pipeline panes silently showed an empty,
 # healthy-looking pipeline while queues backed up (retained queue-prefix regression).
+# Health ports are role-based and identical across sources: the producer on 8000, the graph
+# enricher (neo4j consumer) on 8001, the SQL loader (postgresql consumer) on 8002. Deriving
+# each service's URL from its role keeps the two sources from drifting apart again.
+PRODUCER_HEALTH_PORT = 8000
+CONSUMER_HEALTH_PORTS: dict[str, int] = {"neo4j": 8001, "postgresql": 8002}
+
+
+def _health_url(service: str, port: int) -> str:
+    return f"http://{service}:{port}/health"
+
+
+def _pipeline_config(label: str, producer: str, consumers: list[dict], queue_prefix: str, entity_types: list[str]) -> dict:
+    return {
+        "label": label,
+        "producer": producer,
+        "consumers": consumers,
+        "services": [
+            (producer, _health_url(producer, PRODUCER_HEALTH_PORT)),
+            *((c["name"], _health_url(c["name"], CONSUMER_HEALTH_PORTS[c["datastore"]])) for c in consumers),
+        ],
+        "queue_prefix": queue_prefix,
+        "entity_types": entity_types,
+    }
+
+
 PIPELINE_CONFIGS: dict[str, dict] = {
-    "discogs": {
-        "label": "Discogs",
-        "producer": "extractor-discogs",
-        "consumers": [{"name": "graphinator", "datastore": "neo4j"}, {"name": "tableinator", "datastore": "postgresql"}],
-        "services": [
-            ("extractor-discogs", "http://extractor-discogs:8000/health"),
-            ("graphinator", "http://graphinator:8001/health"),
-            ("tableinator", "http://tableinator:8002/health"),
-        ],
-        "queue_prefix": DISCOGS_EXCHANGE_PREFIX,
-        "entity_types": ["masters", "releases", "artists", "labels"],
-    },
-    "musicbrainz": {
-        "label": "MusicBrainz",
-        "producer": "extractor-musicbrainz",
-        "consumers": [{"name": "brainzgraphinator", "datastore": "neo4j"}, {"name": "brainztableinator", "datastore": "postgresql"}],
-        "services": [
-            ("extractor-musicbrainz", "http://extractor-musicbrainz:8000/health"),
-            ("brainzgraphinator", "http://brainzgraphinator:8011/health"),
-            ("brainztableinator", "http://brainztableinator:8010/health"),
-        ],
-        "queue_prefix": MUSICBRAINZ_EXCHANGE_PREFIX,
-        "entity_types": ["release-groups", "releases", "artists", "labels"],
-    },
+    "discogs": _pipeline_config(
+        "Discogs",
+        "extractor-discogs",
+        [{"name": "graphinator", "datastore": "neo4j"}, {"name": "tableinator", "datastore": "postgresql"}],
+        DISCOGS_EXCHANGE_PREFIX,
+        ["masters", "releases", "artists", "labels"],
+    ),
+    "musicbrainz": _pipeline_config(
+        "MusicBrainz",
+        "extractor-musicbrainz",
+        [{"name": "brainzgraphinator", "datastore": "neo4j"}, {"name": "brainztableinator", "datastore": "postgresql"}],
+        MUSICBRAINZ_EXCHANGE_PREFIX,
+        ["release-groups", "releases", "artists", "labels"],
+    ),
 }
 
 
