@@ -107,5 +107,7 @@ describe('shared history time range', () => {
         const queues = [{ queue_name: 'q', data_points: [{ publish_rate: null, ack_rate: 2 }] }];
         expect(app._avgLatest(queues, 'publish_rate')).toBeNull();
         expect(app._avgLatest(queues, 'ack_rate')).toBe(2);
+        app.renderQueueSummaryTiles({ queues });
+        expect(document.getElementById('queue-summary-tiles').textContent).toContain('No rate data');
     });
 });

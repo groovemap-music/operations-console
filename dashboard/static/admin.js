@@ -1166,8 +1166,8 @@ class AdminQueueHistory extends AdminFeedback {
         const tiles = [
             { label: 'Total Queue Depth', value: totalDepth.toLocaleString(), spark: depthSparkPoints, color: '#818cf8' },
             { label: 'DLQ Messages', value: dlqTotal.toLocaleString(), spark: dlqSparkPoints, color: '#f87171' },
-            { label: 'Avg Publish Rate', value: avgPublish == null ? '\u2014' : `${avgPublish.toFixed(1)}/s`, spark: null, color: null },
-            { label: 'Avg Ack Rate', value: avgAck == null ? '\u2014' : `${avgAck.toFixed(1)}/s`, spark: null, color: null },
+            { label: 'Avg Publish Rate', value: avgPublish == null ? 'No rate data' : `${avgPublish.toFixed(1)}/s`, spark: null, color: null },
+            { label: 'Avg Ack Rate', value: avgAck == null ? 'No rate data' : `${avgAck.toFixed(1)}/s`, spark: null, color: null },
             { label: 'Active Consumers', value: totalConsumers.toLocaleString(), spark: null, color: null },
         ];
 
