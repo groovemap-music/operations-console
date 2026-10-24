@@ -46,22 +46,27 @@ derived from the live feed.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `GRAFANA_URL` | unset | Base URL of Grafana, such as `https://grafana.example.net`. |
+| `GRAFANA_URL` | unset | Browser-facing base URL of Grafana, such as `https://grafana.example.net`. Alert links and the deep links use it. |
+| `GRAFANA_API_URL` | `GRAFANA_URL` | Base URL the console server uses to reach Grafana's Alertmanager API, such as `http://grafana:3000` on the compose network. Set it when the server and the browser reach Grafana at different addresses. |
 | `GRAFANA_TOKEN_FILE` | unset | Path to a file holding a Grafana service-account token with read access to alert rules and the Alertmanager API (`alert.instances:read`). Only the file form is read; there is no plain-variable fallback. |
 
-The console asks `{GRAFANA_URL}/api/alertmanager/grafana/api/v2/alerts` (active, not silenced, not
+The console asks `{GRAFANA_API_URL}/api/alertmanager/grafana/api/v2/alerts` (active, not silenced, not
 inhibited) from the server, behind the admin session like every other data route, through its own
 `GET /api/alerts`. The token is never sent to the browser, and neither it nor an upstream error
-message is logged or returned. Alert links point only into the configured Grafana. When Grafana is
-configured but does not answer, the token file cannot be read, or the response is not an alert
-list, the route answers `available: false` with a note and the bar shows it beside the derived
-items.
+message is logged or returned. Alert links point only into `GRAFANA_URL`. Alerts are configured
+only when a Grafana URL is set and `GRAFANA_TOKEN_FILE` names a readable, non-empty token; an
+unset variable, a missing file, or an empty file answers `configured: false` and the bar says nothing about
+Grafana. A token file that exists but cannot be read (permissions, a directory in its place) or is
+not valid UTF-8 is a broken mount: the route answers `available: false` with the note and logs the
+error class only. When Grafana is configured but does not answer, refuses the token (401 or 403), or the
+response is not an alert list, the route answers `available: false` with a note and the bar shows
+it beside the derived items.
 
 ## Grafana and trace links
 
 Each service, queue, and datastore links into the provisioned Grafana dashboards instead of
 redrawing their charts. The links need no token: they are plain URLs the operator's browser opens
-in a new tab (`rel="noopener noreferrer"`), so they work with `GRAFANA_URL` alone.
+in a new tab (`rel="noopener noreferrer"`), so they work with `GRAFANA_URL` alone (`GRAFANA_API_URL` is server-side only and never reaches the browser).
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
