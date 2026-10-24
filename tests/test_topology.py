@@ -79,3 +79,19 @@ def test_the_route_serves_the_topology_to_a_session_and_refuses_anonymous(fake_c
         response = client.get("/api/topology", headers={"Authorization": f"Bearer {fake_catalog.mint()}"})
     assert response.status_code == 200
     assert response.json() == build_topology(PIPELINE_CONFIGS)
+
+
+def test_health_ports_match_per_role_across_sources():
+    """Both sources expose the same health port per role (producer 8000, neo4j 8001, postgresql 8002)."""
+    expected = {"producer": 8000, "neo4j": 8001, "postgresql": 8002}
+
+    def port(url: str) -> int:
+        return int(url.rsplit(":", 1)[1].split("/")[0])
+
+    by_source = {}
+    for name, config in PIPELINE_CONFIGS.items():
+        urls = dict(config["services"])
+        ports = {"producer": port(urls[config["producer"]])}
+        ports.update({c["datastore"]: port(urls[c["name"]]) for c in config["consumers"]})
+        by_source[name] = ports
+    assert by_source["discogs"] == by_source["musicbrainz"] == expected
