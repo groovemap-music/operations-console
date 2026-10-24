@@ -184,7 +184,7 @@ datastore item opens the Storage tab, and a Grafana alert opens in Grafana.
 | A firing Grafana alert | Critical when labelled `severity=critical`, otherwise warning |
 
 Queue items use the matrix's own rules above, so the bar and the matrix cannot disagree. Grafana
-alerts appear only when `GRAFANA_URL` and `GRAFANA_TOKEN_FILE` are configured
+alerts appear only when a Grafana URL (`GRAFANA_API_URL`, else `GRAFANA_URL`) and a readable `GRAFANA_TOKEN_FILE` are configured
 ([configuration](configuration.md#grafana-alerts)); if Grafana does not answer, the bar keeps the
 items derived from the live feed and says "Grafana alerts unavailable".
 
