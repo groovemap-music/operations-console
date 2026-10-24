@@ -77,6 +77,11 @@ const SESSION_END_MESSAGES = {
 // dependency is back.
 const SESSION_DISCARD_REASONS = new Set(['signed-out', 'signed-out-unconfirmed', 'missing', 'invalid']);
 
+// One time range, shared by every history view, persisted across reloads.
+const RANGE_STORAGE_KEY = 'console_range';
+const HISTORY_RANGES = ['1h', '6h', '24h', '7d', '30d', '90d'];
+const HISTORY_TABS = ['queue-trends', 'system-health'];
+
 const QUEUE_CHART_COLORS = [
     '#818cf8', '#34d399', '#f59e0b', '#f87171',
     '#a78bfa', '#38bdf8', '#fb923c', '#e879f9',
@@ -252,12 +257,12 @@ class AdminInteractions {
 
         const qtRefreshBtn = document.getElementById('qt-refresh-btn');
         if (qtRefreshBtn) {
-            qtRefreshBtn.addEventListener('click', () => this.fetchQueueHistory(this._getRange('queue-trends')));
+            qtRefreshBtn.addEventListener('click', () => this.fetchQueueHistory(this._getRange()));
         }
 
         const shRefreshBtn = document.getElementById('sh-refresh-btn');
         if (shRefreshBtn) {
-            shRefreshBtn.addEventListener('click', () => this.fetchHealthHistory(this._getRange('system-health')));
+            shRefreshBtn.addEventListener('click', () => this.fetchHealthHistory(this._getRange()));
         }
 
         const alRefreshBtn = document.getElementById('al-refresh-btn');
@@ -272,28 +277,14 @@ class AdminInteractions {
         const alNextBtn = document.getElementById('al-next-btn');
         if (alNextBtn) alNextBtn.addEventListener('click', () => { this._auditLogPage++; this.fetchAuditLog(); });
 
+        // One time range for every history view; the buttons live in the shared range bar.
+        this._syncRangeButtons();
         document.querySelectorAll('.range-btn').forEach(btn => {
             btn.addEventListener('click', () => {
-                const range = btn.dataset.range;
-                const tabRange = btn.dataset.tabRange;
-                document.querySelectorAll(`.range-btn[data-tab-range="${tabRange}"]`).forEach(b => {
-                    b.classList.toggle('active', b === btn);
-                });
-                localStorage.setItem(`admin_range_${tabRange}`, range);
-                if (tabRange === 'queue-trends') {
-                    this.fetchQueueHistory(range);
-                } else if (tabRange === 'system-health') {
-                    this.fetchHealthHistory(range);
-                }
+                localStorage.setItem(RANGE_STORAGE_KEY, btn.dataset.range);
+                this._syncRangeButtons();
+                this._refreshHistory();
             });
-        });
-
-        ['queue-trends', 'system-health'].forEach(tab => {
-            const saved = localStorage.getItem(`admin_range_${tab}`);
-            if (saved) {
-                const btns = document.querySelectorAll(`.range-btn[data-tab-range="${tab}"]`);
-                btns.forEach(b => b.classList.toggle('active', b.dataset.range === saved));
-            }
         });
 
         document.querySelectorAll('.ea-view-btn').forEach(btn => {
@@ -363,15 +354,16 @@ class AdminInteractions {
             if (el) el.style.display = name === tabName ? 'block' : 'none';
         });
 
+        const rangeBar = document.getElementById('console-range-bar');
+        if (rangeBar) rangeBar.style.display = HISTORY_TABS.includes(tabName) ? 'flex' : 'none';
+
         if (tabName === 'users') {
             this.fetchUserStats();
             this.fetchSyncActivity();
         } else if (tabName === 'storage') {
             this.fetchStorage();
-        } else if (tabName === 'queue-trends') {
-            this.fetchQueueHistory(this._getRange('queue-trends'));
-        } else if (tabName === 'system-health') {
-            this.fetchHealthHistory(this._getRange('system-health'));
+        } else if (HISTORY_TABS.includes(tabName)) {
+            this._refreshHistory();
         } else if (tabName === 'audit-log') {
             this.fetchAuditLog();
         } else if (tabName === 'extraction-analysis') {
@@ -1097,10 +1089,8 @@ class AdminFeedback extends AdminServices {
                 this.fetchSyncActivity();
             } else if (this.activeTab === 'storage') {
                 this.fetchStorage();
-            } else if (this.activeTab === 'queue-trends') {
-                this.fetchQueueHistory(this._getRange('queue-trends'));
-            } else if (this.activeTab === 'system-health') {
-                this.fetchHealthHistory(this._getRange('system-health'));
+            } else if (HISTORY_TABS.includes(this.activeTab)) {
+                this._refreshHistory();
             } else if (this.activeTab === 'audit-log') {
                 this.fetchAuditLog();
             }
@@ -1122,15 +1112,18 @@ class AdminQueueHistory extends AdminFeedback {
         if (errorEl) errorEl.style.display = 'none';
 
         try {
-            const response = await this.authFetch(`/admin/api/queues/history?range=${encodeURIComponent(range)}`);
+            const response = await this.authFetch(`/api/history/queues?range=${encodeURIComponent(range)}`);
             if (!response.ok) {
                 const err = await response.json().catch(() => ({}));
+                if (response.status === 503) {
+                    this._showHistoryUnavailable('queue', errorEl, errorMsgEl);
+                    return;
+                }
                 this._showInlineError(errorEl, errorMsgEl, err.detail || `Error ${response.status}`);
                 return;
             }
 
-            const data = await response.json();
-            const normalized = this._normalizeQueueData(data);
+            const normalized = await response.json();
             this.renderQueueSummaryTiles(normalized);
             this.renderQueueDepthChart(normalized);
             this.renderDlqGrid(normalized);
@@ -1173,8 +1166,8 @@ class AdminQueueHistory extends AdminFeedback {
         const tiles = [
             { label: 'Total Queue Depth', value: totalDepth.toLocaleString(), spark: depthSparkPoints, color: '#818cf8' },
             { label: 'DLQ Messages', value: dlqTotal.toLocaleString(), spark: dlqSparkPoints, color: '#f87171' },
-            { label: 'Avg Publish Rate', value: `${avgPublish.toFixed(1)}/s`, spark: null, color: null },
-            { label: 'Avg Ack Rate', value: `${avgAck.toFixed(1)}/s`, spark: null, color: null },
+            { label: 'Avg Publish Rate', value: avgPublish == null ? 'No rate data' : `${avgPublish.toFixed(1)}/s`, spark: null, color: null },
+            { label: 'Avg Ack Rate', value: avgAck == null ? 'No rate data' : `${avgAck.toFixed(1)}/s`, spark: null, color: null },
             { label: 'Active Consumers', value: totalConsumers.toLocaleString(), spark: null, color: null },
         ];
 
@@ -1334,15 +1327,18 @@ class AdminServiceHealth extends AdminQueueHistory {
         if (errorEl) errorEl.style.display = 'none';
 
         try {
-            const response = await this.authFetch(`/admin/api/health/history?range=${encodeURIComponent(range)}`);
+            const response = await this.authFetch(`/api/history/health?range=${encodeURIComponent(range)}`);
             if (!response.ok) {
                 const err = await response.json().catch(() => ({}));
+                if (response.status === 503) {
+                    this._showHistoryUnavailable('health', errorEl, errorMsgEl);
+                    return;
+                }
                 this._showInlineError(errorEl, errorMsgEl, err.detail || `Error ${response.status}`);
                 return;
             }
 
-            const data = await response.json();
-            const normalized = this._normalizeHealthData(data);
+            const normalized = await response.json();
             this.renderServiceCards(normalized);
             this.renderResponseTimeChart(normalized);
             this.renderEndpointsTable(normalized);
@@ -1498,7 +1494,7 @@ class AdminServiceHealth extends AdminQueueHistory {
             const tdPath = document.createElement('td');
             tdPath.className = 'py-2 px-4 mono text-xs';
             tdPath.style.color = '#818cf8';
-            tdPath.textContent = ep.endpoint || '\u2014';
+            tdPath.textContent = ep.endpoint ? (ep.service_name ? `${ep.service_name} ${ep.endpoint}` : ep.endpoint) : '\u2014';
 
             const tdReqs = document.createElement('td');
             tdReqs.className = 'py-2 px-4 mono t-mid text-right';
@@ -1552,81 +1548,33 @@ class AdminServiceHealth extends AdminQueueHistory {
         if (errorEl) errorEl.style.display = 'flex';
     }
 
-    _getRange(tabName) {
-        return localStorage.getItem(`admin_range_${tabName}`) || '24h';
+    _getRange() {
+        const saved = localStorage.getItem(RANGE_STORAGE_KEY);
+        return HISTORY_RANGES.includes(saved) ? saved : '24h';
     }
 
-    _normalizeHealthData(data) {
-        // API returns {services: {name: {history: [{ts, status, response_time_ms}]}}}
-        // Frontend expects {services: [{service_name, status, uptime_pct, response_time_ms}],
-        //                   response_time_series: [{timestamp, p50, p95, p99}], endpoints: []}
-        if (Array.isArray(data.services)) return data;
-
-        const servicesObj = data.services || {};
-        const services = Object.entries(servicesObj).map(([name, svc]) => {
-            const history = svc.history || [];
-            const healthyCount = history.filter(h => h.status === 'healthy').length;
-            const uptime_pct = history.length > 0 ? (healthyCount / history.length) * 100 : 0;
-            const latest = history.length > 0 ? history[history.length - 1] : {};
-            const avgRt = history.length > 0
-                ? history.reduce((s, h) => s + (h.response_time_ms || 0), 0) / history.length
-                : 0;
-            return {
-                service_name: name,
-                status: latest.status || 'unknown',
-                uptime_pct,
-                response_time_ms: avgRt,
-            };
-        });
-
-        // Build response_time_series from all services' history
-        const allTimestamps = new Map();
-        for (const [, svc] of Object.entries(servicesObj)) {
-            for (const h of (svc.history || [])) {
-                const ts = h.ts;
-                if (!allTimestamps.has(ts)) allTimestamps.set(ts, []);
-                allTimestamps.get(ts).push(h.response_time_ms || 0);
-            }
-        }
-        const response_time_series = [...allTimestamps.entries()]
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([ts, times]) => {
-                const sorted = [...times].sort((a, b) => a - b);
-                const p = (pct) => sorted[Math.min(Math.floor(sorted.length * pct), sorted.length - 1)] || 0;
-                return { timestamp: ts, p50: p(0.5), p95: p(0.95), p99: p(0.99) };
-            });
-
-        return { ...data, services, response_time_series, endpoints: data.endpoints || [] };
+    _syncRangeButtons() {
+        const range = this._getRange();
+        document.querySelectorAll('.range-btn').forEach(b => b.classList.toggle('active', b.dataset.range === range));
     }
 
-    _normalizeQueueData(data) {
-        // API returns {queues: {name: {history: [{ts, ready, unacked, total, publish_rate, deliver_rate}]}}}
-        // Frontend expects {queues: [{queue_name, data_points: [{timestamp, messages_ready, ...}]}],
-        //                   dlq_summary: [{queue_name, data_points: [...]}]}
-        if (Array.isArray(data.queues)) return data;
+    _refreshHistory() {
+        if (this.activeTab === 'queue-trends') this.fetchQueueHistory(this._getRange());
+        else if (this.activeTab === 'system-health') this.fetchHealthHistory(this._getRange());
+    }
 
-        const queuesObj = data.queues || {};
-        const queues = [];
-        const dlq_summary = [];
-
-        for (const [name, qData] of Object.entries(queuesObj)) {
-            const data_points = (qData.history || []).map(h => ({
-                timestamp: h.ts,
-                messages_ready: h.ready || 0,
-                messages_unacknowledged: h.unacked || 0,
-                consumers: h.consumers || 0,
-                publish_rate: h.publish_rate || 0,
-                ack_rate: h.deliver_rate || 0,
-            }));
-            const entry = { queue_name: name, data_points };
-            if (name.endsWith('.dlq')) {
-                dlq_summary.push(entry);
-            } else {
-                queues.push(entry);
-            }
+    // VictoriaMetrics is down: say so explicitly and drop stale panels. The live Overview does not depend on it.
+    _showHistoryUnavailable(kind, errorEl, errorMsgEl) {
+        this._showInlineError(errorEl, errorMsgEl, 'History unavailable: the metrics store is not answering. Live data on Overview is unaffected.');
+        if (kind === 'queue') {
+            this.renderQueueSummaryTiles({});
+            this.renderQueueDepthChart({});
+            this.renderDlqGrid({});
+        } else {
+            this.renderServiceCards({});
+            this.renderResponseTimeChart({});
+            this.renderEndpointsTable({});
         }
-
-        return { ...data, queues, dlq_summary };
     }
 
     _aggregateSparkline(queues, field) {
@@ -1649,17 +1597,18 @@ class AdminServiceHealth extends AdminQueueHistory {
     }
 
     _avgLatest(queues, field) {
-        if (!queues || queues.length === 0) return 0;
+        // null when no queue has a reading, so an unscraped rate shows as "no data" rather than 0/s
         let sum = 0;
         let count = 0;
-        for (const q of queues) {
+        for (const q of queues || []) {
             const pts = q.data_points || [];
-            if (pts.length > 0) {
-                sum += pts[pts.length - 1][field] || 0;
+            const latest = pts.length > 0 ? pts[pts.length - 1][field] : null;
+            if (latest != null) {
+                sum += latest;
                 count++;
             }
         }
-        return count > 0 ? sum / count : 0;
+        return count > 0 ? sum / count : null;
     }
 
     _createSparklineSVGElement(points, color, width = 55, height = 20) {

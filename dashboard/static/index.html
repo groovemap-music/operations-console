@@ -294,6 +294,17 @@
             </button>
         </nav>
 
+        <!-- One time range for every history view (Queue Trends, System Health), served from VictoriaMetrics -->
+        <div id="console-range-bar" class="flex items-center gap-2 mb-6" style="display:none">
+            <span class="text-[10px] font-bold uppercase tracking-wider t-muted mr-2">Range</span>
+            <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="1h">1h</button>
+            <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="6h">6h</button>
+            <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors active" data-range="24h">24h</button>
+            <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="7d">7d</button>
+            <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="30d">30d</button>
+            <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="90d">90d</button>
+        </div>
+
         <!-- ============================================================
              TAB: OVERVIEW (live pipeline, queue, and datastore view)
              ============================================================ -->
@@ -1583,16 +1594,6 @@
                     </div>
                 </div>
 
-                <!-- Range selector -->
-                <div class="flex items-center gap-2 mt-2 mb-6">
-                    <span class="text-[10px] font-bold uppercase tracking-wider t-muted mr-2">Range</span>
-                    <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="1h" data-tab-range="queue-trends">1h</button>
-                    <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="6h" data-tab-range="queue-trends">6h</button>
-                    <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors active" data-range="24h" data-tab-range="queue-trends">24h</button>
-                    <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="7d" data-tab-range="queue-trends">7d</button>
-                    <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="30d" data-tab-range="queue-trends">30d</button>
-                    <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="90d" data-tab-range="queue-trends">90d</button>
-                </div>
 
                 <!-- Summary tiles -->
                 <div class="mb-6">
@@ -1641,16 +1642,6 @@
                     </div>
                 </div>
 
-                <!-- Range selector -->
-                <div class="flex items-center gap-2 mt-2 mb-6">
-                    <span class="text-[10px] font-bold uppercase tracking-wider t-muted mr-2">Range</span>
-                    <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="1h" data-tab-range="system-health">1h</button>
-                    <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="6h" data-tab-range="system-health">6h</button>
-                    <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors active" data-range="24h" data-tab-range="system-health">24h</button>
-                    <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="7d" data-tab-range="system-health">7d</button>
-                    <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="30d" data-tab-range="system-health">30d</button>
-                    <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="90d" data-tab-range="system-health">90d</button>
-                </div>
 
                 <!-- Service status cards -->
                 <div class="mb-6">
