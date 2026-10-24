@@ -72,7 +72,7 @@ class TestUnconfigured:
     def test_alerts_need_both_the_url_and_the_token_file(
         self, client: TestClient, grafana: FakeGrafana, monkeypatch: pytest.MonkeyPatch, variables: dict[str, str]
     ) -> None:
-        for name in ("GRAFANA_URL", "GRAFANA_TOKEN_FILE"):
+        for name in ("GRAFANA_URL", "GRAFANA_API_URL", "GRAFANA_TOKEN_FILE"):
             monkeypatch.delenv(name, raising=False)
         for name, value in variables.items():
             monkeypatch.setenv(name, value)
@@ -138,17 +138,77 @@ class TestErrors:
         assert response.json() == {"configured": True, "available": False, "alerts": [], "note": grafana_alerts.UNAVAILABLE_NOTE}
 
     @pytest.mark.parametrize("content", [None, ""])
-    def test_a_missing_or_empty_token_file_degrades_without_asking_grafana(
+    def test_a_missing_or_empty_token_file_is_unconfigured_without_asking_grafana(
         self, client: TestClient, grafana: FakeGrafana, configured: Path, content: str | None
     ) -> None:
         if content is None:
             configured.unlink()
         else:
             configured.write_text(content)
-        body = client.get("/api/alerts").json()
-        assert body["available"] is False
-        assert body["note"] == grafana_alerts.UNAVAILABLE_NOTE
+        assert client.get("/api/alerts").json() == {"configured": False, "available": False, "alerts": [], "note": None}
         assert grafana.requests == []
+
+    def test_an_empty_token_file_variable_is_unconfigured(
+        self, client: TestClient, grafana: FakeGrafana, configured: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GRAFANA_TOKEN_FILE", "")
+        assert client.get("/api/alerts").json()["configured"] is False
+        assert grafana.requests == []
+
+
+class TestBrokenTokenFile:
+    @pytest.mark.parametrize("kind", ["permission", "directory", "binary"])
+    def test_an_unreadable_token_file_is_unavailable_and_logged_without_the_token(
+        self, client: TestClient, grafana: FakeGrafana, configured: Path, kind: str
+    ) -> None:
+        if kind == "permission":
+            configured.chmod(0)
+        elif kind == "directory":
+            configured.unlink()
+            configured.mkdir()
+        else:
+            configured.write_bytes(b"\xff\xfe" + TOKEN.encode())
+        with capture_logs() as logs:
+            response = client.get("/api/alerts")
+        configured.chmod(0o700) if kind == "permission" else None
+        assert response.status_code == 200
+        assert response.json() == {"configured": True, "available": False, "alerts": [], "note": grafana_alerts.UNAVAILABLE_NOTE}
+        assert grafana.requests == []
+        assert [e["event"] for e in logs] == ["grafana_alerts_unavailable"]
+        assert TOKEN not in json.dumps(logs, default=str)
+        assert TOKEN not in response.text
+
+
+class TestApiUrl:
+    def test_the_server_asks_grafana_api_url_and_links_use_grafana_url(
+        self, client: TestClient, grafana: FakeGrafana, configured: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GRAFANA_API_URL", "http://grafana:3000/")
+        grafana.body = [_alert("A", generatorURL=f"{BASE}/alerting/grafana/x/view"), _alert("B", generatorURL="http://grafana:3000/internal")]
+        body = client.get("/api/alerts").json()
+        (request,) = grafana.requests
+        assert (request.url.scheme, request.url.host, request.url.port) == ("http", "grafana", 3000)
+        assert body["configured"] is True
+        assert [a["url"] for a in body["alerts"]] == [f"{BASE}/alerting/grafana/x/view", f"{BASE}/alerting/list"]
+
+    def test_it_defaults_to_grafana_url(self, client: TestClient, grafana: FakeGrafana, configured: Path) -> None:
+        client.get("/api/alerts")
+        (request,) = grafana.requests
+        assert request.url.host == "grafana.test"
+
+    def test_grafana_api_url_alone_configures_alerts(
+        self, client: TestClient, grafana: FakeGrafana, configured: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("GRAFANA_URL")
+        monkeypatch.setenv("GRAFANA_API_URL", BASE)
+        assert client.get("/api/alerts").json()["configured"] is True
+
+
+class TestAuthFailures:
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_a_refused_token_stays_configured_but_unavailable(self, client: TestClient, grafana: FakeGrafana, configured: Path, status: int) -> None:
+        grafana.status, grafana.body = status, b"forbidden"
+        assert client.get("/api/alerts").json() == {"configured": True, "available": False, "alerts": [], "note": grafana_alerts.UNAVAILABLE_NOTE}
 
 
 class TestTheTokenStaysOnTheServer:
