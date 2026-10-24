@@ -61,6 +61,13 @@ class FakeWebSocket {
         this.readyState = 3;
         this.onclose?.({ code });
     }
+    serverOpen() {
+        this.readyState = FakeWebSocket.OPEN;
+        this.onopen?.();
+    }
+    serverMessage(data) {
+        this.onmessage?.({ data: JSON.stringify(data) });
+    }
 }
 
 // Each test builds fresh instances that listen on the one jsdom document; remove every listener
@@ -131,7 +138,6 @@ describe('admin.js owns the session', () => {
     it.each([
         [401, { reason: 'invalid' }, 'Your session expired or was revoked. Sign in again.', null],
         [503, { reason: 'unavailable' }, 'catalog-api is unreachable, so your session could not be verified. Sign in again once it is back.', 'stale-token'],
-        [429, { reason: 'throttled' }, 'Too many failed session checks from this address. Wait a minute and sign in again.', 'stale-token'],
     ])('returns a stored session answered %i to the login form with its reason', async (status, body, message, kept) => {
         localStorage.setItem('admin_token', 'stale-token');
         installFetch({ '/api/session': () => jsonResponse(status, body) });
@@ -192,21 +198,32 @@ describe('admin.js owns the session', () => {
         expect(document.getElementById('login-reason').dataset.reason).toBe('invalid');
     });
 
-    it('signs out with a visible reason and forgets the bearer', async () => {
+    it.each([
+        [200, 'You signed out.'],
+        [204, 'You signed out.'],
+        [401, 'You signed out.'],
+        [502, 'You are signed out of this browser, but catalog-api did not confirm the sign-out, so the session may still be valid until it expires.'],
+        [503, 'You are signed out of this browser, but catalog-api did not confirm the sign-out, so the session may still be valid until it expires.'],
+        [null, 'You are signed out of this browser, but catalog-api did not confirm the sign-out, so the session may still be valid until it expires.'],
+    ])('reports a logout answered %s honestly and forgets the bearer either way', async (status, message) => {
         localStorage.setItem('admin_token', 'live-token');
         const fetchMock = installFetch({
             '/api/session': () => jsonResponse(200, LIVE_SESSION),
             '/admin/api/extractions': () => jsonResponse(200, { extractions: [] }),
-            '/admin/api/logout': () => jsonResponse(200, { logged_out: true }),
+            '/admin/api/logout': () => {
+                if (status === null) throw new TypeError('Failed to fetch');
+                return jsonResponse(status, {});
+            },
         });
         const app = new classes.AdminDashboard();
         await flush();
 
         await app.logout();
 
-        expect(fetchMock.mock.calls.some(([url]) => url === '/admin/api/logout')).toBe(true);
+        const logoutCall = fetchMock.mock.calls.find(([url]) => url === '/admin/api/logout');
+        expect(logoutCall[1].headers.Authorization).toBe('Bearer live-token');
         expect(visible('login-view')).toBe(true);
-        expect(document.getElementById('login-reason').textContent).toBe('You signed out.');
+        expect(document.getElementById('login-reason').textContent).toBe(message);
         expect(localStorage.getItem('admin_token')).toBeNull();
         expect(events.map((event) => event.name)).toContain('console:signed-out');
     });
@@ -286,7 +303,7 @@ describe('dashboard.js reads only inside a session', () => {
 
         expect(events.map((event) => event.name)).toContain('console:session-check');
         expect(FakeWebSocket.instances).toHaveLength(1);
-        expect(dashboard.reconnectInterval).toBeNull();
+        expect(dashboard.reconnectTimer).toBeNull();
     });
 
     it('reconnects with a fresh ticket after an ordinary drop', async () => {
@@ -307,16 +324,104 @@ describe('dashboard.js reads only inside a session', () => {
         expect(events.map((event) => event.name)).not.toContain('console:session-check');
     });
 
-    it.each([401, 429, 503])('asks for a session check when the ticket request is refused with %i', async (status) => {
+    it('asks for a session check when the ticket request is refused with 401', async () => {
         const { dashboard } = startedDashboard({
             '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
-            '/api/ws-ticket': () => jsonResponse(status, { reason: 'invalid' }),
+            '/api/ws-ticket': () => jsonResponse(401, { reason: 'invalid' }),
         });
         dashboard.start('stale-token');
         await flush();
 
         expect(FakeWebSocket.instances).toHaveLength(0);
         expect(events.map((event) => event.name)).toContain('console:session-check');
+    });
+
+    it('backs off instead of asking for a session check when the ticket request gets 503', async () => {
+        vi.useFakeTimers();
+        let ticketStatus = 503;
+        const { dashboard } = startedDashboard({
+            '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
+            '/api/ws-ticket': () => (ticketStatus === 503 ? jsonResponse(503, { reason: 'unavailable' }) : jsonResponse(200, { ticket: 't1' })),
+        });
+        dashboard.start('live-token');
+        await vi.advanceTimersByTimeAsync(0);
+        expect(events.map((event) => event.name)).not.toContain('console:session-check');
+
+        ticketStatus = 200;
+        await vi.advanceTimersByTimeAsync(4999);
+        expect(FakeWebSocket.instances).toHaveLength(0);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(FakeWebSocket.instances).toHaveLength(1);
+    });
+
+    it('retries a 4503 close on an exponential backoff capped at 60 s, without a session check', async () => {
+        vi.useFakeTimers();
+        let issued = 0;
+        const { dashboard } = startedDashboard({
+            '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
+            '/api/ws-ticket': () => jsonResponse(200, { ticket: `t${++issued}` }),
+        });
+        dashboard.start('live-token');
+        await vi.advanceTimersByTimeAsync(0);
+
+        const waits = [];
+        for (let attempt = 0; attempt < 6; attempt++) {
+            const socket = FakeWebSocket.instances.at(-1);
+            socket.serverOpen();
+            socket.serverClose(4503);
+            const before = FakeWebSocket.instances.length;
+            let waited = 0;
+            while (FakeWebSocket.instances.length === before) {
+                await vi.advanceTimersByTimeAsync(1000);
+                waited += 1000;
+            }
+            waits.push(waited);
+        }
+
+        expect(waits).toEqual([5000, 10000, 20000, 40000, 60000, 60000]);
+        expect(events.map((event) => event.name)).not.toContain('console:session-check');
+    });
+
+    it('resets the backoff once a socket delivers data', async () => {
+        vi.useFakeTimers();
+        let issued = 0;
+        const { dashboard } = startedDashboard({
+            '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
+            '/api/ws-ticket': () => jsonResponse(200, { ticket: `t${++issued}` }),
+        });
+        dashboard.start('live-token');
+        await vi.advanceTimersByTimeAsync(0);
+        FakeWebSocket.instances[0].serverClose(4503);
+        await vi.advanceTimersByTimeAsync(5000);
+        FakeWebSocket.instances[1].serverClose(4503);
+        await vi.advanceTimersByTimeAsync(10000);
+        expect(FakeWebSocket.instances).toHaveLength(3);
+
+        FakeWebSocket.instances[2].serverMessage({ type: 'metrics_update', data: { pipelines: {}, databases: [] } });
+        FakeWebSocket.instances[2].serverClose(1006);
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(FakeWebSocket.instances).toHaveLength(4);
+    });
+
+    it('reconnects on the backoff, not at once, when a 4401 is followed by a confirmed session', async () => {
+        vi.useFakeTimers();
+        let issued = 0;
+        const { dashboard } = startedDashboard({
+            '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
+            '/api/ws-ticket': () => jsonResponse(200, { ticket: `t${++issued}` }),
+        });
+        dashboard.start('live-token');
+        await vi.advanceTimersByTimeAsync(0);
+
+        // The cache still vouches for the session, so admin.js re-announces it straight away.
+        for (let round = 0; round < 3; round++) {
+            FakeWebSocket.instances.at(-1).serverClose(4401);
+            document.dispatchEvent(new CustomEvent('console:authenticated', { detail: { token: 'live-token' } }));
+            await vi.advanceTimersByTimeAsync(0);
+        }
+        expect(FakeWebSocket.instances).toHaveLength(1);
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(FakeWebSocket.instances).toHaveLength(2);
     });
 
     it('closes the socket and stays quiet once signed out', async () => {

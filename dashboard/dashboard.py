@@ -36,13 +36,14 @@ from pydantic import BaseModel
 
 from dashboard import telemetry as console_telemetry
 from dashboard.admin_proxy import configure as configure_admin_proxy
-from dashboard.admin_proxy import login_router as admin_login_router
+from dashboard.admin_proxy import public_router as admin_public_router
 from dashboard.admin_proxy import router as admin_router
 from dashboard.catalog_contract import DISCOGS_EXCHANGE_PREFIX, MUSICBRAINZ_EXCHANGE_PREFIX
 from dashboard.config import get_config
 from dashboard.queue_metrics import RateTracker, parse_queue_samples, scrape_params
 from dashboard.session_auth import (
     WS_CLOSE_UNAUTHENTICATED,
+    WS_CLOSE_UNAVAILABLE,
     WS_TICKET_SCOPE_KEY,
     AdminSession,
     SessionRejected,
@@ -762,10 +763,14 @@ async def get_session(session: AdminSession = Depends(require_session)) -> JSONR
 @app.post("/api/ws-ticket")
 async def issue_ws_ticket(request: Request) -> JSONResponse:
     """Mint a single-use ticket, valid for 30 seconds, that opens one live WebSocket."""
-    client = request.client.host if request.client else None
-    session, token = await session_gate.validate(request.headers.get("authorization"), client=client)
+    session, token = await session_gate.validate(request.headers.get("authorization"))
     ticket, lifetime = session_gate.tickets.issue(session, token)
     return JSONResponse(content={"ticket": ticket, "expires_in": int(lifetime)}, headers={"Cache-Control": "no-store"})
+
+
+def _ws_close_code(rejected: SessionRejected) -> int:
+    """4401 when the session is missing or dead; 4503 when catalog-api could not answer."""
+    return WS_CLOSE_UNAVAILABLE if rejected.reason == "unavailable" else WS_CLOSE_UNAUTHENTICATED
 
 
 async def _discard_websocket(websocket: WebSocket) -> None:
@@ -785,18 +790,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     only to be closed with 4401: a close before accept reaches the browser as a bare handshake
     failure, which it cannot tell from a network drop. While open, the socket re-validates its
     session against catalog-api (again bypassing the cache) on a fixed 30-second schedule and at
-    the session's expiry, and closes with 4401 as soon as catalog-api stops honouring it. The
+    the session's expiry, and closes with 4401 as soon as catalog-api stops honouring it, or with
+    4503 when catalog-api cannot answer, so the browser backs off instead of signing out. The
     console never expects client frames; any that arrive are discarded and cannot postpone a
     re-check.
     """
     grant = session_gate.tickets.redeem(websocket.scope.get(WS_TICKET_SCOPE_KEY))
     await websocket.accept()
-    session: AdminSession | None = None
-    if grant is not None:
-        with contextlib.suppress(SessionRejected):
-            session = await session_gate.validate_token(grant.token, fresh=True)
-    if grant is None or session is None:
+    if grant is None:
         await websocket.close(code=WS_CLOSE_UNAUTHENTICATED)
+        return
+    try:
+        session = await session_gate.validate_token(grant.token, fresh=True)
+    except SessionRejected as rejected:
+        await websocket.close(code=_ws_close_code(rejected))
         return
 
     if dashboard:
@@ -827,9 +834,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             if time.monotonic() >= next_check or session.seconds_left() <= 0:
                 try:
                     session = await session_gate.validate_token(grant.token, fresh=True)
-                except SessionRejected:
+                except SessionRejected as rejected:
                     await _discard_websocket(websocket)
-                    await websocket.close(code=WS_CLOSE_UNAUTHENTICATED)
+                    await websocket.close(code=_ws_close_code(rejected))
                     return
                 next_check = time.monotonic() + _WS_SESSION_RECHECK_SECONDS
             wait = max(min(next_check - time.monotonic(), session.seconds_left()), 0.0)
@@ -855,9 +862,10 @@ _admin_api_host = os.getenv("API_HOST", "api")
 _admin_api_port = int(os.getenv("API_PORT", "8004"))
 configure_admin_proxy(_admin_api_host, _admin_api_port)
 session_gate.configure(_admin_api_host, _admin_api_port, cache_seconds=cache_seconds_from_env(os.getenv("SESSION_CACHE_SECONDS")))
-# Login is the only public proxy route; every other admin route also needs a live session here,
-# so an anonymous request is refused by the console before it costs a catalog-api call.
-app.include_router(admin_login_router)
+# Login and logout are mounted without the console's gate: catalog-api validates both itself, and
+# logout must reach it even when the console cannot confirm the session. Every other admin route
+# also needs a live session here, so an anonymous request is refused before it reaches catalog-api.
+app.include_router(admin_public_router)
 app.include_router(admin_router, dependencies=_SESSION_REQUIRED)
 
 

@@ -32,28 +32,32 @@ sign-in the live **Overview** tab comes first, followed by the admin tabs. The o
 
 Every data route (`/api/metrics`, `/api/services`, `/api/queues`, `/api/databases`,
 `/api/queue-prefixes`, `/api/session`, `POST /api/ws-ticket`), every admin proxy route except
-`POST /admin/api/login`, and the live WebSocket require a live admin session. Only `/health`,
-the login page and its static assets, the `/admin` redirects, and the login route are public;
-the console serves no `/docs`, `/redoc`, or `/openapi.json`. The console holds no JWT secret:
+login and logout, and the live WebSocket require a live admin session. Only `/health`, the
+login page and its static assets, the `/admin` redirects, and the login and logout proxy routes
+(which `catalog-api` validates itself) are public; the console serves no `/docs`, `/redoc`, or
+`/openapi.json`. The console holds no JWT secret:
 it asks `catalog-api` (`GET /api/admin/auth/session`) whether the bearer is live and caches a
 yes for at most 30 seconds. A 401 or 403 from `catalog-api` (missing, expired, revoked,
 password-changed, or non-admin token) is answered `401` with `"reason": "invalid"`; a
 `catalog-api` error or an unreachable `catalog-api` is answered `503` with
 `"reason": "unavailable"`.
 
-Bearers cannot be used to make the console hammer `catalog-api`: an `invalid` answer for a
-bearer is reused for 10 seconds, and a client address that causes 20 `invalid` answers within
-a minute has further unknown bearers refused with `429` (`"reason": "throttled"`,
-`Retry-After: 60`) until the minute slides. A session the console has already confirmed is
-never throttled, so junk sent through a shared reverse-proxy address cannot sign out the
-operators behind it. Every check goes through one shared HTTP client.
+An `invalid` answer for a bearer is reused for 10 seconds, so the same dead bearer is not
+re-checked on every request; an `unavailable` answer is never reused. Every check goes through
+one shared HTTP client whose pool is capped at 16 connections, so concurrent checks queue for a
+connection (within the 5-second timeout) instead of opening unbounded sockets to `catalog-api`.
+No client is ever locked out by address.
 
 The console returns to the login form, with the reason shown above it, when you sign out, when
 the session expires or is revoked while the console is open, and when `catalog-api` cannot be
 reached to confirm it. The open console re-checks its session every 15 seconds and just after
-the session's expiry. Signing out through the console also drops its cached copy of the session
-and every outstanding WebSocket ticket for it at once; a session revoked elsewhere stops
-working for HTTP requests within the 30-second cache window.
+the session's expiry. Signing out always reaches `catalog-api`, even when the console cannot
+confirm the session itself, and drops the console's cached copy of the session and every
+outstanding WebSocket ticket for it whatever `catalog-api` answers. The login form says
+"You signed out." only when `catalog-api` answered 2xx (revoked) or 401 (already dead); any
+other answer, or none, is reported as an unconfirmed sign-out, because the session may still be
+valid until it expires. The browser forgets the bearer either way. A session revoked elsewhere
+stops working for HTTP requests within the 30-second cache window.
 
 The live Overview cannot send `Authorization` on a WebSocket, so it first posts the bearer to
 `POST /api/ws-ticket` for a single-use ticket valid for 30 seconds and opens
@@ -61,8 +65,12 @@ The live Overview cannot send `Authorization` on a WebSocket, so it first posts 
 bypassing the cache. A missing, reused, expired, or logged-out ticket is closed with code
 `4401`, as is an open socket whose session stops being valid: the socket asks `catalog-api`
 again, bypassing the cache, on a fixed 30-second schedule and at the session's expiry, so a
-revocation closes it within 30 seconds. The console never expects frames from the browser;
-any it receives are discarded and cannot delay a re-check. The
+revocation closes it within 30 seconds. When `catalog-api` cannot answer for the socket's
+session, it is closed with `4503` instead; the browser keeps the session and retries the socket
+after 5 seconds, doubling the wait up to 60 seconds and resetting it once a socket delivers data.
+Every reconnect waits on that backoff, so a refused socket never turns into a reconnect loop.
+The console never expects frames from the browser; any it receives are discarded and cannot
+delay a re-check. The
 console removes the ticket from the request's query string before its access log or request
 spans read it and redacts it from server log lines, but a reverse proxy in front of the console
 keeps its own access log: configure it not to log query strings for `/ws`.

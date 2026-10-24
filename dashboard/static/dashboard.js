@@ -1,12 +1,20 @@
 // Dashboard JavaScript
 
-// The console closes the live WebSocket with this code when its ticket was missing, reused,
-// or expired, or when the session it was opened with stopped being valid.
+// The console closes the live WebSocket with 4401 when its ticket was missing, reused, or
+// expired, or when the session it was opened with stopped being valid; and with 4503 when
+// catalog-api could not answer for the session, which is retried rather than signed out.
 const WS_CLOSE_UNAUTHENTICATED = 4401;
+const WS_CLOSE_UNAVAILABLE = 4503;
 
-// Statuses with which the session gate refuses a request: no or a dead session (401), too
-// many failed checks from this address (429), or catalog-api unable to answer (503).
-const SESSION_REFUSALS = new Set([401, 429, 503]);
+// Statuses with which the session gate refuses a request: no or a dead session (401), or
+// catalog-api unable to answer (503).
+const SESSION_REFUSALS = new Set([401, 503]);
+
+// Reconnect backoff: 5 s, doubling to a 60 s cap, back to 5 s once a socket delivers data.
+// Every reconnect waits, so a refusal the session check cannot explain (catalog-api down while
+// the console's cache still vouches for the session) never turns into a tight loop.
+const RECONNECT_BASE_MS = 5000;
+const RECONNECT_MAX_MS = 60000;
 
 // The Overview's live view. It reads nothing until admin.js confirms a session and announces
 // it with `console:authenticated`; `console:signed-out` stops it again. Every data request and
@@ -17,7 +25,8 @@ class Dashboard {
         this.token = null;
         this.active = false;
         this.connecting = false;
-        this.reconnectInterval = null;
+        this.reconnectTimer = null;
+        this.reconnectDelay = RECONNECT_BASE_MS;
         this.activityLog = [];
         this.maxLogEntries = 50;
         // SVG circle circumference: 2 * PI * r(28) ≈ 176
@@ -44,16 +53,23 @@ class Dashboard {
         const resumed = this.active && this.token === token;
         this.token = token;
         this.active = true;
-        if (!resumed) this.fetchInitialData();
+        if (resumed) {
+            // admin.js re-confirmed the session after a refusal: reconnect on the backoff.
+            this.reconnect();
+            return;
+        }
+        this.reconnectDelay = RECONNECT_BASE_MS;
+        this.fetchInitialData();
         this.initializeWebSocket();
     }
 
     stop() {
         this.active = false;
         this.token = null;
-        if (this.reconnectInterval) {
-            clearInterval(this.reconnectInterval);
-            this.reconnectInterval = null;
+        this.reconnectDelay = RECONNECT_BASE_MS;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
         }
         const socket = this.ws;
         this.ws = null;
@@ -79,7 +95,7 @@ class Dashboard {
     // bearer for a single-use ticket (valid 30 s) and presents it as `/ws?ticket=...`.
     async _fetchTicket() {
         const response = await fetch('/api/ws-ticket', { method: 'POST', headers: this._authHeaders(), cache: 'no-store' });
-        if (SESSION_REFUSALS.has(response.status)) {
+        if (response.status === 401) {
             this.requestSessionCheck();
             return null;
         }
@@ -123,13 +139,12 @@ class Dashboard {
         socket.onopen = () => {
             this.updateConnectionStatus('connected');
             this.addLogEntry('Connected to dashboard', 'info');
-            if (this.reconnectInterval) {
-                clearInterval(this.reconnectInterval);
-                this.reconnectInterval = null;
-            }
         };
 
         socket.onmessage = (event) => {
+            // Only a socket that delivers data resets the backoff: a refused socket opens too,
+            // and is closed straight after.
+            this.reconnectDelay = RECONNECT_BASE_MS;
             try {
                 const message = JSON.parse(event.data);
                 if (message.type === 'metrics_update') {
@@ -149,23 +164,30 @@ class Dashboard {
             if (this.ws !== socket) return;
             this.updateConnectionStatus('disconnected');
             if (!this.active) return;
+            this.ws = null;
             if (event.code === WS_CLOSE_UNAUTHENTICATED) {
                 this.addLogEntry('Live feed closed: the session is no longer valid', 'warning');
-                this.ws = null;
                 this.requestSessionCheck();
                 return;
             }
-            this.addLogEntry('Disconnected from dashboard', 'warning');
+            if (event.code === WS_CLOSE_UNAVAILABLE) {
+                this.addLogEntry('Live feed paused: catalog-api could not confirm the session', 'warning');
+            } else {
+                this.addLogEntry('Disconnected from dashboard', 'warning');
+            }
             this.reconnect();
         };
     }
 
+    // Schedule one reconnect after the current backoff delay, then double the delay.
     reconnect() {
-        if (!this.reconnectInterval) {
-            this.reconnectInterval = setInterval(() => {
-                this.initializeWebSocket();
-            }, 5000);
-        }
+        if (!this.active || this.reconnectTimer) return;
+        const delay = this.reconnectDelay;
+        this.reconnectDelay = Math.min(delay * 2, RECONNECT_MAX_MS);
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            this.initializeWebSocket();
+        }, delay);
     }
 
     // ─── Status indicators ────────────────────────────────────────────────────

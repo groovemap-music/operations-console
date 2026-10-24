@@ -16,6 +16,7 @@ import socket
 import threading
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
@@ -466,7 +467,29 @@ class TestTicketNeverLogged:
         assert not [line for line in records if ticket in line]
 
 
-PUBLIC_ROUTES = {"/health", "/", "/index.html", "/admin", "/admin.html", "/admin/api/login"}
+PUBLIC_ROUTES = {"/health", "/", "/index.html", "/admin", "/admin.html", "/admin/api/login", "/admin/api/logout"}
+
+# Every file the static mount may serve anonymously. A file dropped into dashboard/static/ that
+# is not listed here fails the suite. tailwind.css is a build output, present only once built.
+STATIC_ALLOWLIST = {
+    "index.html",
+    "dashboard.js",
+    "admin.js",
+    "tailwind.css",
+    "brand/app-icon-192.svg",
+    "brand/app-icon-512.svg",
+    "brand/avatar.svg",
+    "brand/banner-dark.svg",
+    "brand/banner-light.svg",
+    "brand/favicon.svg",
+    "brand/icon-dark.svg",
+    "brand/icon-light.svg",
+    "brand/og-image.svg",
+    "brand/site.webmanifest",
+    "brand/social-banner.svg",
+    "brand/source.json",
+    "brand/tokens.css",
+}
 
 
 def _flat_routes(routes: list[Any], prefix: str = "") -> list[tuple[str, Any]]:
@@ -518,12 +541,22 @@ class TestEveryRouteIsGated:
     def test_api_documentation_is_not_served(self, client: TestClient, path: str) -> None:
         assert client.get(path).status_code == 404
 
-    def test_static_assets_are_code_not_data(self, client: TestClient) -> None:
-        for asset in ("/dashboard.js", "/admin.js", "/brand/favicon.svg"):
-            assert client.get(asset).status_code == 200, asset
+    def test_the_static_mount_serves_only_the_allowlisted_files(self, client: TestClient) -> None:
+        from starlette.routing import Mount
+
+        from dashboard.dashboard import app as production
+
+        mounts = [route for _path, route in _flat_routes(production.routes) if isinstance(route, Mount)]
+        assert len(mounts) == 1
+        directory = Path(mounts[0].app.directory)
+        served = {path.relative_to(directory).as_posix() for path in directory.rglob("*") if path.is_file()}
+        assert served <= STATIC_ALLOWLIST, f"unlisted files would be public: {sorted(served - STATIC_ALLOWLIST)}"
+        assert served >= STATIC_ALLOWLIST - {"tailwind.css"}
+        for name in served:
+            assert client.get(f"/{name}").status_code == 200, name
         assert client.get("/api").status_code == 404
 
-    def test_anonymous_admin_proxy_calls_never_reach_catalog_api(self, client: TestClient) -> None:
+    def test_anonymous_gated_proxy_calls_never_reach_catalog_api(self, client: TestClient) -> None:
         with patch("dashboard.admin_proxy._proxy_request") as proxied:
             assert client.get("/admin/api/extractions").status_code == 401
             assert client.post("/admin/api/dlq/purge/q").status_code == 401
@@ -645,8 +678,6 @@ class TestCacheSecondsConfiguration:
             SessionCache(float("nan"))
 
     def test_the_console_reads_the_setting_through_the_finite_check(self) -> None:
-        from pathlib import Path
-
         source = (Path(__file__).resolve().parents[1] / "dashboard" / "dashboard.py").read_text()
         assert 'cache_seconds=cache_seconds_from_env(os.getenv("SESSION_CACHE_SECONDS"))' in source
 
@@ -667,38 +698,90 @@ class TestUpstreamAmplification:
             assert client.get("/api/metrics", headers=_bearer("dead-bearer")).status_code == 401
         assert fake_catalog.session_calls == 1
 
-    def test_junk_bearers_from_one_client_are_throttled(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
-        limit = session_auth.FAILED_CHECKS_PER_CLIENT
-        for index in range(limit):
+    def test_junk_bearers_never_lock_out_a_fresh_sign_in(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        """Junk passes through 1:1 (catalog-api is reachable directly anyway); nobody is locked out by address."""
+        for index in range(50):
             assert client.get("/api/metrics", headers=_bearer(f"junk-{index}")).status_code == 401
-        throttled = client.get("/api/metrics", headers=_bearer("junk-one-more"))
-        assert throttled.status_code == 429
-        assert throttled.json()["reason"] == "throttled"
-        assert throttled.headers["retry-after"] == "60"
-        assert fake_catalog.session_calls == limit
+        assert fake_catalog.session_calls == 50
+        fresh = fake_catalog.mint()
+        assert client.get("/api/session", headers=_bearer(fresh)).status_code == 200
+        assert client.post("/api/ws-ticket", headers=_bearer(fresh)).status_code == 200
 
-    def test_a_confirmed_session_behind_a_throttled_address_keeps_working(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
-        token = fake_catalog.mint()
-        assert client.get("/api/metrics", headers=_bearer(token)).status_code == 200
-        for index in range(session_auth.FAILED_CHECKS_PER_CLIENT):
-            client.get("/api/metrics", headers=_bearer(f"junk-{index}"))
-        gate.cache.evict(session_auth.token_digest(token))
-        assert client.get("/api/metrics", headers=_bearer(token)).status_code == 200
+    def test_the_shared_client_has_a_bounded_pool(self, fake_catalog: FakeCatalogApi) -> None:
+        built: list[dict[str, Any]] = []
+        real = session_auth.AsyncClient
 
-    def test_the_throttle_window_slides(self) -> None:
-        now = [1000.0]
-        throttle = session_auth.FailureThrottle(max_failures=2, window_seconds=60, monotonic=lambda: now[0])
-        throttle.record_invalid("1.2.3.4", "a")
-        throttle.record_invalid("1.2.3.4", "b")
-        assert throttle.throttled("1.2.3.4")
-        assert not throttle.throttled("5.6.7.8")
-        now[0] += 60.1
-        assert not throttle.throttled("1.2.3.4")
+        def capture(**kwargs: Any) -> httpx.AsyncClient:
+            built.append(kwargs)
+            return real(**kwargs)
+
+        with patch("dashboard.session_auth.AsyncClient", side_effect=capture), TestClient(create_test_app()):
+            pass
+        limits = built[0]["limits"]
+        assert limits.max_connections == 16
+        assert limits.max_keepalive_connections == 8
+        assert built[0]["timeout"] == 5.0
 
     def test_an_invalid_answer_is_reused_only_briefly(self) -> None:
         now = [1000.0]
-        throttle = session_auth.FailureThrottle(invalid_ttl_seconds=10, monotonic=lambda: now[0])
-        throttle.record_invalid(None, "digest")
-        assert throttle.known_invalid("digest")
+        answers = session_auth.InvalidAnswers(10, monotonic=lambda: now[0])
+        answers.add("digest")
+        assert answers.holds("digest")
         now[0] += 10.1
-        assert not throttle.known_invalid("digest")
+        assert not answers.holds("digest")
+        assert len(answers) == 0
+
+    def test_invalid_answers_are_bounded(self) -> None:
+        answers = session_auth.InvalidAnswers(10, max_entries=2)
+        for key in ("a", "b", "c"):
+            answers.add(key)
+        assert len(answers) == 2
+        assert not answers.holds("a")
+
+    def test_unavailable_is_never_remembered(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        token = fake_catalog.mint()
+        fake_catalog.outage = True
+        assert client.get("/api/metrics", headers=_bearer(token)).status_code == 503
+        assert len(gate.invalid) == 0
+
+
+class TestLogoutAlwaysReachesCatalogApi:
+    def test_logout_is_forwarded_even_when_the_console_cannot_confirm_the_session(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        token = fake_catalog.mint()
+        fake_catalog.outage = True  # the console's own check would say "unavailable"
+        with patch("dashboard.admin_proxy._proxy_request", return_value=httpx.Response(200, json={"logged_out": True})) as proxied:
+            assert client.post("/admin/api/logout", headers=_bearer(token)).status_code == 200
+        proxied.assert_called_once()
+
+    def test_logout_drops_cached_state_even_when_catalog_api_fails(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        token = fake_catalog.mint()
+        client.post("/api/ws-ticket", headers=_bearer(token))
+        assert gate.cache.get(session_auth.token_digest(token)) is not None
+        with patch("dashboard.admin_proxy._proxy_request", side_effect=httpx.ConnectError("down")), pytest.raises(httpx.ConnectError):
+            client.post("/admin/api/logout", headers=_bearer(token))
+        assert gate.cache.get(session_auth.token_digest(token)) is None
+        assert len(gate.tickets) == 0
+
+
+class TestUnavailableClosesWith4503:
+    def test_a_socket_opened_during_an_outage_closes_with_4503(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        token = fake_catalog.mint()
+        ticket = client.post("/api/ws-ticket", headers=_bearer(token)).json()["ticket"]
+        fake_catalog.outage = True
+        assert client.get("/api/session", headers=_bearer(token)).status_code == 200, "the cache still vouches for it"
+        assert _close_code(client, f"/ws?ticket={ticket}") == session_auth.WS_CLOSE_UNAVAILABLE
+
+    def test_a_recheck_during_an_outage_closes_with_4503(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        token = fake_catalog.mint()
+        ticket = client.post("/api/ws-ticket", headers=_bearer(token)).json()["ticket"]
+        with patch("dashboard.dashboard._WS_SESSION_RECHECK_SECONDS", 0.1), client.websocket_connect(f"/ws?ticket={ticket}") as websocket:
+            websocket.receive_json()
+            fake_catalog.outage = True
+            closed = _receive_until_closed(websocket, within_seconds=5)
+        assert closed.code == session_auth.WS_CLOSE_UNAVAILABLE
+
+    def test_a_dead_session_still_closes_with_4401(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        token = fake_catalog.mint()
+        ticket = client.post("/api/ws-ticket", headers=_bearer(token)).json()["ticket"]
+        fake_catalog.revoke(token)
+        assert _close_code(client, f"/ws?ticket={ticket}") == WS_CLOSE_UNAUTHENTICATED

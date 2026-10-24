@@ -65,17 +65,17 @@ const SESSION_CHECK_INTERVAL_MS = 15000;
 // (plus the two outcomes only the browser can observe).
 const SESSION_END_MESSAGES = {
     'signed-out': 'You signed out.',
+    'signed-out-unconfirmed': 'You are signed out of this browser, but catalog-api did not confirm the sign-out, so the session may still be valid until it expires.',
     missing: 'Your session expired or was revoked. Sign in again.',
     invalid: 'Your session expired or was revoked. Sign in again.',
     unavailable: 'catalog-api is unreachable, so your session could not be verified. Sign in again once it is back.',
-    throttled: 'Too many failed session checks from this address. Wait a minute and sign in again.',
     'console-unreachable': 'The operations console could not be reached. Sign in again once it is back.',
 };
 
 // Reasons after which the stored bearer is worthless and is discarded. After an outage the
 // bearer may still be live, so it is kept and a reload resumes the session once the
 // dependency is back.
-const SESSION_DISCARD_REASONS = new Set(['signed-out', 'missing', 'invalid']);
+const SESSION_DISCARD_REASONS = new Set(['signed-out', 'signed-out-unconfirmed', 'missing', 'invalid']);
 
 const QUEUE_CHART_COLORS = [
     '#818cf8', '#34d399', '#f59e0b', '#f87171',
@@ -544,13 +544,22 @@ class AdminInteractions {
         }
     }
 
+    // Only a 2xx (revoked) or a 401 (already dead) proves the session can no longer be used;
+    // anything else, including no answer, is reported as unconfirmed. The bearer is discarded
+    // locally either way.
     async logout() {
+        let status = null;
         try {
-            await this.authFetch('/admin/api/logout', { method: 'POST' });
+            const response = await fetch('/admin/api/logout', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${this.token}` },
+            });
+            status = response.status;
         } catch {
-            // Ignore errors on logout
+            status = null;
         }
-        this.endSession('signed-out');
+        const confirmed = status !== null && ((status >= 200 && status < 300) || status === 401);
+        this.endSession(confirmed ? 'signed-out' : 'signed-out-unconfirmed');
     }
 
     async authFetch(url, options = {}) {
