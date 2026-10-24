@@ -44,12 +44,12 @@ describe('extraction history rows', () => {
             ok: true,
             json: async () => ({
                 extractions: [
-                    { id: 'run-2', status: 'running', started_at: '2026-10-24T08:00:00Z', completed_at: null, duration_seconds: null, record_counts: null, error_message: null },
+                    { id: 'run-2', source: 'discogs', status: 'running', started_at: '2026-10-24T08:00:00Z', completed_at: null, duration_seconds: null, record_counts: null, error_message: null },
                     {
-                        id: 'run-1', status: 'completed', started_at: '2026-10-23T08:00:00Z', completed_at: '2026-10-23T11:12:00Z', duration_seconds: 11520,
+                        id: 'run-1', source: 'musicbrainz', status: 'completed', started_at: '2026-10-23T08:00:00Z', completed_at: '2026-10-23T11:12:00Z', duration_seconds: 11520,
                         record_counts: { releases: 2_000_000, artists: 1_000_000, total: 3_000_000 }, error_message: null,
                     },
-                    { id: 'run-0', status: 'failed', started_at: '2026-10-22T08:00:00Z', duration_seconds: 42, record_counts: { releases: 5, artists: 7 }, error_message: 'Extractor unreachable' },
+                    { id: 'run-0', source: null, status: 'failed', started_at: '2026-10-22T08:00:00Z', duration_seconds: 42, record_counts: { releases: 5, artists: 7 }, error_message: 'Extractor unreachable' },
                 ],
             }),
         }));
@@ -59,10 +59,32 @@ describe('extraction history rows', () => {
         expect(rows.every(r => r.tabIndex === -1)).toBe(true);
         const cells = rows.map(r => [...r.children].slice(1).map(c => c.textContent));
         expect(cells).toEqual([
-            ['running', '—', '—', '—'],
-            ['completed', '3h12m', '3,000,000', '—'],
-            ['failed', '42s', '12', 'Extractor unreachable'],
+            ['discogs', 'running', '—', '—', '—'],
+            ['musicbrainz', 'completed', '3h12m', '3,000,000', '—'],
+            ['not recorded', 'failed', '42s', '12', 'Extractor unreachable'],
         ]);
-        expect(rows[1].children[3].title).toBe('releases: 2,000,000, artists: 1,000,000');
+        expect(rows[1].children[4].title).toBe('releases: 2,000,000, artists: 1,000,000');
     });
+
+    it.each([['discogs', '/admin/api/extractions/trigger'], ['musicbrainz', '/admin/api/extractions/trigger-musicbrainz']])(
+        'sends source=%s in the trigger body',
+        async (source, endpoint) => {
+            for (const id of ['trigger-discogs-btn', 'trigger-musicbrainz-btn']) {
+                const btn = document.createElement('button');
+                btn.id = id;
+                document.body.appendChild(btn);
+            }
+            const spinner = document.createElement('span');
+            spinner.id = 'trigger-spinner';
+            document.body.appendChild(spinner);
+            app.showToast = vi.fn();
+            app.loadExtractions = vi.fn(async () => {});
+            app.authFetch = vi.fn(async () => ({ ok: true }));
+            await app.triggerExtraction(source);
+            const [url, init] = app.authFetch.mock.calls[0];
+            expect(url).toBe(endpoint);
+            expect(init.method).toBe('POST');
+            expect(JSON.parse(init.body)).toEqual({ source });
+        },
+    );
 });
