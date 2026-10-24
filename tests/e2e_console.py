@@ -22,13 +22,16 @@ def sign_in(page: Page, email: str = ADMIN_EMAIL) -> None:
 
 
 def freeze_live_feed(page: Page) -> None:
-    """Wait for the live socket to open, then stop it overwriting payloads a test injects.
+    """Stop every live reading overwriting payloads a test injects: the socket's and the first HTTP one.
 
     The socket is opened after sign-in (it first trades the bearer for a ticket), so a handler
     cleared before it exists either fails or leaves the first live frame to replace the payload.
+    The first reading also arrives over ``/api/metrics``, independently of the socket; applied
+    after an injected scenario it drops every queue the live feed does not report from the
+    history, so the scenario's cells read "not reported". Both are settled before this returns.
     """
     page.wait_for_function("() => window.dashboard.ws && window.dashboard.ws.readyState === WebSocket.OPEN", timeout=10000)
-    page.evaluate("() => { window.dashboard.ws.onmessage = null; }")
+    page.evaluate("() => { window.dashboard.ws.onmessage = null; return window.dashboard.initialLoad; }")
 
 
 def fake_catalog(path: str, body: dict[str, object] | None = None) -> None:

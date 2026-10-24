@@ -305,6 +305,128 @@ const DeepLinks = (() => {
     return { DASHBOARD, timeRange, dashboardUrl, resolve, specs };
 })();
 
+// ─── Run progress: when the running extraction finishes, and what limits it ────
+//
+// Pure derivation for the headline above each pipeline's matrix and for the Run progress view
+// (spike gm-operations-console-2rf). Expected records per entity and each queue's loaded count
+// since the run started come from /api/progress, which reads them from VictoriaMetrics. The ack
+// rate and the queue's state are the matrix cell's own (QueueHealth), so what makes a run unable
+// to finish is exactly what the matrix marks critical. A missing total, baseline, or rate is never
+// filled in: the run's progress is unavailable, or its finish time unknown, instead.
+const RunProgress = (() => {
+    const POLL_MS = 30000;   // how often the browser re-reads the runs and their progress
+    // Queue assessments that stop a run finishing, and how the headline names them.
+    const BLOCKERS = { stalled: 'stalled', 'no-consumer': 'has no consumer', 'dlq-growing': 'DLQ growing' };
+
+    // catalog-api records a run without its source: its trigger reaches only the Discogs extractor.
+    const pipelineOf = run => run.source || 'discogs';
+
+    // The newest run that has started, per pipeline (catalog-api lists them newest first).
+    function latestRuns(extractions) {
+        const runs = {};
+        for (const run of extractions || []) {
+            if (!run.started_at || Number.isNaN(Date.parse(run.started_at))) continue;
+            const id = pipelineOf(run);
+            if (!(id in runs)) runs[id] = run;
+        }
+        return runs;
+    }
+
+    const isRunning = run => Boolean(run) && run.status === 'running' && !run.completed_at;
+
+    // A finished run's duration in seconds: catalog-api's own, or completed minus started.
+    function duration(run) {
+        if (run.duration_seconds !== null && run.duration_seconds !== undefined) return run.duration_seconds;
+        const end = Date.parse(run.completed_at);
+        return Number.isNaN(end) ? null : (end - Date.parse(run.started_at)) / 1000;
+    }
+
+    // Why one cell's progress cannot be derived, or null when it can. `totals` is the entity's
+    // /api/progress entry and `acked` the queue's.
+    function gap({ entityLabel, consumerLabel, totals, acked }) {
+        if (!totals || totals.extracted === null) return 'no history from the run\'s start';
+        if (totals.extracted === 0) return `${entityLabel} not extracted yet`;
+        // The gauge still holds the previous run's ratio until the new file's first checkpoint.
+        if (totals.waiting_for_checkpoint) return `${entityLabel} waiting for the extractor's first progress checkpoint`;
+        if (totals.expected === null) return `no file progress for ${entityLabel}`;
+        if (!acked || acked.loaded === null) return `no acked baseline for ${consumerLabel} · ${entityLabel}`;
+        return null;
+    }
+
+    // Seconds until a consumer has loaded every expected record of one entity at its 5-minute mean
+    // ack rate: 0 once nothing remains, and null, never Infinity, when the remaining work is
+    // unknown or nothing is being acknowledged (a null or zero rate).
+    function eta({ expected, loaded, dlqDepth = 0, meanAck }) {
+        if (expected === null || expected === undefined || loaded === null || loaded === undefined) return null;
+        const remaining = Math.max(0, expected - loaded - (dlqDepth || 0));
+        if (remaining < 1) return 0;
+        return meanAck > 0 ? remaining / meanAck : null;
+    }
+
+    // The slowest of a consumer's cells; null when any of them has no ETA.
+    function consumerEta(cells) {
+        const etas = cells.map(eta);
+        return etas.length && etas.every(e => e !== null) ? Math.max(...etas) : null;
+    }
+
+    // One pipeline's headline: `{ kind, state, text, detail? }`, or null when no run is in progress.
+    // `cells` are `{ consumerLabel, entityLabel, health, dlq, expected, loaded, dlqDepth, meanAck, gap }`.
+    function headline({ running, error, cells }) {
+        if (!running) return null;
+        const reasons = cells.flatMap(cell => [cell.health, cell.dlq]
+            .filter(health => health && health.kind in BLOCKERS)
+            .map(health => `${cell.consumerLabel} · ${cell.entityLabel} ${BLOCKERS[health.kind]}`));
+        if (reasons.length) return { kind: 'cannot-finish', state: 'crit', text: `Cannot finish: ${reasons.join(', ')}` };
+        const missing = error || (cells.length ? cells.map(cell => cell.gap).find(Boolean) : 'no queues');
+        if (missing) return { kind: 'unavailable', state: 'unknown', text: `Progress unavailable: ${missing}` };
+        const timed = cells.map(cell => ({ cell, eta: eta(cell) }));
+        const unknown = timed.find(t => t.eta === null);
+        if (unknown) {
+            return { kind: 'unknown', state: 'unknown', text: `Finish time unknown: no ack rate for ${unknown.cell.consumerLabel} · ${unknown.cell.entityLabel}` };
+        }
+        const slowest = timed.reduce((a, b) => (b.eta > a.eta ? b : a));
+        if (slowest.eta === 0) return { kind: 'loaded', state: 'ok', text: 'Loaded' };
+        return { kind: 'finishes', state: 'ok', text: `Finishes in ${QueueHealth.formatDuration(slowest.eta)}`, detail: `bottleneck ${slowest.cell.consumerLabel}` };
+    }
+
+    // Loaded fraction over the run for one consumer: `[[ms, fraction], ...]` at the times every one
+    // of its queues reported, over the total expected records of the pipeline.
+    function burnupSeries(cells, totalExpected) {
+        const sums = new Map();
+        for (const cell of cells) {
+            for (const [iso, loaded] of cell.points) {
+                const at = sums.get(iso) || { n: 0, loaded: 0 };
+                sums.set(iso, { n: at.n + 1, loaded: at.loaded + loaded });
+            }
+        }
+        return [...sums].filter(([, at]) => at.n === cells.length)
+            .map(([iso, at]) => [Date.parse(iso), at.loaded / totalExpected]).sort((a, b) => a[0] - b[0]);
+    }
+
+    // Burn-up geometry: each consumer's line from the run start to now, and a dashed projection
+    // from now to 100 % at its ETA (none without one). Times in ms; ETAs in seconds.
+    function burnup({ start, now, series, width, height, left = 34, bottom = 14 }) {
+        const etas = series.map(s => s.eta).filter(e => e !== null && e !== undefined);
+        const horizon = Math.max(now + (etas.length ? Math.max(...etas) * 1000 * 1.05 : 0), start + 1);
+        const x = t => left + ((t - start) / (horizon - start)) * (width - left - 4);
+        const y = f => (height - bottom) - Math.min(1, Math.max(0, f)) * (height - bottom - 4);
+        const fmt = (t, f) => `${x(t).toFixed(1)},${y(f).toFixed(1)}`;
+        return {
+            nowX: x(now), top: y(1), base: y(0),
+            lines: series.map(s => {
+                const last = s.points[s.points.length - 1];
+                return {
+                    consumer: s.consumer,
+                    points: s.points.map(([t, f]) => fmt(t, f)).join(' '),
+                    projection: last && s.eta !== null && s.eta !== undefined ? `${fmt(now, last[1])} ${fmt(now + s.eta * 1000, 1)}` : null,
+                };
+            }),
+        };
+    }
+
+    return { POLL_MS, BLOCKERS, pipelineOf, latestRuns, isRunning, duration, gap, eta, consumerEta, headline, burnupSeries, burnup };
+})();
+
 // Below this viewport width a pipeline with more than two consumers switches to the stacked,
 // self-labelled cell layout (the matrix CSS in index.html holds the same breakpoint).
 const MATRIX_STACKED_MAX_WIDTH = 479;
@@ -335,6 +457,8 @@ class Dashboard {
         this.maxLogEntries = 100;
         this.lastServerEventId = 0;
         this.auditTimer = null;
+        // The first reading over HTTP, which can land after the socket's first frame.
+        this.initialLoad = Promise.resolve();
 
         // The pipeline layout from /api/topology; the Overview draws nothing until it arrives.
         this.topology = null;
@@ -363,6 +487,14 @@ class Dashboard {
         this.linkBases = { grafana: null, traces: null };
         this.linkSets = new Map();
 
+        // Run progress: the newest started run per pipeline (from the extraction history), what
+        // /api/progress last answered for it (`{ key, data, error }` by pipeline), and which of the
+        // Overview's two views is shown.
+        this.runs = {};
+        this.runProgress = {};
+        this.progressTimer = null;
+        this.overviewView = 'matrix';
+
         document.addEventListener('console:authenticated', (event) => this.start(event.detail?.token));
         document.addEventListener('console:signed-out', () => this.stop());
 
@@ -381,6 +513,9 @@ class Dashboard {
             this.attentionCollapsed = !this.attentionCollapsed;
             this.updateAttention();
         });
+        document.querySelectorAll('[data-overview-view]').forEach(button => {
+            button.addEventListener('click', () => this.showOverviewView(button.dataset.overviewView));
+        });
     }
 
     // ─── Session lifecycle ────────────────────────────────────────────────────
@@ -396,10 +531,11 @@ class Dashboard {
             return;
         }
         this.reconnectDelay = RECONNECT_BASE_MS;
-        this.fetchInitialData();
+        this.initialLoad = this.fetchInitialData();
         this.initializeWebSocket();
         this.startAlertPolling();
         this.startAuditPolling();
+        this.startProgressPolling();
         this.fetchLinkBases();
     }
 
@@ -413,6 +549,11 @@ class Dashboard {
         this._resetHistory();
         this.stopAlertPolling();
         this.stopAuditPolling();
+        this.stopProgressPolling();
+        this.runs = {};
+        this.runProgress = {};
+        document.getElementById('run-progress')?.replaceChildren();
+        this.showOverviewView('matrix');
         this.activityLog = [];
         this.lastServerEventId = 0;
         this.renderActivityLog();
@@ -679,6 +820,7 @@ class Dashboard {
         const tab = target.type === 'tab' ? target.tab : 'overview';
         window.adminDashboard?.switchTab(tab);
         if (target.type === 'cell') {
+            this.showOverviewView('matrix');
             const cell = document.getElementById(`${target.pipeline}-${target.consumer}-${target.entity}-cell`);
             if (cell) this.openQueueDrawer(cell);
         } else if (target.type === 'service') {
@@ -1073,7 +1215,9 @@ class Dashboard {
             attrs: { 'data-matrix': pipeline.id, 'data-consumers': String(consumers.length) },
         }, ...cells);
 
-        return this._el('section', { id: `pipeline-${pipeline.id}`, cls: 'mx-pipeline hidden' }, head, grid);
+        // The run's ETA headline sits between the head and the matrix; empty with no run in progress.
+        const headline = this._el('p', { cls: 'mx-headline', attrs: { 'data-run-headline': pipeline.id, hidden: '' } });
+        return this._el('section', { id: `pipeline-${pipeline.id}`, cls: 'mx-pipeline hidden' }, head, headline, grid);
     }
 
     // Stacked below the phone breakpoint when a pipeline has more than two consumers.
@@ -1178,6 +1322,8 @@ class Dashboard {
             }
         }
         if (this.drawerQueue?.pipeline === pipeline.id) this._renderDrawer();
+        this._renderHeadline(pipeline);
+        if (this.overviewView === 'progress') this._renderRunPipeline(pipeline);
     }
 
     _renderCell(cell, model) {
@@ -1336,6 +1482,314 @@ class Dashboard {
         ]));
     }
 
+    // ─── Run progress: the ETA headline and the Run progress view ──────────────
+
+    // Runs come from the extraction history through the console's /admin/api proxy with this
+    // session's bearer, like the audit log; their progress from /api/progress.
+    startProgressPolling() {
+        this.stopProgressPolling();
+        this.fetchRunProgress();
+        this.progressTimer = setInterval(() => this.fetchRunProgress(), RunProgress.POLL_MS);
+    }
+
+    stopProgressPolling() {
+        if (this.progressTimer) clearInterval(this.progressTimer);
+        this.progressTimer = null;
+    }
+
+    async fetchRunProgress() {
+        if (!this.active) return;
+        const token = this.token;
+        try {
+            const response = await fetch('/admin/api/extractions', { headers: this._authHeaders(), cache: 'no-store' });
+            if (SESSION_REFUSALS.has(response.status)) {
+                this.requestSessionCheck();
+                return;
+            }
+            // A failed read keeps the runs already known; their progress still refreshes below.
+            if (response.ok) {
+                const body = await response.json();
+                if (!this.active || this.token !== token) return;
+                this.runs = RunProgress.latestRuns(body.extractions);
+            }
+        } catch {
+            // Offline or malformed: keep what is known.
+        }
+        if (!this.active || this.token !== token || !(await this.ensureTopology())) return;
+        await Promise.all(this.topology.pipelines.map(pipeline => this._fetchPipelineProgress(pipeline, token)));
+        if (!this.active || this.token !== token) return;
+        for (const pipeline of this.topology.pipelines) this._renderHeadline(pipeline);
+        this.renderRunProgress();
+    }
+
+    // What /api/progress says for the pipeline's run. A finished run's numbers do not change, so
+    // they are read once; a 503 from VictoriaMetrics is "history unavailable", not a session refusal.
+    async _fetchPipelineProgress(pipeline, token) {
+        const run = this.runs[pipeline.id];
+        if (!run) {
+            delete this.runProgress[pipeline.id];
+            return;
+        }
+        const end = RunProgress.isRunning(run) ? null : run.completed_at || null;
+        const key = `${run.id}|${run.started_at}|${end}`;
+        if (end && this.runProgress[pipeline.id]?.key === key && this.runProgress[pipeline.id].data) return;
+        const params = new URLSearchParams({ start: run.started_at, ...(end ? { end } : {}) });
+        let entry;
+        try {
+            const response = await fetch(`/api/progress/${encodeURIComponent(pipeline.id)}?${params}`, { headers: this._authHeaders(), cache: 'no-store' });
+            const body = await response.json().catch(() => ({}));
+            if (response.status === 401 || (response.status === 503 && body.detail !== 'history unavailable')) {
+                this.requestSessionCheck();
+                return;
+            }
+            entry = response.ok ? { key, data: body, error: null } : { key, data: null, error: body.detail || `progress request failed: ${response.status}` };
+        } catch {
+            entry = { key, data: null, error: 'progress request failed' };
+        }
+        if (this.active && this.token === token) this.runProgress[pipeline.id] = entry;
+    }
+
+    // Every cell of one pipeline as the run sees it: the matrix's assessment, the live 5-minute
+    // mean ack rate and DLQ depth, and the run's expected and loaded counts.
+    _progressCells(pipeline) {
+        const data = this.runProgress[pipeline.id]?.data;
+        const entities = new Map((data?.entities || []).map(e => [e.entity, e]));
+        const queues = new Map((data?.queues || []).map(q => [q.queue, q]));
+        return pipeline.consumers.flatMap(consumer => pipeline.entity_types.flatMap(entity => {
+            const model = this._cellModel(pipeline, consumer, entity);
+            if (!model.queue) return [];
+            const totals = entities.get(entity);
+            const acked = queues.get(model.queue.name);
+            const entityLabel = this._entityLabel(entity);
+            return [{
+                consumer: consumer.name, consumerLabel: consumer.label, entity, entityLabel, queue: model.queue.name,
+                health: model.health, dlq: model.dlq,
+                expected: totals?.expected ?? null, extracted: totals?.extracted ?? null, fileProgress: totals?.file_progress ?? null,
+                loaded: acked?.loaded ?? null, points: acked?.points || [],
+                dlqDepth: model.dlqLast?.messages ?? 0, meanAck: QueueHealth.meanAckRate(model.samples),
+                gap: RunProgress.gap({ entityLabel, consumerLabel: consumer.label, totals, acked }),
+            }];
+        }));
+    }
+
+    _runHeadline(pipeline) {
+        const run = this.runs[pipeline.id];
+        return RunProgress.headline({ running: RunProgress.isRunning(run), error: this.runProgress[pipeline.id]?.error, cells: this._progressCells(pipeline) });
+    }
+
+    // The headline's parts: a critical one carries ◆, like every critical mark on the Overview.
+    _headlineParts(headline) {
+        const parts = [];
+        if (headline.state === 'crit') parts.push(this._el('b', { cls: 'mx-crit-text', text: '◆ ', attrs: { 'aria-hidden': 'true' } }));
+        parts.push(this._el('b', { cls: headline.state === 'crit' ? 'mx-crit-text' : 'mx-headline-text', text: headline.text }));
+        if (headline.detail) parts.push(this._el('span', { cls: 'mx-dim', text: `, ${headline.detail}` }));
+        return parts;
+    }
+
+    _renderHeadline(pipeline) {
+        const el = document.querySelector(`[data-run-headline="${pipeline.id}"]`);
+        if (!el) return;
+        const headline = this._runHeadline(pipeline);
+        el.hidden = !headline;
+        el.dataset.kind = headline?.kind || '';
+        el.dataset.state = headline?.state || '';
+        const text = headline ? `${headline.text}${headline.detail ? `, ${headline.detail}` : ''}` : '';
+        if (el.dataset.text === text) return;
+        el.dataset.text = text;
+        el.replaceChildren(...(headline ? this._headlineParts(headline) : []));
+    }
+
+    // Matrix (primary) or Run progress (secondary); the attention bar and headlines stay either way.
+    showOverviewView(view) {
+        this.overviewView = view === 'progress' ? 'progress' : 'matrix';
+        const matrix = document.getElementById('pipelines');
+        const progress = document.getElementById('run-progress');
+        if (matrix) matrix.hidden = this.overviewView !== 'matrix';
+        if (progress) progress.hidden = this.overviewView !== 'progress';
+        document.querySelectorAll('[data-overview-view]').forEach(button => {
+            button.setAttribute('aria-pressed', String(button.dataset.overviewView === this.overviewView));
+        });
+        if (this.overviewView === 'progress') this.renderRunProgress();
+    }
+
+    renderRunProgress() {
+        const container = document.getElementById('run-progress');
+        if (!container || !this.topology) return;
+        for (const pipeline of this.topology.pipelines) {
+            if (!document.getElementById(`run-progress-${pipeline.id}`)) {
+                container.append(this._el('section', { id: `run-progress-${pipeline.id}`, cls: 'rp-pipeline' }));
+            }
+            this._renderRunPipeline(pipeline);
+        }
+    }
+
+    // One pipeline's run: summary, burn-up, and per entity x consumer bars. Redrawn on every live
+    // reading while shown, so a focused run link is restored.
+    _renderRunPipeline(pipeline) {
+        const section = document.getElementById(`run-progress-${pipeline.id}`);
+        if (!section) return;
+        const run = this.runs[pipeline.id];
+        const entry = this.runProgress[pipeline.id];
+        const running = RunProgress.isRunning(run);
+        const focused = section.contains(document.activeElement) && document.activeElement.dataset.runLink;
+        section.dataset.runState = run ? (running ? 'running' : String(run.status || 'finished')) : 'none';
+
+        const title = this._el('h2', { text: `${pipeline.label} run` });
+        if (!run) {
+            section.replaceChildren(this._el('div', { cls: 'rp-head' }, title), this._el('p', { cls: 'rp-summary mx-dim', text: 'No extraction run recorded' }));
+            return;
+        }
+        const started = Date.parse(run.started_at);
+        const link = this._el('button', {
+            cls: 'rp-run-link', text: 'Run details',
+            attrs: { type: 'button', 'data-run-link': String(run.id), 'aria-label': `${pipeline.label} run details in the Extractions tab` },
+        });
+        link.addEventListener('click', () => this.goToRun(run.id));
+        const when = running
+            ? `started ${QueueHealth.formatDuration((Date.now() - started) / 1000)} ago`
+            : `started ${new Date(started).toLocaleString()}`;
+        const head = this._el('div', { cls: 'rp-head' }, title, this._el('span', { cls: 'mx-dim', text: when }), link);
+
+        const cells = this._progressCells(pipeline);
+        const summary = this._el('p', { cls: 'rp-summary', attrs: { 'data-run-summary': pipeline.id } });
+        if (running) {
+            const headline = this._runHeadline(pipeline);
+            summary.dataset.kind = headline.kind;
+            summary.append(...this._headlineParts(headline));
+        } else {
+            summary.dataset.kind = String(run.status || 'finished');
+            summary.textContent = this._finishedSummary(run);
+        }
+        const parts = [head, summary];
+        if (entry?.error) {
+            parts.push(this._el('p', { cls: 'rp-unavailable', text: `Progress unavailable: ${entry.error}` }));
+        } else if (entry?.data) {
+            parts.push(...this._renderBurnup(pipeline, cells, entry.data, running));
+            parts.push(...pipeline.entity_types.map(entity => this._renderRunEntity(entity, run, running, cells.filter(c => c.entity === entity))));
+        }
+        section.replaceChildren(...parts);
+        if (focused) section.querySelector(`[data-run-link="${focused}"]`)?.focus();
+    }
+
+    // "Completed in 3h12m · 12,345,678 records", or how a failed run ended.
+    _finishedSummary(run) {
+        const seconds = RunProgress.duration(run);
+        const took = seconds === null ? '' : ` in ${QueueHealth.formatDuration(seconds)}`;
+        const counts = run.record_counts || {};
+        const total = counts.total ?? Object.values(counts).reduce((a, b) => a + (Number(b) || 0), 0);
+        const records = Object.keys(counts).length ? ` · ${Number(total).toLocaleString()} records` : '';
+        if (run.status === 'failed') return `Failed${seconds === null ? '' : ` after ${QueueHealth.formatDuration(seconds)}`}${run.error_message ? `: ${run.error_message}` : ''}${records}`;
+        return `${run.status === 'completed' ? 'Completed' : this._statusText(run.status)}${took}${records}`;
+    }
+
+    _statusText(status) {
+        const text = String(status || 'finished');
+        return text.charAt(0).toUpperCase() + text.slice(1);
+    }
+
+    // The burn-up: loaded fraction per consumer since the run started, dashed to 100 % at its ETA.
+    // Drawn only when every entity's expected total and every queue's baseline are known.
+    _renderBurnup(pipeline, cells, data, running) {
+        const missing = cells.map(cell => cell.gap).find(Boolean);
+        if (missing) return [this._el('p', { cls: 'rp-unavailable', text: `Progress unavailable: ${missing}` })];
+        const totalExpected = (data.entities || []).reduce((a, e) => a + (e.expected || 0), 0);
+        if (!totalExpected) return [];
+        const start = Date.parse(data.start);
+        const now = Date.parse(data.end);
+        const series = pipeline.consumers.map(consumer => {
+            const own = cells.filter(cell => cell.consumer === consumer.name);
+            // Nothing is loaded at the start: the baseline is the acked count then.
+            return { consumer: consumer.name, points: [[start, 0], ...RunProgress.burnupSeries(own, totalExpected)], eta: running ? RunProgress.consumerEta(own) : null };
+        });
+        // Drawn at the section's own width, so the axis labels are not stretched.
+        const section = document.getElementById(`run-progress-${pipeline.id}`);
+        const width = Math.max(300, (section?.clientWidth || 664) - 24), height = 90;
+        const geometry = RunProgress.burnup({ start, now, series, width, height });
+        const svg = this._svg('svg', { class: 'rp-burnup', width, height, viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': `${pipeline.label}: loaded fraction per consumer over the run` },
+            this._svg('line', { class: 'rp-axis', x1: 34, y1: geometry.base, x2: width, y2: geometry.base }),
+            this._svg('text', { x: 0, y: geometry.top + 4 }, '100%'),
+            this._svg('text', { x: 0, y: geometry.base }, '0%'),
+            this._svg('line', { class: 'rp-axis rp-now', x1: geometry.nowX, y1: 0, x2: geometry.nowX, y2: geometry.base }),
+            ...geometry.lines.flatMap((line, i) => [
+                this._svg('polyline', { class: `rp-line rp-series-${i % 4}`, points: line.points, 'data-consumer': line.consumer }),
+                ...(line.projection ? [this._svg('polyline', { class: `rp-projection rp-series-${i % 4}`, points: line.projection, 'data-projection': line.consumer })] : []),
+            ]));
+        const legend = this._el('div', { cls: 'mx-legend rp-legend' },
+            ...pipeline.consumers.map((consumer, i) => this._el('span', { cls: 'mx-legend-item' },
+                this._el('i', { cls: `rp-swatch rp-series-${i % 4}`, attrs: { 'aria-hidden': 'true' } }), consumer.label)),
+            this._el('span', { cls: 'mx-dim', text: running ? 'dashed = projection at the 5-minute mean ack rate' : 'loaded over the run' }));
+        return [svg, legend];
+    }
+
+    _svg(tag, attrs = {}, ...children) {
+        const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+        for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, String(value));
+        el.append(...children);
+        return el;
+    }
+
+    _percent(fraction) {
+        return `${Math.round(Math.min(1, Math.max(0, fraction)) * 100)}%`;
+    }
+
+    // One entity: its expected total and how much is read, then a bar per consumer of loaded vs
+    // extracted-but-queued, with the consumer's ETA or state.
+    _renderRunEntity(entity, run, running, cells) {
+        // Every cell of an entity shares its totals; the extractor's final counts key release-groups as release_groups.
+        const totals = cells[0];
+        const final = run.record_counts?.[entity] ?? run.record_counts?.[entity.replace(/-/g, '_')];
+        let detail;
+        if (!running && final !== undefined && final !== null) detail = `${Number(final).toLocaleString()} extracted`;
+        else if (!totals || totals.expected === null) detail = `progress unavailable: ${totals?.gap || 'no queues'}`;
+        else detail = `${QueueHealth.formatCount(totals.expected)} expected · ${totals.fileProgress >= 1 ? 'extracted' : `${this._percent(totals.fileProgress)} read`}`;
+        const head = this._el('div', { cls: 'rp-entity-head' }, this._el('b', { text: this._entityLabel(entity) }), this._el('span', { cls: 'mx-dim', text: ` · ${detail}` }));
+        return this._el('div', { cls: 'rp-entity', attrs: { 'data-run-entity': entity } }, head, ...cells.map(cell => this._renderRunRow(cell, running)));
+    }
+
+    _renderRunRow(cell, running) {
+        const critical = cell.health.state === 'crit';
+        const row = this._el('div', { cls: `rp-row${critical ? ' rp-crit' : ''}`, attrs: { 'data-run-cell': `${cell.consumer}-${cell.entity}`, 'data-state': critical ? 'crit' : (cell.gap ? 'unknown' : 'ok') } });
+        const name = this._el('span', { cls: 'rp-name', text: cell.consumerLabel });
+        if (cell.gap) {
+            row.append(name, this._el('span', { cls: 'rp-gap mx-dim', text: 'progress unavailable' }));
+            row.setAttribute('aria-label', `${cell.entityLabel} to ${cell.consumerLabel}: progress unavailable, ${cell.gap}`);
+            return row;
+        }
+        const loaded = cell.loaded / cell.expected;
+        const read = cell.fileProgress ?? 0;
+        const bar = this._el('span', { cls: 'rp-bar', attrs: { role: 'img', 'aria-label': `${this._percent(loaded)} loaded, ${this._percent(read)} extracted` } },
+            this._el('span', { cls: 'rp-read', style: `width:${(100 * Math.min(1, read)).toFixed(1)}%` }),
+            this._el('span', { cls: 'rp-loaded', style: `width:${(100 * Math.min(1, loaded)).toFixed(1)}%` }));
+        const state = this._el('span', { cls: 'rp-eta' });
+        if (critical) state.append(this._el('b', { cls: 'mx-crit-text', text: `◆ ${cell.health.label}` }));
+        else if (!running) state.textContent = `${cell.loaded.toLocaleString()} loaded`;
+        else {
+            const eta = RunProgress.eta(cell);
+            state.textContent = eta === null ? 'ETA unknown' : (eta === 0 ? 'done' : `ETA ${QueueHealth.formatDuration(eta)}`);
+        }
+        if (cell.dlq.state === 'crit' || cell.dlq.state === 'warn') {
+            state.append(this._el('span', { cls: `mx-dlq ${cell.dlq.state === 'crit' ? 'mx-dlq-crit' : 'mx-dlq-warn'}`, text: `${cell.dlq.state === 'crit' ? '◆' : '▲'} ${cell.dlq.label}` }));
+        }
+        row.append(name, bar, this._el('span', { cls: 'rp-pct mono', text: this._percent(loaded) }), state);
+        return row;
+    }
+
+    // Open the run's row in the Extractions tab.
+    async goToRun(runId) {
+        const admin = window.adminDashboard;
+        admin?.switchTab('extractions');
+        let row = document.getElementById(`extraction-run-${runId}`);
+        if (!row && admin?.loadExtractions) {
+            await admin.loadExtractions();
+            row = document.getElementById(`extraction-run-${runId}`);
+        }
+        if (!row) return;
+        document.querySelectorAll('[data-highlight]').forEach(el => el.removeAttribute('data-highlight'));
+        row.dataset.highlight = 'true';
+        row.scrollIntoView?.({ block: 'center' });
+        row.focus();
+    }
+
     // ─── Database cards ───────────────────────────────────────────────────────
 
     updateDatabases(databases) {
@@ -1489,6 +1943,11 @@ class Dashboard {
         const levelCls = { info: 'text-emerald-500', warning: 'text-orange-500', error: 'text-red-500' };
         const levelLbl = { info: '[INFO]',            warning: '[WARN]',          error: '[ERR]'        };
 
+        // A quiet system is news too: say so, rather than collapse the log to nothing.
+        if (this.activityLog.length === 0) {
+            container.replaceChildren(this._el('p', { cls: 't-dim log-empty', text: 'No events yet' }));
+            return;
+        }
         container.replaceChildren(
             ...this.activityLog.map(e => {
                 const row = document.createElement('div');

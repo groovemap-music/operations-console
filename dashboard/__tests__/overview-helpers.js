@@ -10,7 +10,7 @@ const DASHBOARD_JS_PATH = resolve(__dirname, '..', 'static', 'dashboard.js');
 function loadDashboardScript() {
     const code = readFileSync(DASHBOARD_JS_PATH, 'utf-8');
     const withoutAutoInit = code.replace(/document\.addEventListener\(\s*['"]DOMContentLoaded['"][\s\S]*$/, '');
-    const wrapped = `(function() {\n${withoutAutoInit}\nglobalThis.__Dashboard = Dashboard;\nglobalThis.__QueueHealth = QueueHealth;\nglobalThis.__Attention = Attention;\nglobalThis.__DeepLinks = DeepLinks;\nglobalThis.__matrixLayout = matrixLayout;\n})();`;
+    const wrapped = `(function() {\n${withoutAutoInit}\nglobalThis.__Dashboard = Dashboard;\nglobalThis.__QueueHealth = QueueHealth;\nglobalThis.__Attention = Attention;\nglobalThis.__DeepLinks = DeepLinks;\nglobalThis.__RunProgress = RunProgress;\nglobalThis.__matrixLayout = matrixLayout;\n})();`;
     vm.runInThisContext(wrapped, { filename: DASHBOARD_JS_PATH });
 }
 
@@ -35,6 +35,12 @@ export function loadAttention() {
 export function loadDeepLinks() {
     loadDashboardScript();
     return globalThis.__DeepLinks;
+}
+
+/** The run-progress derivation (headline, ETA, burn-up), as dashboard.js defines it. */
+export function loadRunProgress() {
+    loadDashboardScript();
+    return { RunProgress: globalThis.__RunProgress, QueueHealth: globalThis.__QueueHealth };
 }
 
 /** The shape /api/topology returns, built the way the server derives it. */
@@ -117,6 +123,10 @@ export function makeDashboard({ narrow = false } = {}) {
         attentionCollapsed: false,
         linkBases: { grafana: null, traces: null },
         linkSets: new Map(),
+        runs: {},
+        runProgress: {},
+        progressTimer: null,
+        overviewView: 'matrix',
     });
     for (const method of ['updateServices', 'updateDatabases', 'updateLastUpdated']) {
         dashboard[method] = vi.fn();

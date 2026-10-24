@@ -71,7 +71,8 @@ def victoria_metrics_url() -> str:
     return getenv("VICTORIA_METRICS_URL", DEFAULT_VICTORIA_METRICS_URL).rstrip("/")
 
 
-def _client() -> httpx.AsyncClient:
+def vm_client() -> httpx.AsyncClient:
+    """A VictoriaMetrics client; tests swap its transport through ``_transport``."""
     return httpx.AsyncClient(timeout=_TIMEOUT_SECONDS, transport=_transport)
 
 
@@ -141,7 +142,12 @@ async def _fetch(client: httpx.AsyncClient, path: str, params: dict[str, str]) -
 
 async def query_range(client: httpx.AsyncClient, query: str, spec: RangeSpec, now: float) -> list[dict[str, Any]]:
     """Run one ``/api/v1/query_range`` over the spec's span at its step."""
-    params = {"query": query, "start": f"{now - spec.seconds:.0f}", "end": f"{now:.0f}", "step": spec.step}
+    return await query_span(client, query, now - spec.seconds, now, spec.step)
+
+
+async def query_span(client: httpx.AsyncClient, query: str, start: float, end: float, step: str) -> list[dict[str, Any]]:
+    """Run one ``/api/v1/query_range`` from ``start`` to ``end`` (epoch seconds) at ``step``."""
+    params = {"query": query, "start": f"{start:.0f}", "end": f"{end:.0f}", "step": step}
     return await _fetch(client, "/api/v1/query_range", params)
 
 
@@ -277,7 +283,7 @@ async def queue_history(range: RangeName = Query(default="24h")) -> JSONResponse
     queries = queue_queries(spec.window)
     now = datetime.now(UTC).timestamp()
     try:
-        async with _client() as client:
+        async with vm_client() as client:
             results = await _gather(client, queries, lambda c, q: query_range(c, q, spec, now))
     except HistoryUnavailableError as exc:
         return _unavailable(str(exc))
@@ -293,7 +299,7 @@ async def health_history(range: RangeName = Query(default="24h")) -> JSONRespons
     endpoints = endpoint_queries(range)
     now = datetime.now(UTC).timestamp()
     try:
-        async with _client() as client:
+        async with vm_client() as client:
             results, endpoint_results = await asyncio.gather(
                 _gather(client, queries, lambda c, q: query_range(c, q, spec, now)),
                 _gather(client, endpoints, lambda c, q: query_instant(c, q, now)),
