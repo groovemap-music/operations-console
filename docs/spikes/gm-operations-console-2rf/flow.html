@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spike candidate 1 · Pipeline flow</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+    svg.flow { display: block; }
+    svg.flow text { fill: var(--text-high); font-size: 12px; }
+    svg.flow text.sub { fill: var(--text-dim); font-size: 11px; }
+    svg.flow text.col { fill: var(--text-dim); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; }
+    svg.flow text.crit { fill: var(--crit); font-weight: 700; }
+    svg.flow text.warn { fill: var(--warn); font-weight: 700; }
+    svg.flow .node { fill: var(--inner); stroke: var(--border); stroke-width: 1; }
+    svg.flow .node.warn { fill: var(--warn-bg); stroke: var(--warn); stroke-width: 2; }
+    svg.flow .node.crit { fill: var(--crit-bg); stroke: var(--crit); stroke-width: 3; }
+    svg.flow .pill { fill: none; stroke-width: 1.5; }
+    svg.flow .pill.warn { stroke: var(--warn); }
+    svg.flow .pill.crit { stroke: var(--crit); fill: var(--crit); }
+    svg.flow text.oncrit { fill: var(--surface); font-weight: 700; }
+    svg.flow .edge { fill: none; stroke: var(--edge); stroke-opacity: 0.85; }
+    svg.flow .edge.idle { stroke-dasharray: 3 4; stroke-opacity: 0.5; }
+    svg.flow .spark { stroke: var(--accent); }
+    svg.flow .spark.crit { stroke: var(--crit); }
+</style>
+</head>
+<body>
+<main>
+    <div class="legend">
+        <span>Edge width = messages/s (√ scale) · dashed = 0/s</span>
+        <span><b class="state-crit">◆</b> critical</span>
+        <span><b class="state-warn">▲</b> warning</span>
+        <span>Sparkline = queue depth, last 15 min · ETA = time to load every expected record</span>
+    </div>
+    <div id="pipelines"></div>
+</main>
+<script src="fixtures.js"></script>
+<script src="shared.js"></script>
+<script>
+'use strict';
+SPIKE.chrome('flow', 'Candidate 1: pipeline flow');
+
+const COL = { producer: 8, exchange: 178, queue: 360, consumer: 760, store: 960 };
+const W = { producer: 140, exchange: 130, queue: 330, consumer: 170, store: 110 };
+const QH = 60, QGAP = 8, GGAP = 16, TOP = 26, WIDTH = 1080;
+const RMAX = 3000;
+const width = r => (r > 0 ? 1.5 + 10 * Math.sqrt(Math.min(r, RMAX) / RMAX) : 1);
+const glyph = s => (s === 'crit' ? '◆ ' : s === 'warn' ? '▲ ' : '');
+
+function edge(x1, y1, x2, y2, r) {
+    const mx = (x1 + x2) / 2;
+    return `<path class="edge${r > 0 ? '' : ' idle'}" stroke-width="${width(r).toFixed(1)}" d="M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}"/>`;
+}
+
+function renderPipeline(p) {
+    const consumers = p.consumers.map(c => c.name);
+    const parts = [];
+    const queueY = {};
+    let y = TOP;
+    const exchangeY = {};
+    p.entities.forEach(entity => {
+        const top = y;
+        consumers.forEach(c => { queueY[`${c}|${entity}`] = y; y += QH + QGAP; });
+        exchangeY[entity] = (top + y - QGAP) / 2;
+        y += GGAP;
+    });
+    const height = y;
+    const mid = (TOP + height - GGAP) / 2;
+    const stores = [...new Set(p.consumers.map(c => c.store))];
+    const consumerY = {};
+    consumers.forEach((c, i) => { consumerY[c] = TOP + ((height - TOP) / consumers.length) * (i + 0.5); });
+    const storeY = {};
+    stores.forEach((s, i) => { storeY[s] = TOP + ((height - TOP) / stores.length) * (i + 0.5); });
+
+    // Column headings
+    [['PRODUCER', COL.producer], ['EXCHANGE (FANOUT)', COL.exchange], ['QUEUE', COL.queue], ['CONSUMER', COL.consumer], ['STORE', COL.store]]
+        .forEach(([t, x]) => parts.push(`<text class="col" x="${x}" y="12">${t}</text>`));
+
+    // Edges first so nodes sit on top.
+    p.entities.forEach(entity => {
+        parts.push(edge(COL.producer + W.producer, mid, COL.exchange, exchangeY[entity], p.extractor[entity].publish_rate));
+        consumers.forEach(c => {
+            const q = SPIKE.queueFor(p, c, entity);
+            const qy = queueY[`${c}|${entity}`] + QH / 2;
+            parts.push(edge(COL.exchange + W.exchange, exchangeY[entity], COL.queue, qy, q.last.message_rate));
+            parts.push(edge(COL.queue + W.queue, qy, COL.consumer, consumerY[c], q.last.ack_rate));
+        });
+    });
+    p.consumers.forEach(c => {
+        const ack = p.queues.filter(q => q.consumer === c.name && !q.dlq).reduce((a, q) => a + q.last.ack_rate, 0);
+        parts.push(edge(COL.consumer + W.consumer, consumerY[c.name], COL.store, storeY[c.store], ack));
+    });
+
+    // Producer
+    const reading = p.entities.filter(e => !p.extractor[e].done);
+    parts.push(`<g data-unit="${p.name}/${p.producer}" data-state="ok" data-kind="producer">
+      <rect class="node" x="${COL.producer}" y="${mid - 40}" width="${W.producer}" height="80" rx="8"/>
+      <text x="${COL.producer + 10}" y="${mid - 20}">${p.producer}</text>
+      ${reading.map((e, i) => `<text class="sub" x="${COL.producer + 10}" y="${mid - 2 + i * 15}">${e} ${SPIKE.pct(p.extractor[e].file_progress)} read</text>`).join('')}
+      ${reading.length ? '' : `<text class="sub" x="${COL.producer + 10}" y="${mid - 2}">all files read</text>`}
+      <text class="sub" x="${COL.producer + 10}" y="${mid + 30}">${SPIKE.rate(p.entities.reduce((a, e) => a + p.extractor[e].publish_rate, 0))} out</text>
+    </g>`);
+
+    // Exchanges
+    p.entities.forEach(entity => {
+        const ey = exchangeY[entity];
+        parts.push(`<g data-unit="${p.name}/${entity}" data-state="ok" data-kind="exchange">
+          <rect class="node" x="${COL.exchange}" y="${ey - 22}" width="${W.exchange}" height="44" rx="8"/>
+          <text x="${COL.exchange + 10}" y="${ey - 4}">${entity}</text>
+          <text class="sub" x="${COL.exchange + 10}" y="${ey + 12}">${SPIKE.rate(p.extractor[entity].publish_rate)} in</text>
+        </g>`);
+    });
+
+    // Queues
+    p.entities.forEach(entity => consumers.forEach(c => {
+        const q = SPIKE.queueFor(p, c, entity);
+        const dlq = SPIKE.queueFor(p, c, entity, true);
+        const a = SPIKE.assessQueue(q);
+        const d = SPIKE.assessQueue(dlq);
+        const qy = queueY[`${c}|${entity}`];
+        const x = COL.queue;
+        const eta = SPIKE.loadEta(p, c, entity);
+        const depth = `${SPIKE.count(q.last.messages)} queued`;
+        const status = a.state === 'crit' ? `<text class="crit" x="${x + 10}" y="${qy + 35}">${glyph(a.state)}${a.label} · ${depth}</text>`
+            : `<text class="sub" x="${x + 10}" y="${qy + 35}">${depth} · ${eta === 0 ? 'loaded' : `ETA ${SPIKE.duration(eta)}`} · ${a.label}</text>`;
+        const hyp = p.consumers.find(k => k.name === c).hypothetical ? '*' : '';
+        parts.push(`<g ${SPIKE.unitAttrs(`${p.name}/${c}/${entity}`, a)}>
+          <rect class="node ${a.state === 'ok' ? '' : a.state}" x="${x}" y="${qy}" width="${W.queue}" height="${QH}" rx="8"/>
+          <text x="${x + 10}" y="${qy + 17}"><tspan font-weight="600">${entity}</tspan> → ${c}${hyp}</text>
+          ${status}
+          <g transform="translate(${x + 212},${qy + 8})">${SPIKE.sparkline(q.series.messages, 108, 30, a.state === 'crit' ? 'crit' : '')}</g>
+        </g>`);
+        if (d.state !== 'ok') {
+            parts.push(`<g ${SPIKE.unitAttrs(`${p.name}/${c}/${entity}.dlq`, d)}>
+              <rect class="pill ${d.state}" x="${x + 8}" y="${qy + 42}" width="200" height="15" rx="7"/>
+              <text class="${d.state === 'crit' ? 'oncrit' : d.state}" x="${x + 16}" y="${qy + 53}" font-size="11">${glyph(d.state)}${d.label}</text>
+            </g>`);
+        }
+    }));
+
+    // Consumers
+    p.consumers.forEach(c => {
+        const cy = consumerY[c.name];
+        const qs = p.queues.filter(q => q.consumer === c.name);
+        const assessed = qs.map(q => SPIKE.assessQueue(q));
+        const state = SPIKE.worst(assessed.map(a => a.state));
+        const problems = assessed.filter(a => a.state !== 'ok');
+        const ack = qs.filter(q => !q.dlq).reduce((s, q) => s + q.last.ack_rate, 0);
+        parts.push(`<g data-unit="${p.name}/${c.name}" data-state="${state}" data-kind="consumer">
+          <rect class="node ${state === 'ok' ? '' : state}" x="${COL.consumer}" y="${cy - 26}" width="${W.consumer}" height="52" rx="8"/>
+          <text x="${COL.consumer + 10}" y="${cy - 8}">${c.name}${c.hypothetical ? '*' : ''}</text>
+          <text class="${state === 'ok' ? 'sub' : state}" x="${COL.consumer + 10}" y="${cy + 10}" font-size="11">${problems.length ? `${glyph(state)}${problems.length} queue${problems.length > 1 ? 's' : ''} ${state === 'crit' ? 'critical' : 'warning'}` : `${SPIKE.rate(ack)} acked`}</text>
+        </g>`);
+    });
+
+    // Stores
+    stores.forEach(s => {
+        const sy = storeY[s];
+        parts.push(`<g data-unit="${p.name}/${s}" data-state="ok" data-kind="store">
+          <rect class="node" x="${COL.store}" y="${sy - 22}" width="${W.store}" height="44" rx="8"/>
+          <text x="${COL.store + 10}" y="${sy + 4}">${s === 'neo4j' ? 'Neo4j' : 'PostgreSQL'}</text>
+        </g>`);
+    });
+
+    return `<h2 class="pipeline">${p.name} pipeline</h2>
+      <div class="card scroll-x"><svg class="flow" width="${WIDTH}" height="${height}" viewBox="0 0 ${WIDTH} ${height}" role="img" aria-label="${p.name} pipeline flow">${parts.join('')}</svg></div>`;
+}
+
+document.getElementById('pipelines').innerHTML = SPIKE.scenario.pipelines.map(renderPipeline).join('')
+    + (SPIKE.scenario.pipelines.some(p => p.consumers.some(c => c.hypothetical)) ? '<p class="dim">* hypothetical consumer added for the 2x-consumers case</p>' : '');
+</script>
+</body>
+</html>

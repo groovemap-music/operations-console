@@ -1,0 +1,732 @@
+{
+ "measurements": {
+  "flow|healthy|desktop": {
+   "units": 35,
+   "critical": [],
+   "warning": [
+    "discogs/graphinator",
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1458,
+   "horizontal_overflow": false
+  },
+  "flow|healthy|phone": {
+   "units": 35,
+   "critical": [],
+   "warning": [
+    "discogs/graphinator",
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1601,
+   "horizontal_overflow": true
+  },
+  "flow|stalled-consumer|desktop": {
+   "units": 35,
+   "critical": [
+    "discogs/tableinator",
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator",
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1458,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 0,
+    "fixations": 1
+   }
+  },
+  "flow|stalled-consumer|phone": {
+   "units": 35,
+   "critical": [
+    "discogs/tableinator",
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator",
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1601,
+   "horizontal_overflow": true,
+   "find": {
+    "found": true,
+    "in_first_screen": false,
+    "screens_to_scroll": 2,
+    "competing_critical": [],
+    "names_outside_unit": 0,
+    "fixations": 3
+   }
+  },
+  "flow|growing-dlq|desktop": {
+   "units": 36,
+   "critical": [
+    "musicbrainz/brainzgraphinator",
+    "musicbrainz/brainzgraphinator/releases.dlq"
+   ],
+   "warning": [
+    "discogs/graphinator",
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1458,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": false,
+    "screens_to_scroll": 1,
+    "competing_critical": [],
+    "names_outside_unit": 0,
+    "fixations": 2
+   }
+  },
+  "flow|growing-dlq|phone": {
+   "units": 36,
+   "critical": [
+    "musicbrainz/brainzgraphinator",
+    "musicbrainz/brainzgraphinator/releases.dlq"
+   ],
+   "warning": [
+    "discogs/graphinator",
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1601,
+   "horizontal_overflow": true,
+   "find": {
+    "found": true,
+    "in_first_screen": false,
+    "screens_to_scroll": 2,
+    "competing_critical": [],
+    "names_outside_unit": 0,
+    "fixations": 3
+   }
+  },
+  "flow|stalled-consumer-2x|desktop": {
+   "units": 55,
+   "critical": [
+    "discogs/tableinator",
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator",
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 2590,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 0,
+    "fixations": 1
+   }
+  },
+  "flow|stalled-consumer-2x|phone": {
+   "units": 55,
+   "critical": [
+    "discogs/tableinator",
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator",
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 2749,
+   "horizontal_overflow": true,
+   "find": {
+    "found": true,
+    "in_first_screen": false,
+    "screens_to_scroll": 2,
+    "competing_critical": [],
+    "names_outside_unit": 0,
+    "fixations": 3
+   }
+  },
+  "matrix|healthy|desktop": {
+   "units": 17,
+   "critical": [],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 900,
+   "horizontal_overflow": false
+  },
+  "matrix|healthy|phone": {
+   "units": 17,
+   "critical": [],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 1,
+   "page_height_px": 953,
+   "horizontal_overflow": false
+  },
+  "matrix|stalled-consumer|desktop": {
+   "units": 17,
+   "critical": [
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 900,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 2,
+    "fixations": 3
+   }
+  },
+  "matrix|stalled-consumer|phone": {
+   "units": 17,
+   "critical": [
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 1,
+   "page_height_px": 953,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 2,
+    "fixations": 3
+   }
+  },
+  "matrix|growing-dlq|desktop": {
+   "units": 18,
+   "critical": [
+    "musicbrainz/brainzgraphinator/releases.dlq"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 900,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 2,
+    "fixations": 3
+   }
+  },
+  "matrix|growing-dlq|phone": {
+   "units": 18,
+   "critical": [
+    "musicbrainz/brainzgraphinator/releases.dlq"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 1,
+   "page_height_px": 953,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 2,
+    "fixations": 3
+   }
+  },
+  "matrix|stalled-consumer-2x|desktop": {
+   "units": 33,
+   "critical": [
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 900,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 2,
+    "fixations": 3
+   }
+  },
+  "matrix|stalled-consumer-2x|phone": {
+   "units": 33,
+   "critical": [
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1789,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 1,
+    "fixations": 2
+   }
+  },
+  "progress|healthy|desktop": {
+   "units": 17,
+   "critical": [],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1128,
+   "horizontal_overflow": false
+  },
+  "progress|healthy|phone": {
+   "units": 17,
+   "critical": [],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1890,
+   "horizontal_overflow": false
+  },
+  "progress|stalled-consumer|desktop": {
+   "units": 17,
+   "critical": [
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1120,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 1,
+    "fixations": 2
+   }
+  },
+  "progress|stalled-consumer|phone": {
+   "units": 17,
+   "critical": [
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1883,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 1,
+    "fixations": 2
+   }
+  },
+  "progress|growing-dlq|desktop": {
+   "units": 18,
+   "critical": [
+    "musicbrainz/brainzgraphinator/releases.dlq"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1128,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": false,
+    "screens_to_scroll": 1,
+    "competing_critical": [],
+    "names_outside_unit": 1,
+    "fixations": 3
+   }
+  },
+  "progress|growing-dlq|phone": {
+   "units": 18,
+   "critical": [
+    "musicbrainz/brainzgraphinator/releases.dlq"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1890,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": false,
+    "screens_to_scroll": 1,
+    "competing_critical": [],
+    "names_outside_unit": 1,
+    "fixations": 3
+   }
+  },
+  "progress|stalled-consumer-2x|desktop": {
+   "units": 33,
+   "critical": [
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 1500,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 1,
+    "fixations": 2
+   }
+  },
+  "progress|stalled-consumer-2x|phone": {
+   "units": 33,
+   "critical": [
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 2827,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 1,
+    "fixations": 2
+   }
+  },
+  "matrix|stalled-consumer-2x&layout=grid|desktop": {
+   "units": 33,
+   "critical": [
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 0,
+   "page_height_px": 900,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 2,
+    "fixations": 3
+   }
+  },
+  "matrix|stalled-consumer-2x&layout=grid|phone": {
+   "units": 33,
+   "critical": [
+    "discogs/tableinator/releases"
+   ],
+   "warning": [
+    "discogs/graphinator/artists.dlq"
+   ],
+   "state_has_glyph": true,
+   "min_font_px": 11,
+   "text_collisions": 0,
+   "text_spills": 0,
+   "broken_words": 13,
+   "page_height_px": 1116,
+   "horizontal_overflow": false,
+   "find": {
+    "found": true,
+    "in_first_screen": true,
+    "screens_to_scroll": 0,
+    "competing_critical": [],
+    "names_outside_unit": 2,
+    "fixations": 3
+   }
+  }
+ },
+ "colour": {
+  "dark": {
+   "text": {
+    "text-high on bg": 17.93,
+    "text-high on inner": 13.84,
+    "text-mid on surface": 9.12,
+    "text-dim on surface": 6.14,
+    "text-dim on inner": 5.41,
+    "crit on surface": 5.92,
+    "crit on crit-bg": 4.83,
+    "surface on crit (filled DLQ badge)": 5.92,
+    "warn on surface": 9.17,
+    "warn on warn-bg": 7.44,
+    "accent on surface": 7.57,
+    "text-high on ramp-0": 14.46,
+    "text-high on ramp-1": 8.73,
+    "text-high on ramp-2": 5.43,
+    "text-mid on ramp-0": 8.39,
+    "text-mid on ramp-1": 5.06,
+    "ramp-3-text on ramp-3": 5.85
+   },
+   "graphics": {
+    "crit border vs surface": 5.92,
+    "warn border vs surface": 9.17,
+    "accent bar vs inner": 6.66,
+    "edge vs surface": 3.14
+   },
+   "cvd_delta_e2000": {
+    "none": {
+     "crit-warn": 47.6,
+     "crit-ok": 71.3,
+     "warn-ok": 48.8,
+     "ramp min adjacent": 13.2
+    },
+    "protanopia": {
+     "crit-warn": 36.7,
+     "crit-ok": 18.1,
+     "warn-ok": 43.9,
+     "ramp min adjacent": 13.6
+    },
+    "deuteranopia": {
+     "crit-warn": 22.1,
+     "crit-ok": 31.2,
+     "warn-ok": 50.7,
+     "ramp min adjacent": 12.6
+    },
+    "tritanopia": {
+     "crit-warn": 15.3,
+     "crit-ok": 67.5,
+     "warn-ok": 54.4,
+     "ramp min adjacent": 10.8
+    },
+    "achromatopsia": {
+     "crit-warn": 10.9,
+     "crit-ok": 6.2,
+     "warn-ok": 4.7,
+     "ramp min adjacent": 10.7
+    }
+   }
+  },
+  "light": {
+   "text": {
+    "text-high on bg": 15.74,
+    "text-high on inner": 14.74,
+    "text-mid on surface": 10.9,
+    "text-dim on surface": 6.64,
+    "text-dim on inner": 5.63,
+    "crit on surface": 5.87,
+    "crit on crit-bg": 4.98,
+    "surface on crit (filled DLQ badge)": 5.87,
+    "warn on surface": 8.31,
+    "warn on warn-bg": 7.09,
+    "accent on surface": 5.12,
+    "text-high on ramp-0": 16.17,
+    "text-high on ramp-1": 11.43,
+    "text-high on ramp-2": 7.8,
+    "text-mid on ramp-0": 10.13,
+    "text-mid on ramp-1": 7.16,
+    "ramp-3-text on ramp-3": 5.14
+   },
+   "graphics": {
+    "crit border vs surface": 5.87,
+    "warn border vs surface": 8.31,
+    "accent bar vs inner": 4.34,
+    "edge vs surface": 3.23
+   },
+   "cvd_delta_e2000": {
+    "none": {
+     "crit-warn": 39.6,
+     "crit-ok": 59.3,
+     "warn-ok": 40.4,
+     "ramp min adjacent": 12.0
+    },
+    "protanopia": {
+     "crit-warn": 29.5,
+     "crit-ok": 14.1,
+     "warn-ok": 37.2,
+     "ramp min adjacent": 9.3
+    },
+    "deuteranopia": {
+     "crit-warn": 16.3,
+     "crit-ok": 27.4,
+     "warn-ok": 39.6,
+     "ramp min adjacent": 11.3
+    },
+    "tritanopia": {
+     "crit-warn": 17.6,
+     "crit-ok": 58.3,
+     "warn-ok": 46.1,
+     "ramp min adjacent": 10.9
+    },
+    "achromatopsia": {
+     "crit-warn": 8.0,
+     "crit-ok": 3.5,
+     "warn-ok": 11.5,
+     "ramp min adjacent": 8.2
+    }
+   }
+  }
+ },
+ "screenshots": [
+  "flow-stalled-consumer-dark-desktop.png",
+  "matrix-stalled-consumer-dark-desktop.png",
+  "progress-stalled-consumer-dark-desktop.png",
+  "flow-stalled-consumer-light-desktop.png",
+  "matrix-stalled-consumer-light-desktop.png",
+  "progress-stalled-consumer-light-desktop.png",
+  "flow-growing-dlq-dark-desktop.png",
+  "matrix-growing-dlq-dark-desktop.png",
+  "progress-growing-dlq-dark-desktop.png",
+  "flow-stalled-consumer-2x-dark-desktop.png",
+  "matrix-stalled-consumer-2x-dark-desktop.png",
+  "progress-stalled-consumer-2x-dark-desktop.png",
+  "flow-stalled-consumer-dark-phone.png",
+  "matrix-stalled-consumer-dark-phone.png",
+  "progress-stalled-consumer-dark-phone.png",
+  "flow-growing-dlq-light-phone.png",
+  "matrix-growing-dlq-light-phone.png",
+  "progress-growing-dlq-light-phone.png",
+  "flow-stalled-consumer-2x-light-phone.png",
+  "matrix-stalled-consumer-2x-light-phone.png",
+  "progress-stalled-consumer-2x-light-phone.png",
+  "matrix-stalled-consumer-2x-grid-light-phone.png",
+  "flow-growing-dlq-light-desktop-deuteranopia.png",
+  "matrix-growing-dlq-light-desktop-deuteranopia.png",
+  "progress-growing-dlq-light-desktop-deuteranopia.png",
+  "flow-stalled-consumer-dark-desktop-achromatopsia.png",
+  "matrix-stalled-consumer-dark-desktop-achromatopsia.png",
+  "progress-stalled-consumer-dark-desktop-achromatopsia.png"
+ ]
+}

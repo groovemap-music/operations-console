@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spike candidate 3 · Extraction-run progress</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+    .run { padding: 12px 14px; }
+    .run .summary { display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: baseline; }
+    .run .summary .big { font-size: 20px; font-weight: 600; }
+    .run svg.burnup { display: block; height: 90px; margin: 8px 0 4px; }
+    svg.burnup text { fill: var(--text-dim); font-size: 11px; }
+    svg.burnup .axis { stroke: var(--border); }
+    svg.burnup .line { fill: none; stroke-width: 2; }
+    svg.burnup .proj { fill: none; stroke-width: 1.5; stroke-dasharray: 4 4; }
+    .entity { border-top: 1px solid var(--border); padding: 8px 0 6px; }
+    .entity .name { font-weight: 600; }
+    .row { display: grid; grid-template-columns: 150px minmax(80px, 1fr) 64px 220px; gap: 4px 10px; align-items: center; padding: 3px 0; font-size: 13px; }
+    .row.crit { outline: 2px solid var(--crit); outline-offset: 1px; border-radius: 4px; background: var(--crit-bg); }
+    .bar { position: relative; height: 12px; border-radius: 6px; background: var(--inner); overflow: hidden; border: 1px solid var(--border); }
+    .bar .read { position: absolute; inset: 0 auto 0 0; background: var(--edge); opacity: 0.45; }
+    .bar .loaded { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+    .row.crit .bar .loaded { background: repeating-linear-gradient(135deg, var(--crit) 0 4px, transparent 4px 8px); }
+    .eta { font-size: 12px; color: var(--text-mid); }
+    .eta .flag { font-weight: 700; color: var(--crit); }
+    .dlq { font-size: 11px; font-weight: 700; margin-left: 6px; }
+    .dlq.warn { color: var(--warn); }
+    .dlq.crit { color: var(--surface); background: var(--crit); border-radius: 8px; padding: 0 6px; }
+    @media (max-width: 640px) {
+        main { padding: 8px; }
+        .row { grid-template-columns: 1fr auto; }
+        .row .bar { grid-column: 1 / -1; grid-row: 2; }
+        .row .eta { grid-column: 1 / -1; }
+    }
+</style>
+</head>
+<body>
+<main>
+    <div class="legend">
+        <span><i class="sw" style="background:var(--accent)"></i>loaded (acknowledged)</span>
+        <span><i class="sw" style="background:var(--edge);opacity:.45"></i>extracted, still queued</span>
+        <span><b class="state-crit">◆</b> critical</span><span><b class="state-warn">▲</b> warning</span>
+        <span>Expected records = extracted ÷ file progress (bytes read ÷ file size)</span>
+    </div>
+    <div id="pipelines"></div>
+</main>
+<script src="fixtures.js"></script>
+<script src="shared.js"></script>
+<script>
+'use strict';
+SPIKE.chrome('progress', 'Candidate 3: extraction-run progress');
+
+const PALETTE = ['var(--accent)', 'var(--accent-2)', 'var(--warn)', 'var(--text-mid)'];
+
+function burnup(p, etas) {
+    const W = Math.max(300, Math.min(1400, document.documentElement.clientWidth - 64)), H = 90, L = 34, B = 14;
+    const t = p.run.history_t;
+    const totals = p.entities.reduce((a, e) => a + SPIKE.expected(p, e), 0);
+    const finite = Object.values(etas).filter(Number.isFinite);
+    const horizon = p.run.elapsed_s + Math.max(0, ...finite) * 1.05 || p.run.elapsed_s;
+    const X = s => L + (s / horizon) * (W - L - 4);
+    const Y = f => (H - B) - f * (H - B - 4);
+    const parts = [`<line class="axis" x1="${L}" y1="${H - B}" x2="${W}" y2="${H - B}"/>`,
+        `<text x="0" y="${Y(1) + 4}">100%</text><text x="0" y="${Y(0)}">0%</text>`,
+        `<line class="axis" x1="${X(p.run.elapsed_s)}" y1="0" x2="${X(p.run.elapsed_s)}" y2="${H - B}" stroke-dasharray="2 3"/>`,
+        `<text x="${X(p.run.elapsed_s) + 3}" y="${H - 2}">now</text>`];
+    p.consumers.forEach((c, i) => {
+        const colour = PALETTE[i % PALETTE.length];
+        const series = t.map((_, k) => p.entities.reduce((a, e) => a + p.burnup[`${c.name}|${e}`][k], 0) / totals);
+        parts.push(`<polyline class="line" stroke="${colour}" points="${t.map((s, k) => `${X(s).toFixed(1)},${Y(series[k]).toFixed(1)}`).join(' ')}"/>`);
+        const now = series[series.length - 1];
+        const end = Number.isFinite(etas[c.name]) ? p.run.elapsed_s + etas[c.name] : horizon;
+        const endY = Number.isFinite(etas[c.name]) ? Y(1) : Y(now);
+        parts.push(`<polyline class="proj" stroke="${colour}" points="${X(p.run.elapsed_s)},${Y(now)} ${X(end)},${endY}"/>`);
+    });
+    return `<svg class="burnup" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" aria-label="Loaded fraction over the run">${parts.join('')}</svg>`;
+}
+
+function renderPipeline(p) {
+    const etas = {};
+    const rows = [];
+    const problems = [];
+    p.entities.forEach(entity => {
+        const x = p.extractor[entity];
+        const total = SPIKE.expected(p, entity);
+        const lines = p.consumers.map(c => {
+            const q = SPIKE.queueFor(p, c.name, entity);
+            const d = SPIKE.queueFor(p, c.name, entity, true);
+            const a = SPIKE.assessQueue(q);
+            const da = SPIKE.assessQueue(d);
+            const eta = SPIKE.loadEta(p, c.name, entity);
+            etas[c.name] = Math.max(etas[c.name] || 0, eta);
+            if (a.state === 'crit') problems.push(`${c.name} · ${entity} stalled`);
+            const loaded = q.acked_since_run_start / total;
+            const etaText = a.state === 'crit' ? `<span class="flag">◆ ${a.label}</span>`
+                : eta === 0 ? 'done' : `ETA ${SPIKE.duration(eta)}`;
+            const dlq = da.state === 'ok' ? ''
+                : `<span class="dlq ${da.state}" ${SPIKE.unitAttrs(`${p.name}/${c.name}/${entity}.dlq`, da)}>${da.state === 'crit' ? '◆' : '▲'} ${da.label}</span>`;
+            return `<div class="row ${a.state === 'crit' ? 'crit' : ''}" ${SPIKE.unitAttrs(`${p.name}/${c.name}/${entity}`, a)}>
+                <span>${c.name}${c.hypothetical ? '*' : ''}</span>
+                <span class="bar" role="img" aria-label="${SPIKE.pct(loaded)} loaded"><span class="read" style="width:${(100 * x.file_progress).toFixed(1)}%"></span><span class="loaded" style="width:${(100 * loaded).toFixed(1)}%"></span></span>
+                <span class="mono">${SPIKE.pct(loaded)}</span>
+                <span class="eta">${etaText}${dlq}</span>
+            </div>`;
+        });
+        rows.push(`<div class="entity"><span class="name">${entity}</span>
+            <span class="dim"> · ${SPIKE.count(total)} expected · ${x.done ? 'extracted' : `${SPIKE.pct(x.file_progress)} read at ${SPIKE.rate(x.publish_rate)}`}</span>
+            ${lines.join('')}</div>`);
+    });
+    const slowest = Object.entries(etas).sort((a, b) => b[1] - a[1])[0];
+    const finish = problems.length
+        ? `<span class="state-crit">◆ Cannot finish: ${problems.join(', ')}</span>`
+        : slowest[1] === 0 ? '<span class="big">Loaded</span>'
+        : `<span class="big">Finishes in ${SPIKE.duration(slowest[1])}</span><span class="dim">bottleneck ${slowest[0]}</span>`;
+    const legend = p.consumers.map((c, i) => `<span><i class="sw" style="background:${PALETTE[i % PALETTE.length]}"></i>${c.name}</span>`).join('');
+    return `<h2 class="pipeline">${p.name} run</h2>
+      <section class="card run">
+        <div class="summary">${finish}<span class="dim">started ${SPIKE.duration(p.run.elapsed_s)} ago</span></div>
+        ${burnup(p, etas)}
+        <div class="legend">${legend}<span class="dim">dashed = projection at current rate</span></div>
+        ${rows.join('')}
+      </section>`;
+}
+
+document.getElementById('pipelines').innerHTML = SPIKE.scenario.pipelines.map(renderPipeline).join('')
+    + (SPIKE.scenario.pipelines.some(p => p.consumers.some(c => c.hypothetical)) ? '<p class="dim">* hypothetical consumer added for the 2x-consumers case</p>' : '');
+</script>
+</body>
+</html>
