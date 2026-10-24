@@ -148,7 +148,9 @@ class TestErrors:
         assert client.get("/api/alerts").json() == {"configured": False, "available": False, "alerts": [], "note": None}
         assert grafana.requests == []
 
-    def test_an_empty_token_file_variable_is_unconfigured(self, client: TestClient, grafana: FakeGrafana, configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_empty_token_file_variable_is_unconfigured(
+        self, client: TestClient, grafana: FakeGrafana, configured: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setenv("GRAFANA_TOKEN_FILE", "")
         assert client.get("/api/alerts").json()["configured"] is False
         assert grafana.requests == []
@@ -171,7 +173,9 @@ class TestApiUrl:
         (request,) = grafana.requests
         assert request.url.host == "grafana.test"
 
-    def test_grafana_api_url_alone_configures_alerts(self, client: TestClient, grafana: FakeGrafana, configured: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_grafana_api_url_alone_configures_alerts(
+        self, client: TestClient, grafana: FakeGrafana, configured: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.delenv("GRAFANA_URL")
         monkeypatch.setenv("GRAFANA_API_URL", BASE)
         assert client.get("/api/alerts").json()["configured"] is True
