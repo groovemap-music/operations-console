@@ -53,7 +53,16 @@ if TYPE_CHECKING:
     from tests.fake_catalog_api import FakeCatalogApi
 
 
-DATA_ROUTES = ["/api/metrics", "/api/services", "/api/queues", "/api/databases", "/api/queue-prefixes", "/api/session"]
+DATA_ROUTES = [
+    "/api/metrics",
+    "/api/services",
+    "/api/queues",
+    "/api/databases",
+    "/api/queue-prefixes",
+    "/api/session",
+]
+# Answer 503 without VictoriaMetrics, so they are probed for the gate only.
+HISTORY_ROUTES = ["/api/history/queues", "/api/history/health"]
 
 
 def _bearer(token: str) -> dict[str, str]:
@@ -72,7 +81,7 @@ def client(fake_catalog: FakeCatalogApi) -> Iterator[TestClient]:
 
 
 def _assert_denied(client: TestClient, headers: dict[str, str], status: int, reason: str) -> None:
-    for path in DATA_ROUTES:
+    for path in [*DATA_ROUTES, *HISTORY_ROUTES]:
         response = client.get(path, headers=headers)
         assert response.status_code == status, path
         assert response.json()["reason"] == reason, path
