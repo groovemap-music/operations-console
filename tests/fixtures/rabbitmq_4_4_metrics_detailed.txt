@@ -1,0 +1,46 @@
+# TYPE rabbitmq_detailed_queue_messages_ready gauge
+# HELP rabbitmq_detailed_queue_messages_ready Messages ready to be delivered to consumers
+rabbitmq_detailed_queue_messages_ready{vhost="/",queue="groovemap-discogs-graphinator-artists"} 6
+# TYPE rabbitmq_detailed_queue_messages_unacked gauge
+# HELP rabbitmq_detailed_queue_messages_unacked Messages delivered to consumers but not yet acknowledged
+rabbitmq_detailed_queue_messages_unacked{vhost="/",queue="groovemap-discogs-graphinator-artists"} 0
+# TYPE rabbitmq_detailed_queue_messages gauge
+# HELP rabbitmq_detailed_queue_messages Sum of ready and unacknowledged messages - total queue depth
+rabbitmq_detailed_queue_messages{vhost="/",queue="groovemap-discogs-graphinator-artists"} 6
+# TYPE rabbitmq_detailed_queue_process_reductions_total counter
+# HELP rabbitmq_detailed_queue_process_reductions_total Total number of queue process reductions
+rabbitmq_detailed_queue_process_reductions_total{vhost="/",queue="groovemap-discogs-graphinator-artists"} 16653
+# TYPE rabbitmq_detailed_queue_consumers gauge
+# HELP rabbitmq_detailed_queue_consumers Consumers on a queue
+rabbitmq_detailed_queue_consumers{vhost="/",queue="groovemap-discogs-graphinator-artists"} 0
+# TYPE rabbitmq_detailed_queue_get_ack_total counter
+# HELP rabbitmq_detailed_queue_get_ack_total Total number of messages fetched from a queue with basic.get in manual acknowledgement mode
+rabbitmq_detailed_queue_get_ack_total{vhost="/",queue="groovemap-discogs-graphinator-artists"} 5
+# TYPE rabbitmq_detailed_queue_get_total counter
+# HELP rabbitmq_detailed_queue_get_total Total number of messages fetched from a queue with basic.get in automatic acknowledgement mode
+rabbitmq_detailed_queue_get_total{vhost="/",queue="groovemap-discogs-graphinator-artists"} 0
+# TYPE rabbitmq_detailed_queue_messages_delivered_ack_total counter
+# HELP rabbitmq_detailed_queue_messages_delivered_ack_total Total number of messages delivered from a queue to consumers in manual acknowledgement mode
+rabbitmq_detailed_queue_messages_delivered_ack_total{vhost="/",queue="groovemap-discogs-graphinator-artists"} 0
+# TYPE rabbitmq_detailed_queue_messages_delivered_total counter
+# HELP rabbitmq_detailed_queue_messages_delivered_total Total number of messages delivered from a queue to consumers in automatic acknowledgement mode
+rabbitmq_detailed_queue_messages_delivered_total{vhost="/",queue="groovemap-discogs-graphinator-artists"} 0
+# TYPE rabbitmq_detailed_queue_messages_redelivered_total counter
+# HELP rabbitmq_detailed_queue_messages_redelivered_total Total number of messages redelivered from a queue to consumers
+rabbitmq_detailed_queue_messages_redelivered_total{vhost="/",queue="groovemap-discogs-graphinator-artists"} 0
+# TYPE rabbitmq_detailed_queue_messages_acked_total counter
+# HELP rabbitmq_detailed_queue_messages_acked_total Total number of messages acknowledged by consumers on a queue
+rabbitmq_detailed_queue_messages_acked_total{vhost="/",queue="groovemap-discogs-graphinator-artists"} 4
+# TYPE rabbitmq_detailed_queue_get_empty_total counter
+# HELP rabbitmq_detailed_queue_get_empty_total Total number of times basic.get operations fetched no message on a queue
+rabbitmq_detailed_queue_get_empty_total{vhost="/",queue="groovemap-discogs-graphinator-artists"} 0
+# TYPE rabbitmq_detailed_queue_exchange_messages_published_total counter
+# HELP rabbitmq_detailed_queue_exchange_messages_published_total Total number of messages published into a queue through an exchange
+rabbitmq_detailed_queue_exchange_messages_published_total{vhost="/",exchange="groovemap-discogs-artists",queue="groovemap-discogs-graphinator-artists"} 10
+# TYPE rabbitmq_detailed_queue_info gauge
+# HELP rabbitmq_detailed_queue_info A metric with a constant '1' value and labels that provide some queue details
+rabbitmq_detailed_queue_info{vhost="/",queue="groovemap-discogs-graphinator-artists",queue_type="rabbit_classic_queue",membership="leader"} 1
+# TYPE rabbitmq_build_info untyped
+# HELP rabbitmq_build_info RabbitMQ & Erlang/OTP version info
+rabbitmq_build_info{rabbitmq_version="4.4.0",prometheus_plugin_version="4.4.0",prometheus_client_version="6.1.1",erlang_version="29.1.2"} 1
+

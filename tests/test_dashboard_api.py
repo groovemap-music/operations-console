@@ -14,7 +14,6 @@ class TestDashboardAPI:
     def test_client(
         self,
         mock_dashboard_config: Any,
-        dashboard_mock_amqp_connection: Any,
         dashboard_mock_neo4j_driver: Any,
         dashboard_mock_httpx_client: Any,
         dashboard_mock_psycopg_connect: Any,
@@ -22,7 +21,6 @@ class TestDashboardAPI:
         """Create a test client with mocked dependencies."""
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_dashboard_config),
-            patch("dashboard.dashboard.AsyncResilientRabbitMQ", return_value=dashboard_mock_amqp_connection),
             patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=dashboard_mock_neo4j_driver),
             patch("dashboard.dashboard.AsyncResilientPostgreSQL", return_value=dashboard_mock_psycopg_connect),
             patch("httpx.AsyncClient") as mock_httpx_class,
@@ -72,14 +70,12 @@ class TestDashboardAPI:
     def test_services_endpoint_without_dashboard(
         self,
         mock_dashboard_config: Any,
-        dashboard_mock_amqp_connection: Any,
         dashboard_mock_neo4j_driver: Any,
         dashboard_mock_psycopg_connect: Any,
     ) -> None:
         """Test /api/services endpoint when dashboard is not initialized."""
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_dashboard_config),
-            patch("dashboard.dashboard.AsyncResilientRabbitMQ", return_value=dashboard_mock_amqp_connection),
             patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=dashboard_mock_neo4j_driver),
             patch("dashboard.dashboard.AsyncResilientPostgreSQL", return_value=dashboard_mock_psycopg_connect),
             patch("dashboard.dashboard.dashboard", None),  # Force dashboard to None
@@ -95,14 +91,12 @@ class TestDashboardAPI:
     def test_queues_endpoint_without_dashboard(
         self,
         mock_dashboard_config: Any,
-        dashboard_mock_amqp_connection: Any,
         dashboard_mock_neo4j_driver: Any,
         dashboard_mock_psycopg_connect: Any,
     ) -> None:
         """Test /api/queues endpoint when dashboard is not initialized."""
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_dashboard_config),
-            patch("dashboard.dashboard.AsyncResilientRabbitMQ", return_value=dashboard_mock_amqp_connection),
             patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=dashboard_mock_neo4j_driver),
             patch("dashboard.dashboard.AsyncResilientPostgreSQL", return_value=dashboard_mock_psycopg_connect),
             patch("dashboard.dashboard.dashboard", None),  # Force dashboard to None
@@ -118,14 +112,12 @@ class TestDashboardAPI:
     def test_databases_endpoint_without_dashboard(
         self,
         mock_dashboard_config: Any,
-        dashboard_mock_amqp_connection: Any,
         dashboard_mock_neo4j_driver: Any,
         dashboard_mock_psycopg_connect: Any,
     ) -> None:
         """Test /api/databases endpoint when dashboard is not initialized."""
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_dashboard_config),
-            patch("dashboard.dashboard.AsyncResilientRabbitMQ", return_value=dashboard_mock_amqp_connection),
             patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=dashboard_mock_neo4j_driver),
             patch("dashboard.dashboard.AsyncResilientPostgreSQL", return_value=dashboard_mock_psycopg_connect),
             patch("dashboard.dashboard.dashboard", None),  # Force dashboard to None
@@ -137,3 +129,44 @@ class TestDashboardAPI:
             response = test_client.get("/api/databases")
             assert response.status_code == 200
             assert response.json() == []
+
+
+class TestQueuesEndpointServesLiveSnapshot:
+    """/api/queues reads the loop's latest snapshot and never scrapes the broker itself."""
+
+    @staticmethod
+    def _get(snapshot: Any) -> Any:
+        from unittest.mock import AsyncMock, Mock
+
+        fake = Mock(latest_metrics=snapshot, get_queue_info=AsyncMock())
+        with patch("dashboard.dashboard.dashboard", fake):
+            from dashboard.dashboard import app
+
+            response = TestClient(app, raise_server_exceptions=False).get("/api/queues")
+        fake.get_queue_info.assert_not_called()
+        return response
+
+    def test_serves_snapshot_with_null_for_unavailable_pipeline(self) -> None:
+        from datetime import UTC, datetime
+
+        from dashboard.dashboard import PipelineMetrics, QueueInfo, SystemMetrics
+
+        queue = QueueInfo(name="q", messages=1, messages_ready=1, messages_unacknowledged=0, consumers=1, message_rate=2.0, ack_rate=1.0)
+        snapshot = SystemMetrics(
+            pipelines={
+                "discogs": PipelineMetrics(services=[], queues=[queue]),
+                "musicbrainz": PipelineMetrics(services=[], queues=[], queues_available=False),
+            },
+            databases=[],
+            timestamp=datetime.now(UTC),
+        )
+
+        response = self._get(snapshot)
+
+        assert response.status_code == 200
+        assert response.json() == {"discogs": [queue.model_dump(mode="json")], "musicbrainz": None}
+
+    def test_empty_before_the_first_poll(self) -> None:
+        response = self._get(None)
+
+        assert response.json() == {}

@@ -286,7 +286,6 @@ def page(request: pytest.FixtureRequest, browser: Browser, browser_context_args:
 def mock_dashboard_config() -> DashboardConfig:
     """Create a mock dashboard configuration for testing."""
     return DashboardConfig(
-        amqp_connection="amqp://test:test@localhost:5672/",
         neo4j_host="neo4j://localhost:7687",
         neo4j_username="test",
         neo4j_password="test",
@@ -294,22 +293,7 @@ def mock_dashboard_config() -> DashboardConfig:
         postgres_username="test",
         postgres_password="test",
         postgres_database="test",
-        rabbitmq_username="test",
-        rabbitmq_password="test",
     )
-
-
-@pytest.fixture
-def dashboard_mock_amqp_connection() -> AsyncMock:
-    """Create a mock AMQP connection for dashboard tests."""
-    mock = AsyncMock()
-    mock.close = AsyncMock()
-
-    # Mock channel
-    mock_channel = AsyncMock()
-    mock.channel = AsyncMock(return_value=mock_channel)
-
-    return mock
 
 
 @pytest.fixture
@@ -358,19 +342,14 @@ def dashboard_mock_httpx_client() -> MagicMock:
                 "progress": 0.5,
                 "timestamp": "2024-01-01T00:00:00+00:00",
             }
-        elif "api/queues" in url:
-            # Mock RabbitMQ management API
+        elif "metrics/detailed" in url:
             response.status_code = 200
-            response.json = lambda: [
-                {
-                    "name": "groovemap-discogs-graphinator-artists",
-                    "messages": 5,
-                    "messages_ready": 3,
-                    "messages_unacknowledged": 2,
-                    "consumers": 1,
-                    "message_stats": {"ack_details": {"rate": 1.5}},
-                }
-            ]
+            response.text = (
+                'rabbitmq_detailed_queue_messages{vhost="/",queue="groovemap-discogs-graphinator-artists"} 5\n'
+                'rabbitmq_detailed_queue_messages_ready{vhost="/",queue="groovemap-discogs-graphinator-artists"} 3\n'
+                'rabbitmq_detailed_queue_messages_unacked{vhost="/",queue="groovemap-discogs-graphinator-artists"} 2\n'
+                'rabbitmq_detailed_queue_consumers{vhost="/",queue="groovemap-discogs-graphinator-artists"} 1\n'
+            )
         else:
             response.status_code = 404
             response.json = lambda: {"error": "Not found"}

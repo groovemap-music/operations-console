@@ -125,14 +125,14 @@ class PollOutcome:
     """The outcome a `poll_span` block reports back to the span it runs in.
 
     A poll's own error handling almost never lets an exception escape — `get_service_statuses`
-    turns a dead service into an "unknown" row, `get_queue_info` logs and returns an empty
-    list — so the block has to be able to say "this attempt failed" without raising. Callers
+    turns a dead service into an "unknown" row, `get_queue_info` logs and returns None
+    (unavailable) — so the block has to be able to say "this attempt failed" without raising. Callers
     flip it with `failed()`; anything that does raise is caught by `poll_span` itself.
 
     `failed()` takes the exception when there was one. A poll that died on a refused connection
     is a real error and gets span status ERROR with that exception's class name as `error.type`,
     exactly as if it had propagated. A poll that merely got an answer it did not want — an HTTP
-    404 from a service that is up, a 401 from the RabbitMQ management API — is a result the
+    404 from a service that is up, a 503 from the RabbitMQ Prometheus endpoint — is a result the
     console handled, so it is reported through the `outcome` attribute and leaves the span
     status unset. Neither form ever attaches the exception message, its traceback, or a span
     event: `error.type` is the whole error report.
