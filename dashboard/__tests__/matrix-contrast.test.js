@@ -61,11 +61,13 @@ function pairs(t) {
             'crit on surface (flag between hatch stripes, legend, drawer)': [t.crit, t.surface],
             'warn on surface (DLQ warning badge, banner, legend, drawer)': [t.warn, t.surface],
             'surface on crit (filled DLQ critical badge)': [t.surface, t.crit],
+            'ok on surface (platform health badge)': [t.ok, t.surface],
         },
         graphics: {
             'critical cell border vs surface': [t.crit, t.surface],
             'critical DLQ badge vs critical hatch': [t.crit, critBg],
             'warning badge and banner border vs surface': [t.warn, t.surface],
+            'platform health ok badge border vs surface': [t.ok, t.surface],
             'focus ring vs surface': [t.accent, t.surface],
             'unavailable cell border and swatch outline vs surface': [t['text-dim'], t.surface],
             'topology node outline vs surface': [t['text-dim'], t.surface],

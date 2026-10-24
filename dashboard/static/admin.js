@@ -1389,7 +1389,7 @@ class AdminServiceHealth extends AdminQueueHistory {
         if (services.length === 0) {
             container.replaceChildren();
             const empty = document.createElement('p');
-            empty.className = 'text-xs t-muted col-span-5 text-center py-4';
+            empty.className = 'text-xs t-muted sh-cards-empty text-center py-4';
             empty.textContent = 'No service data available';
             container.appendChild(empty);
             return;

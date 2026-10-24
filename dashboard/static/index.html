@@ -186,6 +186,7 @@
             --mx-text-dim: #8a9bb3;
             --mx-accent: #00bcd4;
             --mx-warn: #ffab00;
+            --mx-ok: #3ddc97;
             --mx-crit: #ff5c8a;
             --mx-crit-bg: rgba(255, 92, 138, 0.16);
             --mx-ramp-0: #0d2431;
@@ -204,6 +205,7 @@
             --mx-text-dim: #4a5e78;
             --mx-accent: #00798a;
             --mx-warn: #6d4600;
+            --mx-ok: #0b6b3a;
             --mx-crit: #c2185b;
             --mx-crit-bg: rgba(194, 24, 91, 0.10);
             --mx-ramp-0: #f0f8fb;
@@ -251,6 +253,28 @@
             color: var(--mx-warn); border: 1.5px solid var(--mx-warn); border-radius: 4px; padding: 1px 6px;
         }
         .mx-unavailable-banner::before { content: "▲ "; }
+        .mx-down-banner { color: var(--mx-crit); border-color: var(--mx-crit); }
+        .mx-down-banner::before { content: "◆ "; }
+        .mx-pipeline[data-down] .mx-grid { opacity: 0.6; }
+        /* System Health service cards: one per poll target (the pipelines, the platform, the stores), so the
+           grid wraps to the width instead of holding five fixed columns. */
+        .sh-cards { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr)); }
+        .sh-cards .stat-card { min-width: 0; overflow-wrap: anywhere; }
+        .sh-head, .sh-head-controls { flex-wrap: wrap; gap: 8px 12px; }
+        .sh-cards-empty { grid-column: 1 / -1; }
+        /* Platform health: grouped rows that wrap to one column at phone width. */
+        .ph-group { background: var(--mx-surface); border: 1px solid var(--mx-border); border-radius: 12px; padding: 12px; }
+        .ph-group h3 { margin: 0 0 8px; font-size: 12px; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; color: var(--mx-text-dim); }
+        .ph-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr)); }
+        .ph-row { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; min-width: 0; padding: 6px 8px; border: 1px solid var(--mx-border); border-radius: 8px; font-size: 12px; }
+        .ph-name { color: var(--mx-text-high); font-weight: 600; overflow-wrap: anywhere; }
+        .ph-badge { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; border-radius: 4px; padding: 1px 6px; border: 1.5px solid currentColor; }
+        .ph-ok { color: var(--mx-ok); }
+        .ph-bad { color: var(--mx-crit); }
+        .ph-bad::before { content: "◆ "; }
+        .ph-unknown { color: var(--mx-warn); }
+        .ph-detail { flex-basis: 100%; min-width: 0; color: var(--mx-text-dim); overflow-wrap: anywhere; }
+        .ph-detail:empty { display: none; }
         .mx-grid { display: grid; gap: 4px; grid-template-columns: minmax(72px, 150px) repeat(var(--mx-cols), minmax(0, 1fr)); }
         .mx-colhead {
             font-size: 12px; color: var(--mx-text-mid); padding: 4px 6px; align-self: end; min-width: 0;
@@ -602,6 +626,22 @@
                 </div>
                 <div id="topology-flow"></div>
             </dialog>
+
+            <!-- ================================================================
+                 PLATFORM HEALTH: every long-running service outside the pipelines, filled by
+                 dashboard.js from the live metrics, and the one-shot jobs.
+                 ================================================================ -->
+            <div class="flex items-center gap-3">
+                <h2 class="text-sm font-bold uppercase tracking-[0.15em] t-dim">Platform Health</h2>
+                <div class="flex-1 border-t b-theme"></div>
+            </div>
+
+            <div id="platform-health" class="space-y-4">
+                <section class="ph-group" aria-labelledby="ph-applications"><h3 id="ph-applications">Applications</h3><ul class="ph-list" data-platform-group="applications"></ul></section>
+                <section class="ph-group" aria-labelledby="ph-data"><h3 id="ph-data">Data</h3><ul class="ph-list" data-platform-group="data"></ul></section>
+                <section class="ph-group" aria-labelledby="ph-observability"><h3 id="ph-observability">Observability</h3><ul class="ph-list" data-platform-group="observability"></ul></section>
+                <section class="ph-group" aria-labelledby="ph-jobs"><h3 id="ph-jobs">One-shot jobs</h3><ul class="ph-list" data-platform-jobs></ul></section>
+            </div>
 
             <!-- ================================================================
                  DATABASE STATISTICS
@@ -1006,7 +1046,7 @@
                     <h3 class="text-sm font-semibold flex items-center gap-2">
                         <span class="material-symbols-outlined text-sm t-dim">show_chart</span> Queue Trends
                     </h3>
-                    <div class="flex items-center gap-3">
+                    <div class="flex items-center gap-3 sh-head-controls">
                         <span class="text-[10px] t-muted">Auto-refresh 60s</span>
                         <span id="qt-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
                         <span id="qt-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
@@ -1050,7 +1090,7 @@
         <div id="tab-system-health" class="space-y-6" style="display:none">
 
             <section class="dashboard-card p-6">
-                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
+                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4 sh-head">
                     <h3 class="text-sm font-semibold flex items-center gap-2">
                         <span class="material-symbols-outlined text-sm t-dim">monitor_heart</span> System Health
                     </h3>
@@ -1070,7 +1110,7 @@
                 <!-- Service status cards -->
                 <div class="mb-6">
                     <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-3">Service Status</p>
-                    <div class="grid grid-cols-5 gap-4" id="service-status-cards"></div>
+                    <div class="sh-cards" id="service-status-cards"></div>
                 </div>
 
                 <!-- Response Time Chart -->
