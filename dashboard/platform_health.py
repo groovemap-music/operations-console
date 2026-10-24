@@ -148,6 +148,10 @@ async def _valkey_ping(probe: Probe) -> PlatformService:
         writer.close()
     if reply == b"+PONG":
         return _reading(probe, HEALTHY)
+    # The production Valkey requires a password, which the console is never given. An answer of
+    # NOAUTH still proves the server is up and speaking RESP, which is all liveness asks.
+    if reply.startswith(b"-NOAUTH"):
+        return _reading(probe, HEALTHY)
     return _reading(probe, UNHEALTHY, f"unexpected reply to PING: {reply[:40].decode(errors='replace') or 'none'}")
 
 

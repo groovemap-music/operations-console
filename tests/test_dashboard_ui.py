@@ -96,6 +96,23 @@ PLATFORM_FAULTS = """
 """
 
 
+# Every poll target the console now records: the pipeline services, the platform services, and the stores.
+POLL_TARGETS = [
+    "extractor-discogs", "graphinator", "tableinator", "extractor-musicbrainz", "brainzgraphinator", "brainztableinator",
+    "rabbitmq", "neo4j", "postgres", "catalog-api", "explore", "insights", "valkey", "victoria-metrics", "victoria-traces",
+    "otel-collector", "grafana", "postgres-exporter", "valkey-exporter", "cadvisor", "node-exporter",
+]  # fmt: skip
+
+
+def many_poll_targets(route: Route) -> None:
+    """Serve a system-health history with one card per poll target."""
+    services = [
+        {"service_name": name, "status": "healthy" if i % 5 else "unhealthy", "uptime_pct": 99.5, "response_time_ms": 12.0}
+        for i, name in enumerate(POLL_TARGETS)
+    ]
+    route.fulfill(json={"range": "24h", "step": "5m", "services": services, "response_time_series": [], "endpoints": []})
+
+
 def two_x_consumers(route: Route) -> None:
     """Serve the real topology with two hypothetical consumers added to every pipeline."""
     topology = route.fetch().json()
@@ -235,6 +252,31 @@ class TestDashboardUI:
         page.locator("#platform-health").scroll_into_view_if_needed()
         expect(page.locator("#platform-health")).to_be_visible()
         assert page.evaluate(PLATFORM_FAULTS) == {"overflow": 0, "spills": []}
+
+    @pytest.mark.parametrize("viewport", [DESKTOP, PHONE], ids=["desktop", "phone"])
+    def test_system_health_cards_stay_legible_with_every_poll_target(self, page: Page, viewport: dict[str, int]) -> None:
+        """One card per target wraps to the width: nothing overflows the page or its card, at 390 px too."""
+        page.route("**/api/history/health*", many_poll_targets)
+        page.set_viewport_size(viewport)
+        sign_in(page)
+        page.click("#tab-btn-system-health")
+        cards = page.locator("#service-status-cards .stat-card")
+        expect(cards).to_have_count(len(POLL_TARGETS))
+        faults = page.evaluate(
+            """() => {
+              const page = document.documentElement;
+              const grid = document.getElementById('service-status-cards');
+              const spills = [...grid.children].filter((c) => c.scrollWidth > c.clientWidth + 1 || c.getBoundingClientRect().right > grid.getBoundingClientRect().right + 1)
+                .map((c) => c.textContent.trim());
+              const columns = getComputedStyle(grid).gridTemplateColumns.split(' ').length;
+              return { overflow: Math.max(0, page.scrollWidth - page.clientWidth), spills, columns };
+            }"""
+        )
+        assert faults["overflow"] == 0
+        assert faults["spills"] == []
+        assert faults["columns"] >= (5 if viewport is DESKTOP else 1)
+        if viewport is PHONE:
+            assert faults["columns"] <= 2
 
     def test_desktop_surfaces_a_musicbrainz_fault_at_the_top_of_the_first_screen(self, page: Page) -> None:
         """Every fault is listed above the tabs, before the matrices, and the header reads Critical."""

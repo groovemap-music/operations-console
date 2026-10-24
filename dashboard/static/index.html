@@ -256,6 +256,12 @@
         .mx-down-banner { color: var(--mx-crit); border-color: var(--mx-crit); }
         .mx-down-banner::before { content: "◆ "; }
         .mx-pipeline[data-down] .mx-grid { opacity: 0.6; }
+        /* System Health service cards: one per poll target (the pipelines, the platform, the stores), so the
+           grid wraps to the width instead of holding five fixed columns. */
+        .sh-cards { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 150px), 1fr)); }
+        .sh-cards .stat-card { min-width: 0; overflow-wrap: anywhere; }
+        .sh-head, .sh-head-controls { flex-wrap: wrap; gap: 8px 12px; }
+        .sh-cards-empty { grid-column: 1 / -1; }
         /* Platform health: grouped rows that wrap to one column at phone width. */
         .ph-group { background: var(--mx-surface); border: 1px solid var(--mx-border); border-radius: 12px; padding: 12px; }
         .ph-group h3 { margin: 0 0 8px; font-size: 12px; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; color: var(--mx-text-dim); }
@@ -1040,7 +1046,7 @@
                     <h3 class="text-sm font-semibold flex items-center gap-2">
                         <span class="material-symbols-outlined text-sm t-dim">show_chart</span> Queue Trends
                     </h3>
-                    <div class="flex items-center gap-3">
+                    <div class="flex items-center gap-3 sh-head-controls">
                         <span class="text-[10px] t-muted">Auto-refresh 60s</span>
                         <span id="qt-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
                         <span id="qt-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
@@ -1084,7 +1090,7 @@
         <div id="tab-system-health" class="space-y-6" style="display:none">
 
             <section class="dashboard-card p-6">
-                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
+                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4 sh-head">
                     <h3 class="text-sm font-semibold flex items-center gap-2">
                         <span class="material-symbols-outlined text-sm t-dim">monitor_heart</span> System Health
                     </h3>
@@ -1104,7 +1110,7 @@
                 <!-- Service status cards -->
                 <div class="mb-6">
                     <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-3">Service Status</p>
-                    <div class="grid grid-cols-5 gap-4" id="service-status-cards"></div>
+                    <div class="sh-cards" id="service-status-cards"></div>
                 </div>
 
                 <!-- Response Time Chart -->

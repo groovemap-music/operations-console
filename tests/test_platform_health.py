@@ -128,19 +128,38 @@ async def _serve(reply: bytes) -> tuple[asyncio.Server, str]:
 
 
 class TestValkeyPing:
+    @staticmethod
+    async def _ping(reply: bytes) -> ph.PlatformService:
+        server, address = await _serve(reply)
+        async with server:
+            return await ph.check_probe(MagicMock(), ph.Probe("valkey", "data", address, ph.KIND_VALKEY_PING))
+
     @pytest.mark.asyncio
-    async def test_pong_is_healthy_another_reply_is_unhealthy_and_a_closed_port_is_unreachable(self) -> None:
-        client = MagicMock()
-        pong, address = await _serve(b"+PONG\r\n")
-        async with pong:
-            ok = await ph.check_probe(client, ph.Probe("valkey", "data", address, ph.KIND_VALKEY_PING))
-        noauth, address = await _serve(b"-NOAUTH Authentication required.\r\n")
-        async with noauth:
-            refused = await ph.check_probe(client, ph.Probe("valkey", "data", address, ph.KIND_VALKEY_PING))
-        gone = await ph.check_probe(client, ph.Probe("valkey", "data", address, ph.KIND_VALKEY_PING))  # the server above has closed
-        assert ok.status == "healthy"
-        assert (refused.status, refused.error) == ("unhealthy", "unexpected reply to PING: -NOAUTH Authentication required.")
-        assert gone.status == "unreachable"
+    async def test_pong_is_healthy(self) -> None:
+        assert (await self._ping(b"+PONG\r\n")).status == "healthy"
+
+    @pytest.mark.asyncio
+    async def test_noauth_is_healthy_because_a_password_protected_server_is_still_up(self) -> None:
+        reading = await self._ping(b"-NOAUTH Authentication required.\r\n")
+        assert (reading.status, reading.error) == ("healthy", None)
+
+    @pytest.mark.asyncio
+    async def test_loading_is_unhealthy(self) -> None:
+        reading = await self._ping(b"-LOADING Valkey is loading the dataset in memory\r\n")
+        assert (reading.status, reading.error) == ("unhealthy", "unexpected reply to PING: -LOADING Valkey is loading the dataset i")
+
+    @pytest.mark.asyncio
+    async def test_any_other_error_is_unhealthy(self) -> None:
+        reading = await self._ping(b"-ERR unknown command\r\n")
+        assert (reading.status, reading.error) == ("unhealthy", "unexpected reply to PING: -ERR unknown command")
+
+    @pytest.mark.asyncio
+    async def test_a_closed_port_is_unreachable(self) -> None:
+        server, address = await _serve(b"+PONG\r\n")
+        server.close()
+        await server.wait_closed()
+        reading = await ph.check_probe(MagicMock(), ph.Probe("valkey", "data", address, ph.KIND_VALKEY_PING))
+        assert reading.status == "unreachable"
 
 
 class TestConcurrency:

@@ -180,7 +180,7 @@ the stack runs besides the ingest pipelines, in three groups. Each row is **Heal
 | | explore | `GET http://explore:8007/health` |
 | | insights | `GET http://insights:8009/health` |
 | Data | postgres, neo4j | the console's own connections (the same reading as the Storage tab) |
-| | valkey | a `PING` on `valkey:6379`, answered `+PONG` |
+| | valkey | a `PING` on `valkey:6379`: `+PONG` or `-NOAUTH` (a password-protected server is up; the console is never given the password) is healthy, `-LOADING` or any other error is unhealthy |
 | | rabbitmq | `GET {RABBITMQ_PROMETHEUS_URL}/metrics/detailed?family=node_coarse_metrics` |
 | Observability | victoria-metrics | `GET /health` on `VICTORIA_METRICS_URL` |
 | | victoria-traces | `GET http://victoria-traces:10428/health` |
