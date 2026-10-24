@@ -16,6 +16,11 @@ const SESSION_REFUSALS = new Set([401, 503]);
 const RECONNECT_BASE_MS = 5000;
 const RECONNECT_MAX_MS = 60000;
 
+// Series colours for a pipeline's consumers, in topology order, and the icon for the datastore a
+// consumer writes to. A consumer or datastore beyond these still renders, with the fallback.
+const CONSUMER_COLORS = ['var(--purple-accent)', 'var(--blue-accent)', 'var(--accent-green)', 'var(--accent-yellow)'];
+const DATASTORE_ICONS = { neo4j: 'hub', postgresql: 'grid_view', default: 'database' };
+
 // The Overview's live view. It reads nothing until admin.js confirms a session and announces
 // it with `console:authenticated`; `console:signed-out` stops it again. Every data request and
 // every WebSocket ticket carries the session's bearer.
@@ -32,6 +37,10 @@ class Dashboard {
         // SVG circle circumference: 2 * PI * r(28) ≈ 176
         this.CIRCUMFERENCE = 176;
 
+        // The pipeline layout from /api/topology; the Overview draws nothing until it arrives.
+        this.topology = null;
+        this.topologyRequest = null;
+        this.pendingData = null;
         this.gaugeStats = {};
         this.currentMaps = {};
         // Pipelines whose last broker scrape failed; their queue data is unavailable, not empty.
@@ -66,6 +75,10 @@ class Dashboard {
     stop() {
         this.active = false;
         this.token = null;
+        // Nothing of the signed-in view outlives the session; the next one fetches it afresh.
+        this.topology = null;
+        this.pendingData = null;
+        document.getElementById('pipelines')?.replaceChildren();
         this.reconnectDelay = RECONNECT_BASE_MS;
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
@@ -246,6 +259,7 @@ class Dashboard {
 
     async fetchInitialData() {
         try {
+            await this.ensureTopology();
             const response = await fetch('/api/metrics', { headers: this._authHeaders() });
             if (SESSION_REFUSALS.has(response.status)) {
                 this.requestSessionCheck();
@@ -261,13 +275,25 @@ class Dashboard {
     // ─── Main update dispatcher ───────────────────────────────────────────────
 
     updateDashboard(data) {
+        if (!this.topology) {
+            // The layout is not drawn yet: keep the latest reading and apply it once it is.
+            this.pendingData = data;
+            this.ensureTopology().then(ready => {
+                if (ready && this.pendingData) {
+                    const pending = this.pendingData;
+                    this.pendingData = null;
+                    this.updateDashboard(pending);
+                }
+            });
+            return;
+        }
         const pipelines = data.pipelines || {};
 
         // Show/hide pipeline sections based on presence in data
-        for (const pipelineId of ['discogs', 'musicbrainz']) {
-            const section = document.getElementById(`pipeline-${pipelineId}`);
+        for (const { id } of this.topology.pipelines) {
+            const section = document.getElementById(`pipeline-${id}`);
             if (section) {
-                section.classList.toggle('hidden', !(pipelineId in pipelines));
+                section.classList.toggle('hidden', !(id in pipelines));
             }
         }
 
@@ -313,11 +339,8 @@ class Dashboard {
     }
 
     updateServices(pipelineName, services) {
-        const PIPELINE_ENTITY_TYPES = {
-            discogs: ['masters', 'releases', 'artists', 'labels'],
-            musicbrainz: ['release-groups', 'releases', 'artists', 'labels'],
-        };
-        const types = PIPELINE_ENTITY_TYPES[pipelineName] || ['artists', 'labels', 'releases'];
+        const pipeline = this._pipeline(pipelineName);
+        const types = pipeline?.entity_types || [];
 
         services.forEach(service => {
             const prefix = `${pipelineName}-${service.name}`;
@@ -327,8 +350,8 @@ class Dashboard {
                 badge.textContent = this._statusLabel(service.status);
             }
 
-            // Extractor card – use extraction_progress from health endpoint
-            if (service.name.startsWith('extractor') && service.extraction_progress) {
+            // Producer card – use extraction_progress from health endpoint
+            if (service.name === pipeline?.producer.name && service.extraction_progress) {
                 const progress = service.extraction_progress;
                 const elapsed = service.last_extraction_time || {};
 
@@ -357,6 +380,212 @@ class Dashboard {
         });
     }
 
+    // ─── Topology: the pipeline layout, drawn from /api/topology ──────────────
+
+    _pipeline(pipelineName) {
+        return this.topology?.pipelines.find(p => p.id === pipelineName);
+    }
+
+    // The topology is fetched with the session's bearer; a refusal hands the decision to admin.js.
+    // Concurrent callers share one request, and a failure leaves `topology` unset so the next
+    // metrics update tries again.
+    ensureTopology() {
+        if (this.topology) return Promise.resolve(true);
+        this.topologyRequest ??= this._loadTopology().finally(() => { this.topologyRequest = null; });
+        return this.topologyRequest;
+    }
+
+    async _loadTopology() {
+        try {
+            const response = await fetch('/api/topology', { headers: this._authHeaders() });
+            if (SESSION_REFUSALS.has(response.status)) {
+                this.requestSessionCheck();
+                return false;
+            }
+            if (!response.ok) throw new Error(`topology request failed: ${response.status}`);
+            this.renderTopology(await response.json());
+            return true;
+        } catch {
+            this.addLogEntry('Failed to fetch the pipeline topology', 'error');
+            return false;
+        }
+    }
+
+    _el(tag, { cls, id, text, style, attrs } = {}, ...children) {
+        const el = document.createElement(tag);
+        if (cls) el.className = cls;
+        if (id) el.id = id;
+        if (text !== undefined) el.textContent = text;
+        if (style) el.style.cssText = style;
+        for (const [name, value] of Object.entries(attrs || {})) el.setAttribute(name, value);
+        el.append(...children);
+        return el;
+    }
+
+    _consumerColor(index) {
+        return CONSUMER_COLORS[index % CONSUMER_COLORS.length];
+    }
+
+    _entityLabel(entity) {
+        return entity.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+    }
+
+    // Build every pipeline section from the topology. Sections start hidden; updateDashboard
+    // reveals the ones the live metrics report. Element ids are derived from names, so a new
+    // consumer or entity type needs no markup.
+    renderTopology(topology) {
+        this.topology = topology;
+        this.gaugeStats = {};
+        this.currentMaps = {};
+        const container = document.getElementById('pipelines');
+        if (!container) return;
+        container.replaceChildren(...topology.pipelines.map(pipeline => this._renderPipeline(pipeline, topology)));
+        const dataStores = new Map(topology.datastores.map(store => [store.id, store.label]));
+        container.querySelectorAll('[data-datastore]').forEach(el => {
+            el.textContent = `→ ${dataStores.get(el.dataset.datastore) || el.dataset.datastore}`;
+        });
+    }
+
+    _renderPipeline(pipeline) {
+        const unavailable = () => this._el('span', {
+            cls: 'hidden text-[10px] font-bold uppercase tracking-widest',
+            style: 'color:var(--amber-accent,#f59e0b)',
+            text: 'Queue metrics unavailable',
+            attrs: { 'data-queues-unavailable': pipeline.id, role: 'status' },
+        });
+        const heading = (text) => this._el('div', { cls: 'flex items-center gap-3' },
+            this._el('h2', { cls: 'text-sm font-bold uppercase tracking-[0.15em] t-dim', text }),
+            this._el('div', { cls: 'flex-1 border-t b-theme' }));
+
+        const cards = this._el('div', { cls: 'grid gap-6', style: `grid-template-columns:repeat(${1 + pipeline.consumers.length},minmax(0,1fr))` },
+            this._renderProducerCard(pipeline),
+            ...pipeline.consumers.map((consumer, index) => this._renderConsumerCard(pipeline, consumer, index)));
+
+        return this._el('section', { id: `pipeline-${pipeline.id}`, cls: 'space-y-8 hidden' },
+            heading(`${pipeline.label} Pipeline`),
+            cards,
+            this._renderQueueChart(pipeline, unavailable),
+            this._el('div', { cls: 'grid grid-cols-2 gap-6' },
+                this._renderRatePanel(pipeline, 'publish', 'Publish Rates (msg/s)', unavailable),
+                this._renderRatePanel(pipeline, 'ack', 'Ack Rates (msg/s)', unavailable)));
+    }
+
+    _cardHeader(icon, iconStyle, label, badgeId) {
+        return this._el('div', { cls: 'flex items-center justify-between mb-6 border-b b-theme pb-4' },
+            this._el('h3', { cls: 'text-sm font-semibold flex items-center gap-2' },
+                this._el('span', { cls: `material-symbols-outlined text-sm${iconStyle ? '' : ' t-dim'}`, text: icon, style: iconStyle }),
+                ` ${label}`),
+            this._el('span', {
+                id: badgeId,
+                cls: 'text-[10px] bg-yellow-500/10 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/20 uppercase font-bold',
+                text: 'Unknown',
+            }));
+    }
+
+    _entityRow(entity, last, valueId, valueCls) {
+        return this._el('div', { cls: `flex justify-between text-xs mono py-1${last ? '' : ' border-b b-row'}` },
+            this._el('span', { text: this._entityLabel(entity) }),
+            this._el('span', { id: valueId, cls: valueCls, text: '—' }));
+    }
+
+    _renderProducerCard(pipeline) {
+        const { producer, entity_types: types } = pipeline;
+        const prefix = `${pipeline.id}-${producer.name}`;
+        return this._el('div', { id: `service-${producer.name}`, cls: 'dashboard-card p-6' },
+            this._cardHeader('output', null, producer.label, `${prefix}-status-badge`),
+            this._el('div', { cls: 'space-y-3' },
+                this._el('div', { cls: 'flex justify-between text-[10px] t-muted uppercase font-bold tracking-wider' },
+                    this._el('span', { text: 'Queues' }), this._el('span', { text: 'State' })),
+                ...types.map((type, i) => this._entityRow(type, i === types.length - 1, `${prefix}-${type}-state`, 't-muted')),
+                this._el('div', { cls: 'flex justify-between text-[10px] t-muted uppercase font-bold tracking-wider pt-3 mt-1 border-t b-theme' },
+                    this._el('span', { text: 'Total Records' }),
+                    this._el('span', { id: `${prefix}-total-records`, cls: 't-high normal-case font-mono', text: '—' }))));
+    }
+
+    _renderConsumerCard(pipeline, consumer, index) {
+        const prefix = `${pipeline.id}-${consumer.name}`;
+        const types = pipeline.entity_types;
+        const icon = DATASTORE_ICONS[consumer.datastore] || DATASTORE_ICONS.default;
+        return this._el('div', { id: `service-${consumer.name}`, cls: 'dashboard-card p-6' },
+            this._cardHeader(icon, `color:${this._consumerColor(index)}`, consumer.label, `${prefix}-status-badge`),
+            this._el('div', { cls: 'space-y-3' },
+                this._el('div', { cls: 'flex justify-between text-[10px] t-muted uppercase font-bold tracking-wider' },
+                    this._el('span', { text: 'Queues' }), this._el('span', { text: 'Messages' })),
+                ...types.map((type, i) => this._entityRow(type, i === types.length - 1, `${prefix}-${type}-count`, 't-high')),
+                this._el('div', { cls: 'text-[10px] t-muted uppercase font-bold tracking-wider pt-3 mt-1 border-t b-theme', attrs: { 'data-datastore': consumer.datastore } })));
+    }
+
+    _renderQueueChart(pipeline, unavailable) {
+        const types = pipeline.entity_types;
+        const legend = this._el('div', { cls: 'flex items-center space-x-8' },
+            ...pipeline.consumers.map((consumer, index) => this._el('div', { cls: 'flex items-center space-x-2' },
+                this._el('div', { cls: 'w-3 h-3 rounded-sm', style: `background:${this._consumerColor(index)}` }),
+                this._el('span', { id: `${pipeline.id}-chart-legend-${consumer.name}`, cls: 'text-[10px] font-bold t-dim uppercase tracking-widest', text: consumer.label }))));
+        const yAxis = [4, 3, 2, 1].map(step => this._el('div', { id: `${pipeline.id}-bar-yaxis-${step}`, cls: 'border-t b-theme w-full pt-1', text: '—' }));
+        const groups = types.map(type => this._el('div', { cls: 'flex flex-col items-center gap-4 h-full' },
+            this._el('div', { cls: 'flex items-end gap-2 flex-1' },
+                ...pipeline.consumers.map((consumer, index) => this._el('div', {
+                    id: `${pipeline.id}-bar-${type}-${consumer.name}`,
+                    cls: 'w-10 rounded-t-sm transition-all duration-500',
+                    style: `background:${this._consumerColor(index)};height:0%`,
+                }))),
+            this._el('span', { cls: 'text-[10px] font-bold t-dim uppercase tracking-widest', text: this._entityLabel(type) })));
+
+        return this._el('div', { cls: 'dashboard-card p-8' },
+            this._el('div', { cls: 'flex items-center justify-between mb-10' },
+                this._el('div', {},
+                    this._el('h2', { cls: 'text-lg font-bold', text: 'Queue Size Metrics' }),
+                    this._el('p', { cls: 'text-[10px] t-muted uppercase tracking-[0.2em] font-mono mt-1', text: 'Message Count by Queue Type' }),
+                    unavailable()),
+                legend),
+            this._el('div', { cls: 'h-64 flex items-end justify-between px-12 relative' },
+                this._el('div', { cls: 'absolute left-0 top-0 bottom-0 w-full flex flex-col justify-between pointer-events-none text-[9px] font-mono t-muted' },
+                    ...yAxis, this._el('div', { cls: 'border-t b-theme w-full' })),
+                this._el('div', { cls: 'flex-1 flex justify-around items-end z-10 h-full' }, ...groups)));
+    }
+
+    _renderGauge(pipelineId, consumer, type, kind, color) {
+        const idSuffix = `${consumer}-${type}-${kind}`;
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('class', 'w-full h-full -rotate-90');
+        const circle = (attrs) => {
+            const c = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+            for (const [name, value] of Object.entries({ cx: 32, cy: 32, fill: 'transparent', r: 28, 'stroke-width': 4, ...attrs })) c.setAttribute(name, value);
+            return c;
+        };
+        const progress = circle({
+            id: `${pipelineId}-rate-circle-${idSuffix}`, stroke: color, 'stroke-dasharray': 176, 'stroke-dashoffset': 176, 'stroke-linecap': 'round',
+        });
+        progress.style.transition = 'stroke-dashoffset 0.5s ease';
+        svg.append(circle({ stroke: 'var(--gauge-track)' }), progress);
+        return this._el('div', { cls: 'flex flex-col items-center space-y-2' },
+            this._el('div', { cls: 'relative w-16 h-16' }, svg,
+                this._el('div', { cls: 'absolute inset-0 flex items-center justify-center text-[10px] font-bold mono' },
+                    this._el('span', { id: `${pipelineId}-rate-text-${idSuffix}`, cls: 't-muted', text: '0' }))),
+            this._el('span', { cls: 'text-[9px] t-muted font-bold uppercase', text: this._entityLabel(type) }));
+    }
+
+    _renderRatePanel(pipeline, kind, title, unavailable) {
+        const types = pipeline.entity_types;
+        return this._el('div', { cls: 'dashboard-card p-8' },
+            this._el('div', { cls: 'flex items-center justify-between mb-6' },
+                this._el('h2', { cls: 'text-xs font-bold t-dim uppercase tracking-[0.2em]', text: title }),
+                unavailable(),
+                this._el('div', { cls: 'flex items-center space-x-6' },
+                    ...pipeline.consumers.map((consumer, index) => this._el('div', { cls: 'flex items-center space-x-2' },
+                        this._el('div', { cls: 'w-2.5 h-2.5 rounded-full', style: `background:${this._consumerColor(index)}` }),
+                        this._el('span', { cls: 'text-[9px] font-bold t-muted uppercase', text: consumer.label }))))),
+            ...pipeline.consumers.map((consumer, index) => this._el('div', { cls: `flex items-center gap-4${index < pipeline.consumers.length - 1 ? ' mb-6' : ''}` },
+                this._el('span', {
+                    cls: 'text-[9px] font-bold uppercase tracking-wider w-28 shrink-0 truncate',
+                    style: `color:${this._consumerColor(index)}`,
+                    text: consumer.label,
+                    attrs: { title: consumer.label },
+                }),
+                this._el('div', { cls: 'grid gap-4 flex-1', style: `grid-template-columns:repeat(${types.length},minmax(0,1fr))` },
+                    ...types.map(type => this._renderGauge(pipeline.id, consumer.name, type, kind, this._consumerColor(index)))))));
+    }
+
     // ─── Queue metrics ────────────────────────────────────────────────────────
 
     setQueuesUnavailable(pipelineName, unavailable) {
@@ -366,66 +595,29 @@ class Dashboard {
         });
     }
 
+    // Sort the live queues into the topology's slots by exact name: `queues[consumer][entity]`
+    // for the work queues and `dlqs[consumer][entity]` for their dead-letter queues.
     updateQueues(pipelineName, queues) {
-        const PIPELINE_ENTITY_TYPES = {
-            discogs: ['masters', 'releases', 'artists', 'labels'],
-            musicbrainz: ['release-groups', 'releases', 'artists', 'labels'],
-        };
-        const PIPELINE_CONSUMERS = {
-            discogs: { graph: 'graphinator', table: 'tableinator' },
-            musicbrainz: { graph: 'brainzgraphinator', table: 'brainztableinator' },
-        };
+        const pipeline = this._pipeline(pipelineName);
+        if (!pipeline) return;
 
-        const TYPES = PIPELINE_ENTITY_TYPES[pipelineName] || ['artists', 'labels', 'releases'];
-        const CONSUMERS = PIPELINE_CONSUMERS[pipelineName] || PIPELINE_CONSUMERS.discogs;
-
-        // Build per-service maps for both regular and dead-letter queues.
-        const graphMap    = {};
-        const tableMap    = {};
-        const graphDlqMap = {};
-        const tableDlqMap = {};
-
-        queues.forEach(queue => {
-            const name  = queue.name.toLowerCase();
-            const isDlq = name.endsWith('.dlq');
-
-            for (const type of TYPES) {
-                if (!name.includes(type)) continue;
-                if (name.includes(CONSUMERS.graph)) {
-                    if (isDlq) graphDlqMap[type] = queue;
-                    else       graphMap[type]    = queue;
-                } else if (name.includes(CONSUMERS.table)) {
-                    if (isDlq) tableDlqMap[type] = queue;
-                    else       tableMap[type]    = queue;
-                }
-                break;
+        const slots = new Map();
+        const maps = { queues: {}, dlqs: {} };
+        for (const consumer of pipeline.consumers) {
+            maps.queues[consumer.name] = {};
+            maps.dlqs[consumer.name] = {};
+            for (const queue of consumer.queues) {
+                slots.set(queue.name, [maps.queues[consumer.name], queue.entity]);
+                slots.set(queue.dead_letter_queue, [maps.dlqs[consumer.name], queue.entity]);
             }
+        }
+        queues.forEach(queue => {
+            const slot = slots.get(queue.name);
+            if (slot) slot[0][slot[1]] = queue;
         });
+        this.currentMaps[pipelineName] = maps;
 
-        this.currentMaps[pipelineName] = { graphMap, tableMap, graphDlqMap, tableDlqMap, CONSUMERS, TYPES };
-
-        const isDlq         = document.getElementById('dlq-toggle')?.checked ?? false;
-        const activeGraphMap = isDlq ? graphDlqMap : graphMap;
-        const activeTableMap = isDlq ? tableDlqMap : tableMap;
-
-        // Graph consumer card – total messages in active queue set.
-        TYPES.forEach(type => {
-            const el = document.getElementById(`${pipelineName}-${CONSUMERS.graph}-${type}-count`);
-            if (!el) return;
-            const q = activeGraphMap[type];
-            el.textContent = q ? q.messages.toLocaleString() : '—';
-        });
-
-        // Table consumer card – messages in active queue set.
-        TYPES.forEach(type => {
-            const el = document.getElementById(`${pipelineName}-${CONSUMERS.table}-${type}-count`);
-            if (!el) return;
-            const q = activeTableMap[type];
-            el.textContent = q ? q.messages.toLocaleString() : '—';
-        });
-
-        this._updateBarChart(pipelineName, activeGraphMap, activeTableMap, TYPES, isDlq, CONSUMERS);
-        this._updateRateCircles(pipelineName, graphMap, tableMap, TYPES, isDlq, CONSUMERS);
+        this._renderQueueValues(pipeline);
 
         // Log high message counts (regular queues only)
         queues.forEach(queue => {
@@ -438,85 +630,69 @@ class Dashboard {
         });
     }
 
-    _onDlqToggle() {
-        if (!this.currentMaps) return;
+    _renderQueueValues(pipeline) {
+        const maps = this.currentMaps[pipeline.id];
+        if (!maps) return;
         const isDlq = document.getElementById('dlq-toggle')?.checked ?? false;
+        const active = isDlq ? maps.dlqs : maps.queues;
 
-        for (const [pipelineName, maps] of Object.entries(this.currentMaps)) {
-            const { graphMap, tableMap, graphDlqMap, tableDlqMap, CONSUMERS, TYPES } = maps;
-            const activeGraphMap = isDlq ? graphDlqMap : graphMap;
-            const activeTableMap = isDlq ? tableDlqMap : tableMap;
-
-            TYPES.forEach(type => {
-                const gEl = document.getElementById(`${pipelineName}-${CONSUMERS.graph}-${type}-count`);
-                if (gEl) {
-                    const q = activeGraphMap[type];
-                    gEl.textContent = q ? q.messages.toLocaleString() : '—';
-                }
-                const tEl = document.getElementById(`${pipelineName}-${CONSUMERS.table}-${type}-count`);
-                if (tEl) {
-                    const q = activeTableMap[type];
-                    tEl.textContent = q ? q.messages.toLocaleString() : '—';
-                }
+        // Consumer cards – messages in the active queue set.
+        pipeline.consumers.forEach(consumer => {
+            pipeline.entity_types.forEach(type => {
+                const el = document.getElementById(`${pipeline.id}-${consumer.name}-${type}-count`);
+                if (!el) return;
+                const q = active[consumer.name][type];
+                el.textContent = q ? q.messages.toLocaleString() : '—';
             });
+        });
 
-            this._updateBarChart(pipelineName, activeGraphMap, activeTableMap, TYPES, isDlq, CONSUMERS);
-            this._updateRateCircles(pipelineName, graphMap, tableMap, TYPES, isDlq, CONSUMERS);
+        this._updateBarChart(pipeline, active, isDlq);
+        this._updateRateCircles(pipeline, maps.queues, isDlq);
+    }
+
+    _onDlqToggle() {
+        if (!this.currentMaps || !this.topology) return;
+        for (const pipelineName of Object.keys(this.currentMaps)) {
+            const pipeline = this._pipeline(pipelineName);
+            if (pipeline) this._renderQueueValues(pipeline);
         }
     }
 
     // ─── Bar chart (CSS height bars) ─────────────────────────────────────────
 
-    _updateBarChart(pipelineName, graphMap, tableMap, types, isDlq = false, consumers = null) {
-        const graphLegend = document.getElementById(`${pipelineName}-chart-legend-${consumers?.graph || 'graphinator'}`);
-        const tableLegend = document.getElementById(`${pipelineName}-chart-legend-${consumers?.table || 'tableinator'}`);
-        const graphName = consumers?.graph || 'graphinator';
-        const tableName = consumers?.table || 'tableinator';
-        const graphLabel = graphName.charAt(0).toUpperCase() + graphName.slice(1);
-        const tableLabel = tableName.charAt(0).toUpperCase() + tableName.slice(1);
-        if (graphLegend) graphLegend.textContent = isDlq ? `${graphLabel} DLQ` : graphLabel;
-        if (tableLegend) tableLegend.textContent = isDlq ? `${tableLabel} DLQ` : tableLabel;
+    _updateBarChart(pipeline, active, isDlq = false) {
+        pipeline.consumers.forEach(consumer => {
+            const legend = document.getElementById(`${pipeline.id}-chart-legend-${consumer.name}`);
+            if (legend) legend.textContent = isDlq ? `${consumer.label} DLQ` : consumer.label;
+        });
 
-        const allGraph = types.map(t => graphMap[t]?.messages || 0);
-        const allTable = types.map(t => tableMap[t]?.messages || 0);
-        const maxCount = Math.max(...allGraph, ...allTable, 1);
+        const counts = pipeline.consumers.flatMap(c => pipeline.entity_types.map(t => active[c.name][t]?.messages || 0));
+        const maxCount = Math.max(...counts, 1);
 
         // Update Y-axis labels
         const fmt = this._formatCount.bind(this);
-        const y4 = document.getElementById(`${pipelineName}-bar-yaxis-4`);
-        const y3 = document.getElementById(`${pipelineName}-bar-yaxis-3`);
-        const y2 = document.getElementById(`${pipelineName}-bar-yaxis-2`);
-        const y1 = document.getElementById(`${pipelineName}-bar-yaxis-1`);
-        if (y4) y4.textContent = fmt(maxCount);
-        if (y3) y3.textContent = fmt(maxCount * 0.75);
-        if (y2) y2.textContent = fmt(maxCount * 0.5);
-        if (y1) y1.textContent = fmt(maxCount * 0.25);
+        [[4, 1], [3, 0.75], [2, 0.5], [1, 0.25]].forEach(([step, share]) => {
+            const label = document.getElementById(`${pipeline.id}-bar-yaxis-${step}`);
+            if (label) label.textContent = fmt(maxCount * share);
+        });
 
-        // Update bar heights: purple = graph consumer messages, blue = table consumer messages
-        types.forEach(type => {
-            const gq = graphMap[type];
-            const tq = tableMap[type];
-            const msgBar   = document.getElementById(`${pipelineName}-bar-${type}-messages`);
-            const readyBar = document.getElementById(`${pipelineName}-bar-${type}-ready`);
-            if (msgBar) {
-                const count = gq?.messages || 0;
+        // One bar per consumer and entity type, in the consumer's colour.
+        pipeline.consumers.forEach(consumer => {
+            pipeline.entity_types.forEach(type => {
+                const bar = document.getElementById(`${pipeline.id}-bar-${type}-${consumer.name}`);
+                if (!bar) return;
+                const count = active[consumer.name][type]?.messages || 0;
                 const pct = Math.max((count / maxCount) * 100, count > 0 ? 1 : 0);
-                msgBar.style.height = `${pct}%`;
-            }
-            if (readyBar) {
-                const count = tq?.messages || 0;
-                const pct = Math.max((count / maxCount) * 100, count > 0 ? 1 : 0);
-                readyBar.style.height = `${pct}%`;
-            }
+                bar.style.height = `${pct}%`;
+            });
         });
     }
 
     // ─── Circular rate gauges ─────────────────────────────────────────────────
 
-    _updateRateCircles(pipelineName, graphMap, tableMap, types, isDlq = false, consumers = null) {
+    _updateRateCircles(pipeline, queueMaps, isDlq = false) {
         const C = this.CIRCUMFERENCE;
-        const graphName = consumers?.graph || 'graphinator';
-        const tableName = consumers?.table || 'tableinator';
+        const pipelineName = pipeline.id;
 
         const unavailable = this.queuesUnavailable[pipelineName] === true;
 
@@ -575,13 +751,13 @@ class Dashboard {
             }
         };
 
-        types.forEach(type => {
-            const gq = graphMap[type];
-            const tq = tableMap[type];
-            updateGauge(`${pipelineName}-rate-circle-${graphName}-${type}-publish`, `${pipelineName}-rate-text-${graphName}-${type}-publish`, gq?.message_rate ?? null, isDlq || unavailable);
-            updateGauge(`${pipelineName}-rate-circle-${tableName}-${type}-publish`, `${pipelineName}-rate-text-${tableName}-${type}-publish`, tq?.message_rate ?? null, isDlq || unavailable);
-            updateGauge(`${pipelineName}-rate-circle-${graphName}-${type}-ack`,     `${pipelineName}-rate-text-${graphName}-${type}-ack`,     gq?.ack_rate     ?? null, isDlq || unavailable);
-            updateGauge(`${pipelineName}-rate-circle-${tableName}-${type}-ack`,     `${pipelineName}-rate-text-${tableName}-${type}-ack`,     tq?.ack_rate     ?? null, isDlq || unavailable);
+        pipeline.consumers.forEach(consumer => {
+            pipeline.entity_types.forEach(type => {
+                const q = queueMaps[consumer.name][type];
+                const base = `${consumer.name}-${type}`;
+                updateGauge(`${pipelineName}-rate-circle-${base}-publish`, `${pipelineName}-rate-text-${base}-publish`, q?.message_rate ?? null, isDlq || unavailable);
+                updateGauge(`${pipelineName}-rate-circle-${base}-ack`,     `${pipelineName}-rate-text-${base}-ack`,     q?.ack_rate     ?? null, isDlq || unavailable);
+            });
         });
     }
 
