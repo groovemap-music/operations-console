@@ -118,7 +118,7 @@ class QueueInfo(BaseModel):
     """Model for RabbitMQ queue information.
 
     The rates are computed from counter deltas between polls; a queue with no computable rate
-    (first sample, counter reset) reports 0.0.
+    (first sample, counter reset, missed poll) reports None; 0.0 is a computed zero.
     """
 
     name: str
@@ -126,8 +126,8 @@ class QueueInfo(BaseModel):
     messages_ready: int
     messages_unacknowledged: int
     consumers: int
-    message_rate: float  # messages per second
-    ack_rate: float  # acknowledgments per second
+    message_rate: float | None  # messages per second; None when not computable this interval
+    ack_rate: float | None  # acknowledgments per second; None when not computable this interval
 
 
 class DatabaseInfo(BaseModel):

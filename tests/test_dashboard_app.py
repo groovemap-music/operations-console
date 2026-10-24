@@ -706,8 +706,8 @@ class TestDashboardAppDataCollection:
                 messages_ready=6,
                 messages_unacknowledged=0,
                 consumers=0,
-                message_rate=0.0,  # first sample has no baseline
-                ack_rate=0.0,
+                message_rate=None,  # first sample has no baseline
+                ack_rate=None,
             )
         ]
         url = client.get.call_args.args[0]
@@ -743,7 +743,7 @@ class TestDashboardAppDataCollection:
             with patch("httpx.AsyncClient", return_value=self._scrape(second)):
                 after = await app.get_queue_info("groovemap")
 
-        assert (before[0].message_rate, before[0].ack_rate) == (0.0, 0.0)
+        assert (before[0].message_rate, before[0].ack_rate) == (None, None)
         assert (after[0].message_rate, after[0].ack_rate) == (25.0, 15.0)
 
     @pytest.mark.asyncio
@@ -758,7 +758,25 @@ class TestDashboardAppDataCollection:
                     queue = (await app.get_queue_info("groovemap"))[0]
                 rates.append((queue.message_rate, queue.ack_rate))
 
-        assert rates == [(0.0, 0.0), (0.0, 0.0), (10.0, 5.0)]
+        assert rates == [(None, None), (None, None), (10.0, 5.0)]
+
+    @pytest.mark.asyncio
+    async def test_unknown_rates_serialize_as_null_after_restart_and_reset_then_recover(self) -> None:
+        """A console restart and a counter reset both reach the payload as null, never 0, then a number returns."""
+        from dashboard.dashboard import PipelineMetrics
+
+        bodies = [_queue_body(published=500, acked=400), _queue_body(published=5, acked=2), _queue_body(published=25, acked=12)]
+        payloads = []
+
+        # A fresh app is a console restart: its first poll has no baseline.
+        app = self._queue_app()
+        with patch("dashboard.dashboard.time.monotonic", side_effect=[0.0, 2.0, 4.0]):
+            for body in bodies:
+                with patch("httpx.AsyncClient", return_value=self._scrape(body)):
+                    queues = await app.get_queue_info("groovemap")
+                payloads.append(PipelineMetrics(services=[], queues=queues or []).model_dump(mode="json")["queues"][0])
+
+        assert [(p["message_rate"], p["ack_rate"]) for p in payloads] == [(None, None), (None, None), (10.0, 5.0)]
 
     @pytest.mark.asyncio
     async def test_get_queue_info_queue_that_disappears_is_rebaselined(self) -> None:
@@ -772,7 +790,7 @@ class TestDashboardAppDataCollection:
                     results.append(await app.get_queue_info("groovemap"))
 
         assert results[1] == []
-        assert results[2][0].message_rate == 0.0, "a queue that missed a poll has no baseline, not a 100/s spike"
+        assert results[2][0].message_rate is None, "a queue that missed a poll has no baseline, not a 100/s spike"
 
     @pytest.mark.asyncio
     async def test_get_queue_info_counters_appear_after_first_event(self) -> None:
