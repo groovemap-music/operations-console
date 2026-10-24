@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spike candidate 2 · Entity x consumer matrix</title>
+<link rel="stylesheet" href="shared.css">
+<style>
+    .matrix { display: grid; gap: 4px; padding: 8px; }
+    .matrix .head { font-size: 12px; color: var(--text-mid); padding: 4px 6px; align-self: end; min-width: 0; overflow-wrap: anywhere; }
+    .matrix .head b { color: var(--text-high); font-weight: 600; }
+    .matrix .rowhead { font-size: 13px; padding: 6px; align-self: center; min-width: 0; overflow-wrap: anywhere; }
+    .matrix .rowhead .dim { font-size: 11px; display: block; }
+    .cell {
+        position: relative; min-width: 0; border-radius: 6px; padding: 6px 8px; min-height: 64px;
+        border: 1px solid var(--border); color: var(--text-high);
+    }
+    .cell .n { font-size: 18px; font-weight: 600; }
+    .cell .meta { font-size: 11px; color: var(--text-mid); }
+    .cell .flag { font-size: 11px; font-weight: 700; display: block; }
+    .cell.crit {
+        border: 3px solid var(--crit);
+        background: repeating-linear-gradient(135deg, var(--crit-bg) 0 6px, transparent 6px 12px), var(--surface);
+    }
+    .cell.crit .flag { color: var(--crit); }
+    .lag-0 { background: var(--ramp-0); }
+    .lag-1 { background: var(--ramp-1); }
+    .lag-2 { background: var(--ramp-2); }
+    .lag-3 { background: var(--ramp-3); }
+    .cell.lag-3, .lag-3 .meta { color: var(--ramp-3-text); }
+    .lag-2 .meta { color: var(--text-high); }
+    .dlq { display: inline-block; margin-top: 3px; font-size: 11px; font-weight: 700; border-radius: 9px; padding: 0 6px; border: 1.5px solid; background: var(--surface); }
+    .dlq.warn { color: var(--warn); border-color: var(--warn); }
+    .dlq.crit { color: var(--surface); border-color: var(--crit); background: var(--crit); }
+    .cell .cname { display: block; font-size: 12px; font-weight: 600; }
+    @media (max-width: 480px) {
+        main { padding: 8px; }
+        .matrix { padding: 4px; gap: 3px; }
+        .cell { padding: 4px 5px; }
+        .cell .n { font-size: 15px; }
+    }
+</style>
+</head>
+<body>
+<main>
+    <div class="legend" id="legend"></div>
+    <div id="pipelines"></div>
+</main>
+<script src="fixtures.js"></script>
+<script src="shared.js"></script>
+<script>
+'use strict';
+SPIKE.chrome('matrix', 'Candidate 2: entity × consumer matrix');
+
+// Lag = seconds the current backlog needs at the 5-minute mean ack rate.
+const BINS = [[60, '< 1m'], [600, '< 10m'], [3600, '< 1h'], [Infinity, '≥ 1h']];
+const bin = s => BINS.findIndex(([limit]) => s < limit || limit === Infinity);
+document.getElementById('legend').innerHTML =
+    `<span>Cell colour = lag:</span>${BINS.map(([, label], i) => `<span><i class="sw lag-${i}"></i>${label}</span>`).join('')}`
+    + '<span><b class="state-crit">◆</b> critical (hatched)</span><span><b class="state-warn">▲</b> warning</span>'
+    + '<span>Number = messages queued; ▲/▼ = depth over 5 min</span>';
+
+function trend(series) {
+    const s = series.messages;
+    const d = s[s.length - 1] - s[Math.max(0, s.length - 31)];
+    if (Math.abs(d) < 1000) return '';
+    return d > 0 ? ' ▲' : ' ▼';
+}
+
+// Phone fallback: with more than two consumers a 390px grid breaks names mid-word, so each entity
+// becomes a two-column block of self-labelled cells. ?layout=grid forces the plain grid for comparison.
+const LAYOUT = new URLSearchParams(location.search).get('layout');
+
+function renderPipeline(p) {
+    const cols = p.consumers.length;
+    const stacked = LAYOUT === 'stacked' || (LAYOUT !== 'grid' && window.innerWidth < 480 && cols > 2);
+    const cells = stacked ? [] : [`<div class="head"></div>`];
+    if (!stacked) p.consumers.forEach(c => cells.push(`<div class="head"><b>${c.name}${c.hypothetical ? '*' : ''}</b><br>${c.store === 'neo4j' ? 'Neo4j' : 'PostgreSQL'}</div>`));
+    p.entities.forEach(entity => {
+        const x = p.extractor[entity];
+        cells.push(`<div class="rowhead"${stacked ? ' style="grid-column: 1 / -1"' : ''}>${entity}<span class="dim">${x.done ? 'extracted' : `${SPIKE.pct(x.file_progress)} read · ${SPIKE.rate(x.publish_rate)}`}</span></div>`);
+        p.consumers.forEach(c => {
+            const q = SPIKE.queueFor(p, c.name, entity);
+            const d = SPIKE.queueFor(p, c.name, entity, true);
+            const a = SPIKE.assessQueue(q);
+            const da = SPIKE.assessQueue(d);
+            const lag = SPIKE.lag(q);
+            const cls = a.state === 'crit' ? 'crit' : `lag-${bin(lag)}`;
+            const flag = a.state === 'crit' ? `<span class="flag">◆ ${a.label}</span>` : '';
+            const dlq = da.state === 'ok' ? ''
+                : `<span class="dlq ${da.state}" ${SPIKE.unitAttrs(`${p.name}/${c.name}/${entity}.dlq`, da)}>${da.state === 'crit' ? '◆' : '▲'} ${da.label}</span>`;
+            cells.push(`<div class="cell ${cls}" ${SPIKE.unitAttrs(`${p.name}/${c.name}/${entity}`, a)} aria-label="${entity} → ${c.name}">
+                ${stacked ? `<span class="cname">${c.name}${c.hypothetical ? '*' : ''}</span>` : ''}${flag}<span class="n mono">${SPIKE.count(q.last.messages)}${trend(q.series)}</span>
+                <span class="meta">${lag === 0 ? 'no lag' : `lag ${SPIKE.duration(lag)}`}</span><br>${dlq}</div>`);
+        });
+    });
+    return `<h2 class="pipeline">${p.name} pipeline</h2>
+      <div class="card matrix" style="grid-template-columns: ${stacked ? 'repeat(2, minmax(0, 1fr))' : `${window.innerWidth < 480 ? 'minmax(64px, 96px)' : 'minmax(72px, 150px)'} repeat(${cols}, minmax(0, 1fr))`};">${cells.join('')}</div>`;
+}
+
+document.getElementById('pipelines').innerHTML = SPIKE.scenario.pipelines.map(renderPipeline).join('')
+    + (SPIKE.scenario.pipelines.some(p => p.consumers.some(c => c.hypothetical)) ? '<p class="dim">* hypothetical consumer added for the 2x-consumers case</p>' : '');
+</script>
+</body>
+</html>
