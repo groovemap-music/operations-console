@@ -178,6 +178,56 @@ class TestDashboardUI:
         expect(page.locator("#discogs-tableinator-releases-cell")).to_have_attribute("data-state", "crit")
         assert page.evaluate(LAYOUT_FAULTS) == {"overflow": 0, "broken": [], "spills": []}
 
+    def test_a_healthy_console_is_operational_and_the_attention_bar_is_quiet(self, page: Page) -> None:
+        """No fault: the bar is hidden, and the header reads Operational rather than Unknown."""
+        page.set_viewport_size(DESKTOP)
+        sign_in(page)
+        expect(page.locator("#discogs-graphinator-artists-cell .mx-n")).to_have_text("10", timeout=10000)
+        expect(page.locator("#operational-status-text")).to_have_text("Operational")
+        expect(page.locator("#attention-bar")).to_be_hidden()
+
+    def test_desktop_surfaces_a_musicbrainz_fault_at_the_top_of_the_first_screen(self, page: Page) -> None:
+        """Every fault is listed above the tabs, before the matrices, and the header reads Critical."""
+        show_scenario(page, DESKTOP)
+        bar = page.locator("#attention-bar")
+        expect(bar).to_be_visible()
+        expect(page.locator("#attention-summary")).to_have_text("3 items need attention · 2 critical · 1 warning")
+        fault = bar.get_by_role("button", name=re.compile(r"MusicBrainz Releases → Brainzgraphinator: DLQ \+1\.4k"))
+        expect(fault).to_be_visible()
+        expect(bar.get_by_role("button", name=re.compile(r"Discogs Releases → Tableinator: STALLED"))).to_be_visible()
+        expect(bar.get_by_role("button", name=re.compile(r"Warning: Discogs Artists → Graphinator: DLQ 12"))).to_be_visible()
+        assert page.locator("#attention-bar").bounding_box()["y"] < page.locator("nav").first.bounding_box()["y"]
+        assert fault.bounding_box()["y"] + fault.bounding_box()["height"] <= DESKTOP["height"]
+        expect(page.locator("#operational-status-text")).to_have_text("Critical")
+
+    def test_phone_surfaces_a_musicbrainz_fault_without_a_scroll(self, page: Page) -> None:
+        """At 390 x 844 the matrices start below the fold, but every fault is on the first screen."""
+        show_scenario(page, PHONE)
+        bar = page.locator("#attention-bar")
+        expect(bar).to_be_visible()
+        assert page.evaluate("() => window.scrollY") == 0
+        matrix_top = page.locator('[data-matrix="discogs"]').bounding_box()["y"]
+        for name in (
+            r"Discogs Releases → Tableinator: STALLED",
+            r"MusicBrainz Releases → Brainzgraphinator: DLQ",
+            r"Discogs Artists → Graphinator: DLQ 12",
+        ):
+            item = bar.get_by_role("button", name=re.compile(name))
+            expect(item).to_be_in_viewport(ratio=1)
+            assert item.bounding_box()["y"] < matrix_top
+        assert page.evaluate(LAYOUT_FAULTS)["overflow"] == 0
+
+    def test_an_attention_item_opens_its_cell_drawer_from_any_tab(self, page: Page) -> None:
+        """The bar is on every tab; its queue item returns to the Overview and opens the cell's drawer."""
+        show_scenario(page, DESKTOP)
+        page.click("#tab-btn-storage")
+        expect(page.locator("#tab-storage")).to_be_visible()
+        expect(page.locator("#attention-bar")).to_be_visible()
+        page.get_by_role("button", name=re.compile(r"MusicBrainz Releases → Brainzgraphinator")).click()
+        expect(page.locator("#tab-overview")).to_be_visible()
+        expect(page.locator("#queue-drawer")).to_be_visible()
+        expect(page.locator("#queue-drawer-title")).to_have_text("Releases → Brainzgraphinator")
+
     def test_two_x_consumers_stack_on_a_phone_and_stay_a_grid_on_desktop(self, page: Page) -> None:
         """Four consumers per pipeline: self-labelled stacked cells below 480 px, no overflow or broken words."""
         page.route("**/api/topology", two_x_consumers)

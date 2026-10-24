@@ -147,6 +147,96 @@ const QueueHealth = (() => {
     };
 })();
 
+// ─── Attention: what needs an operator right now ──────────────────────────────
+//
+// Pure derivation of the attention bar's items from one reading. Queue conditions are not
+// re-derived: they are the matrix cells' own assessments (QueueHealth), so the bar and the matrix
+// can never disagree. Each item is `{ id, severity: 'crit' | 'warn', kind, text, target }`, where
+// `target` says where it leads: a matrix cell (its drawer), a service node, a tab, or a Grafana alert.
+const Attention = (() => {
+    const ALERT_POLL_MS = 30000;   // how often the browser asks the console for firing Grafana alerts
+    // Service statuses that are not a problem: `extracting` and `active` are a working extractor.
+    const SERVICE_OK = new Set(['healthy', 'extracting', 'active']);
+    const SERVICE_UNHEALTHY = 'unhealthy';
+    const DATASTORE_OK = 'healthy';
+    const TAB_OVERVIEW = 'overview';
+    const TAB_STORAGE = 'storage';
+    const RANK = { crit: 0, warn: 1 };
+
+    // Queue assessments that raise an item; the cell's own label is the item's text.
+    const QUEUE_KINDS = new Set(['no-consumer', 'stalled']);
+    const DLQ_KINDS = new Set(['dlq-growing', 'dlq-static']);
+
+    // Items for one pipeline: `cells` are `{ consumer, entity, queue, health, dlq }` from the matrix.
+    function pipelineItems({ id, label, queuesUnavailable, services, cells }) {
+        const items = [];
+        for (const service of services || []) {
+            const status = String(service.status || 'unknown').toLowerCase();
+            if (SERVICE_OK.has(status)) continue;
+            items.push({
+                id: `service:${id}:${service.name}`,
+                severity: status === SERVICE_UNHEALTHY ? 'crit' : 'warn',
+                kind: status === SERVICE_UNHEALTHY ? 'service-unhealthy' : 'service-unknown',
+                text: `${label}: ${service.name} is ${status === SERVICE_UNHEALTHY ? 'unhealthy' : status}`,
+                target: { type: 'service', service: service.name },
+            });
+        }
+        if (queuesUnavailable) {
+            items.push({
+                id: `queues-unavailable:${id}`, severity: 'warn', kind: 'queues-unavailable',
+                text: `${label}: queue metrics unavailable`, target: { type: 'tab', tab: TAB_OVERVIEW },
+            });
+            return items;
+        }
+        for (const cell of cells || []) {
+            const where = `${cell.entityLabel} → ${cell.consumerLabel}`;
+            const target = { type: 'cell', pipeline: id, consumer: cell.consumer, entity: cell.entity };
+            if (QUEUE_KINDS.has(cell.health.kind)) {
+                items.push({ id: `queue:${cell.queue}`, severity: 'crit', kind: cell.health.kind, text: `${label} ${where}: ${cell.health.label}`, target });
+            }
+            if (DLQ_KINDS.has(cell.dlq.kind)) {
+                items.push({ id: `dlq:${cell.queue}`, severity: cell.dlq.state, kind: cell.dlq.kind, text: `${label} ${where}: ${cell.dlq.label}`, target });
+            }
+        }
+        return items;
+    }
+
+    function datastoreItems(databases) {
+        return (databases || []).filter(db => db.status !== DATASTORE_OK).map(db => ({
+            id: `datastore:${String(db.name).toLowerCase()}`, severity: 'crit', kind: 'datastore-unavailable',
+            text: `${db.name} is unavailable`, target: { type: 'tab', tab: TAB_STORAGE },
+        }));
+    }
+
+    function alertItems(alerts) {
+        return (alerts || []).map((alert, index) => ({
+            id: `grafana:${alert.name}:${index}`, severity: alert.severity === 'crit' ? 'crit' : 'warn', kind: 'grafana-alert',
+            text: alert.summary ? `${alert.name}: ${alert.summary}` : alert.name, target: { type: 'grafana', url: alert.url },
+        }));
+    }
+
+    // Critical items first, then warnings, each group in the order the sources listed them.
+    function derive({ pipelines, databases, alerts }) {
+        const items = [...(pipelines || []).flatMap(pipelineItems), ...datastoreItems(databases), ...alertItems(alerts)];
+        return items.map((item, order) => ({ item, order }))
+            .sort((a, b) => RANK[a.item.severity] - RANK[b.item.severity] || a.order - b.order)
+            .map(({ item }) => item);
+    }
+
+    // The header's operational status. Derived from the items, not from the services alone: a
+    // reading with no services listed, or services in a state the header never named, is not
+    // "unknown". Unknown means nothing has been reported at all.
+    function overall({ reported, items, services }) {
+        if (!reported) return { key: 'unknown', label: 'Unknown' };
+        if (services.length > 0 && services.every(s => String(s.status).toLowerCase() === SERVICE_UNHEALTHY)) return { key: 'offline', label: 'Offline' };
+        if (items.some(item => item.severity === 'crit')) return { key: 'critical', label: 'Critical' };
+        if (items.length) return { key: 'warning', label: 'Warning' };
+        return { key: 'operational', label: 'Operational' };
+    }
+
+    return { ALERT_POLL_MS, SERVICE_OK, DATASTORE_OK, derive, overall };
+})();
+
 // Below this viewport width a pipeline with more than two consumers switches to the stacked,
 // self-labelled cell layout (the matrix CSS in index.html holds the same breakpoint).
 const MATRIX_STACKED_MAX_WIDTH = 479;
@@ -185,6 +275,15 @@ class Dashboard {
         this.drawerQueue = null;
         this.drawerReturnFocus = null;
 
+        // The attention bar: the latest reading, the Grafana alerts the console last served (null
+        // until asked), and which items the operator has already seen, so a new one re-opens a
+        // list they collapsed.
+        this.lastReading = null;
+        this.alerts = null;
+        this.alertTimer = null;
+        this.attentionSeen = new Set();
+        this.attentionCollapsed = false;
+
         document.addEventListener('console:authenticated', (event) => this.start(event.detail?.token));
         document.addEventListener('console:signed-out', () => this.stop());
 
@@ -194,6 +293,10 @@ class Dashboard {
         const drawer = document.getElementById('queue-drawer');
         drawer?.addEventListener('close', () => this._onDrawerClosed());
         document.getElementById('queue-drawer-close')?.addEventListener('click', () => this.closeQueueDrawer());
+        document.getElementById('attention-toggle')?.addEventListener('click', () => {
+            this.attentionCollapsed = !this.attentionCollapsed;
+            this.updateAttention();
+        });
     }
 
     // ─── Session lifecycle ────────────────────────────────────────────────────
@@ -211,6 +314,7 @@ class Dashboard {
         this.reconnectDelay = RECONNECT_BASE_MS;
         this.fetchInitialData();
         this.initializeWebSocket();
+        this.startAlertPolling();
     }
 
     stop() {
@@ -221,6 +325,12 @@ class Dashboard {
         this.pendingData = null;
         this.closeQueueDrawer();
         this._resetHistory();
+        this.stopAlertPolling();
+        this.lastReading = null;
+        this.alerts = null;
+        this.attentionSeen = new Set();
+        this.attentionCollapsed = false;
+        this.updateAttention();
         document.getElementById('pipelines')?.replaceChildren();
         this.reconnectDelay = RECONNECT_BASE_MS;
         if (this.reconnectTimer) {
@@ -371,33 +481,154 @@ class Dashboard {
         }
     }
 
-    updateOverallStatus(services) {
+    // The header's operational status, from the attention items and the services reported.
+    updateOverallStatus(status) {
         const dot = document.getElementById('operational-status-dot');
         const text = document.getElementById('operational-status-text');
         if (!dot || !text) return;
+        const looks = {
+            operational: ['bg-emerald-500 animate-pulse', 'text-emerald-500'],
+            warning: ['bg-yellow-500', 'text-yellow-500'],
+            critical: ['bg-red-500', 'text-red-500'],
+            offline: ['bg-red-500', 'text-red-500'],
+            unknown: ['bg-yellow-500 animate-pulse', 'text-yellow-500'],
+            connecting: ['bg-yellow-500 animate-pulse', 'text-yellow-500'],
+        };
+        const [dotClasses, textClass] = looks[status.key];
+        dot.className = `w-3 h-3 rounded-full ${dotClasses}`;
+        text.className = `text-[10px] ${textClass} font-bold uppercase tracking-widest`;
+        text.textContent = status.label;
+        text.dataset.status = status.key;
+    }
 
-        const allHealthy = services.length > 0 && services.every(s => s.status === 'healthy');
-        const anyUnhealthy = services.some(s => s.status === 'unhealthy');
+    // ─── Attention bar ────────────────────────────────────────────────────────
 
-        const allUnhealthy = services.length > 0 && services.every(s => s.status === 'unhealthy');
+    // Everything the bar reads, for the latest reading: each reported pipeline's services and
+    // matrix cells (assessed by the matrix's own rules), the datastores, and the Grafana alerts.
+    attentionInputs() {
+        const reading = this.lastReading;
+        const reported = reading?.pipelines || {};
+        const pipelines = (this.topology?.pipelines || []).filter(p => p.id in reported).map(pipeline => ({
+            id: pipeline.id,
+            label: pipeline.label,
+            queuesUnavailable: this.queuesUnavailable[pipeline.id] === true,
+            services: reported[pipeline.id].services || [],
+            cells: pipeline.consumers.flatMap(consumer => pipeline.entity_types.flatMap(entity => {
+                const model = this._cellModel(pipeline, consumer, entity);
+                if (!model.queue) return [];
+                return [{
+                    consumer: consumer.name, consumerLabel: consumer.label, entity, entityLabel: this._entityLabel(entity),
+                    queue: model.queue.name, health: model.health, dlq: model.dlq,
+                }];
+            })),
+        }));
+        return { pipelines, databases: reading?.databases || [], alerts: this.alerts?.alerts || [] };
+    }
 
-        if (allHealthy) {
-            dot.className = 'w-3 h-3 rounded-full bg-emerald-500 animate-pulse';
-            text.className = 'text-[10px] text-emerald-500 font-bold uppercase tracking-widest';
-            text.textContent = 'Operational';
-        } else if (allUnhealthy) {
-            dot.className = 'w-3 h-3 rounded-full bg-red-500';
-            text.className = 'text-[10px] text-red-500 font-bold uppercase tracking-widest';
-            text.textContent = 'Offline';
-        } else if (anyUnhealthy) {
-            dot.className = 'w-3 h-3 rounded-full bg-yellow-500';
-            text.className = 'text-[10px] text-yellow-500 font-bold uppercase tracking-widest';
-            text.textContent = 'Degraded';
-        } else {
-            dot.className = 'w-3 h-3 rounded-full bg-yellow-500 animate-pulse';
-            text.className = 'text-[10px] text-yellow-500 font-bold uppercase tracking-widest';
-            text.textContent = 'Unknown';
+    // Recompute the items, redraw the bar, and set the header from the same reading.
+    updateAttention() {
+        const inputs = this.attentionInputs();
+        const items = Attention.derive(inputs);
+        const services = inputs.pipelines.flatMap(p => p.services);
+        const reported = inputs.pipelines.length > 0 || inputs.databases.length > 0;
+        this.updateOverallStatus(this.lastReading === null ? { key: 'connecting', label: 'Connecting' } : Attention.overall({ reported, items, services }));
+
+        if (items.some(item => !this.attentionSeen.has(item.id))) this.attentionCollapsed = false;
+        this.attentionSeen = new Set(items.map(item => item.id));
+        this.attentionItems = items;
+        this._renderAttention(items);
+    }
+
+    _renderAttention(items) {
+        const bar = document.getElementById('attention-bar');
+        if (!bar) return;
+        const note = this.alerts?.configured && !this.alerts.available ? (this.alerts.note || 'Grafana alerts unavailable') : '';
+        bar.hidden = items.length === 0 && !note;
+        bar.dataset.count = String(items.length);
+        const crit = items.filter(item => item.severity === 'crit').length;
+        const warn = items.length - crit;
+
+        const summary = document.getElementById('attention-summary');
+        if (summary) {
+            summary.textContent = items.length
+                ? `${items.length} ${items.length === 1 ? 'item needs' : 'items need'} attention · ${crit} critical · ${warn} warning`
+                : 'Nothing needs attention';
         }
+        const toggle = document.getElementById('attention-toggle');
+        if (toggle) {
+            toggle.hidden = items.length === 0;
+            toggle.setAttribute('aria-expanded', String(!this.attentionCollapsed));
+            toggle.textContent = this.attentionCollapsed ? 'Show' : 'Hide';
+        }
+        const noteEl = document.getElementById('attention-note');
+        if (noteEl) {
+            noteEl.hidden = !note;
+            noteEl.textContent = note;
+        }
+        const list = document.getElementById('attention-list');
+        if (!list) return;
+        list.hidden = this.attentionCollapsed || items.length === 0;
+        list.replaceChildren(...items.map(item => this._renderAttentionItem(item)));
+    }
+
+    _renderAttentionItem(item) {
+        const glyph = item.severity === 'crit' ? '◆' : '▲';
+        const mark = this._el('b', { cls: item.severity === 'crit' ? 'mx-crit-text' : 'mx-warn-text', text: glyph, attrs: { 'aria-hidden': 'true' } });
+        const label = `${item.severity === 'crit' ? 'Critical' : 'Warning'}: ${item.text}`;
+        const attrs = { 'aria-label': label, 'data-attention-kind': item.kind };
+        let control;
+        if (item.target.type === 'grafana') {
+            control = this._el('a', { cls: 'attention-link', attrs: { ...attrs, href: item.target.url, target: '_blank', rel: 'noopener noreferrer' } }, mark, ` ${item.text}`);
+        } else {
+            control = this._el('button', { cls: 'attention-link', attrs: { ...attrs, type: 'button' } }, mark, ` ${item.text}`);
+            control.addEventListener('click', () => this.goToAttention(item.target));
+        }
+        return this._el('li', { cls: 'attention-item', attrs: { 'data-severity': item.severity, 'data-attention-id': item.id } }, control);
+    }
+
+    // Show the Overview (or the item's tab) and take the operator to the thing itself.
+    goToAttention(target) {
+        const tab = target.type === 'tab' ? target.tab : 'overview';
+        window.adminDashboard?.switchTab(tab);
+        if (target.type === 'cell') {
+            const cell = document.getElementById(`${target.pipeline}-${target.consumer}-${target.entity}-cell`);
+            if (cell) this.openQueueDrawer(cell);
+        } else if (target.type === 'service') {
+            document.getElementById(`service-${target.service}`)?.scrollIntoView?.({ block: 'center' });
+        }
+    }
+
+    // ─── Grafana alerts, served by the console so the token stays on the server ─────
+
+    startAlertPolling() {
+        this.stopAlertPolling();
+        this.fetchAlerts();
+        this.alertTimer = setInterval(() => this.fetchAlerts(), Attention.ALERT_POLL_MS);
+    }
+
+    stopAlertPolling() {
+        if (this.alertTimer) clearInterval(this.alertTimer);
+        this.alertTimer = null;
+    }
+
+    async fetchAlerts() {
+        if (!this.active) return;
+        const token = this.token;
+        let alerts;
+        try {
+            const response = await fetch('/api/alerts', { headers: this._authHeaders(), cache: 'no-store' });
+            if (SESSION_REFUSALS.has(response.status)) {
+                this.requestSessionCheck();
+                return;
+            }
+            if (!response.ok) throw new Error(`alerts request failed: ${response.status}`);
+            alerts = await response.json();
+        } catch {
+            alerts = { configured: true, available: false, alerts: [], note: 'Grafana alerts unavailable: showing the problems derived from the live feed only' };
+        }
+        if (!this.active || this.token !== token) return;
+        this.alerts = alerts.configured ? alerts : null;
+        this.updateAttention();
     }
 
     // ─── Initial data fetch ───────────────────────────────────────────────────
@@ -453,9 +684,8 @@ class Dashboard {
         this.updateDatabases(data.databases || []);
         this.updateLastUpdated(data.timestamp);
 
-        // Aggregate all services for overall status
-        const allServices = Object.values(pipelines).flatMap(p => p.services || []);
-        this.updateOverallStatus(allServices);
+        this.lastReading = data;
+        this.updateAttention();
     }
 
     // ─── Service cards ────────────────────────────────────────────────────────
