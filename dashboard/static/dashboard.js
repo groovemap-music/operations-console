@@ -164,6 +164,7 @@ const Attention = (() => {
     const SERVICE_OK = new Set(['healthy', 'extracting', 'active']);
     const SERVICE_UNHEALTHY = 'unhealthy';
     const DATASTORE_OK = 'healthy';
+    const PLATFORM_OK = 'healthy';
     const TAB_OVERVIEW = 'overview';
     const TAB_STORAGE = 'storage';
     const RANK = { crit: 0, warn: 1 };
@@ -173,8 +174,15 @@ const Attention = (() => {
     const DLQ_KINDS = new Set(['dlq-growing', 'dlq-static']);
 
     // Items for one pipeline: `cells` are `{ consumer, entity, queue, health, dlq }` from the matrix.
-    function pipelineItems({ id, label, queuesUnavailable, services, cells }) {
+    function pipelineItems({ id, label, down, queuesUnavailable, services, cells }) {
         const items = [];
+        // No service answered: the pipeline is down, said once, not as one warning per service.
+        if (down) {
+            return [{
+                id: `pipeline-down:${id}`, severity: 'crit', kind: 'pipeline-down',
+                text: `${label}: pipeline is down, no service answered`, target: { type: 'tab', tab: TAB_OVERVIEW },
+            }];
+        }
         for (const service of services || []) {
             const status = String(service.status || 'unknown').toLowerCase();
             if (SERVICE_OK.has(status)) continue;
@@ -206,6 +214,18 @@ const Attention = (() => {
         return items;
     }
 
+    // Platform services outside the pipelines. A datastore row is skipped: `datastoreItems` raises it.
+    // Observability being down is a warning (the stack still serves); an application or the broker is critical.
+    function platformItems(platform) {
+        return (platform || []).filter(service => service.source !== 'datastore' && service.status !== PLATFORM_OK).map(service => ({
+            id: `platform:${service.name}`,
+            severity: service.group === 'observability' ? 'warn' : 'crit',
+            kind: service.status === 'unhealthy' ? 'platform-unhealthy' : 'platform-unreachable',
+            text: `${service.name} is ${service.status}`,
+            target: { type: 'platform', service: service.name },
+        }));
+    }
+
     function datastoreItems(databases) {
         return (databases || []).filter(db => db.status !== DATASTORE_OK).map(db => ({
             id: `datastore:${String(db.name).toLowerCase()}`, severity: 'crit', kind: 'datastore-unavailable',
@@ -221,8 +241,8 @@ const Attention = (() => {
     }
 
     // Critical items first, then warnings, each group in the order the sources listed them.
-    function derive({ pipelines, databases, alerts }) {
-        const items = [...(pipelines || []).flatMap(pipelineItems), ...datastoreItems(databases), ...alertItems(alerts)];
+    function derive({ pipelines, databases, platform, alerts }) {
+        const items = [...(pipelines || []).flatMap(pipelineItems), ...platformItems(platform), ...datastoreItems(databases), ...alertItems(alerts)];
         return items.map((item, order) => ({ item, order }))
             .sort((a, b) => RANK[a.item.severity] - RANK[b.item.severity] || a.order - b.order)
             .map(({ item }) => item);
@@ -850,6 +870,7 @@ class Dashboard {
         const pipelines = (this.topology?.pipelines || []).filter(p => p.id in reported).map(pipeline => ({
             id: pipeline.id,
             label: pipeline.label,
+            down: reported[pipeline.id].down === true,
             queuesUnavailable: this.queuesUnavailable[pipeline.id] === true,
             services: reported[pipeline.id].services || [],
             cells: pipeline.consumers.flatMap(consumer => pipeline.entity_types.flatMap(entity => {
@@ -861,7 +882,7 @@ class Dashboard {
                 }];
             })),
         }));
-        return { pipelines, databases: reading?.databases || [], alerts: this.alerts?.alerts || [] };
+        return { pipelines, databases: reading?.databases || [], platform: reading?.platform || [], alerts: this.alerts?.alerts || [] };
     }
 
     // Recompute the items, redraw the bar, and set the header from the same reading.
@@ -937,6 +958,8 @@ class Dashboard {
             if (cell) this.openQueueDrawer(cell);
         } else if (target.type === 'service') {
             document.getElementById(`service-${target.service}`)?.scrollIntoView?.({ block: 'center' });
+        } else if (target.type === 'platform') {
+            document.getElementById(`platform-${target.service}`)?.scrollIntoView?.({ block: 'center' });
         }
     }
 
@@ -1105,10 +1128,12 @@ class Dashboard {
         const at = this._sampleTime(data.timestamp);
         for (const [pipelineName, pipelineData] of Object.entries(pipelines)) {
             this.updateServices(pipelineName, pipelineData.services || []);
+            this.setPipelineDown(pipelineName, pipelineData.down === true);
             this.setQueuesUnavailable(pipelineName, pipelineData.queues_available === false);
             this.updateQueues(pipelineName, pipelineData.queues || [], at);
         }
 
+        this.updatePlatform(data.platform || [], data.jobs || []);
         this.updateDatabases(data.databases || []);
         this.updateLastUpdated(data.timestamp);
 
@@ -1283,6 +1308,11 @@ class Dashboard {
                 this._el('span', { id: `${producerPrefix}-total-records`, cls: 'mx-high mono', text: '—' }),
                 this._linkContainer(DeepLinks.specs.producer(pipeline.id, producer.name))),
             this._el('span', {
+                cls: 'mx-unavailable-banner mx-down-banner hidden',
+                text: 'Pipeline down: no service answered',
+                attrs: { 'data-pipeline-down': pipeline.id, role: 'status' },
+            }),
+            this._el('span', {
                 cls: 'mx-unavailable-banner hidden',
                 text: 'Queue metrics unavailable',
                 attrs: { 'data-queues-unavailable': pipeline.id, role: 'status' },
@@ -1349,6 +1379,48 @@ class Dashboard {
         document.querySelectorAll(`[data-queues-unavailable="${pipelineName}"]`).forEach(el => {
             el.classList.toggle('hidden', !unavailable);
         });
+    }
+
+    setPipelineDown(pipelineName, down) {
+        document.querySelectorAll(`[data-pipeline-down="${pipelineName}"]`).forEach(el => {
+            el.classList.toggle('hidden', !down);
+        });
+        document.getElementById(`pipeline-${pipelineName}`)?.toggleAttribute('data-down', down);
+    }
+
+    // ─── Platform health: every long-running service outside the pipelines, and the jobs ─────
+
+    _platformBadge(status) {
+        return {
+            healthy: ['ph-ok', 'Healthy'],
+            unhealthy: ['ph-bad', 'Unhealthy'],
+            unreachable: ['ph-bad', 'Unreachable'],
+        }[status] || ['ph-unknown', status || 'Unknown'];
+    }
+
+    // One list per group, one row per service; a row's id is stable so an attention item can lead to it.
+    updatePlatform(platform, jobs) {
+        const section = document.getElementById('platform-health');
+        if (!section) return;
+        for (const list of section.querySelectorAll('[data-platform-group]')) {
+            const group = list.dataset.platformGroup;
+            const rows = platform.filter(service => service.group === group).map(service => {
+                const [tone, label] = this._platformBadge(service.status);
+                return this._el('li', { id: `platform-${service.name}`, cls: 'ph-row', attrs: { 'data-state': service.status, 'data-service': service.name } },
+                    this._el('span', { cls: 'ph-name', text: service.name }),
+                    this._el('span', { cls: `ph-badge ${tone}`, text: label }),
+                    this._el('span', { cls: 'ph-detail', text: service.error || '' }));
+            });
+            list.replaceChildren(...rows);
+        }
+        const jobList = section.querySelector('[data-platform-jobs]');
+        jobList?.replaceChildren(...jobs.map(job => {
+            const when = job.last_run ? ` · ${new Date(job.last_run).toLocaleString()}` : '';
+            return this._el('li', { id: `job-${job.name}`, cls: 'ph-row', attrs: { 'data-monitored': String(job.monitored), 'data-service': job.name } },
+                this._el('span', { cls: 'ph-name', text: job.name }),
+                this._el('span', { cls: `ph-badge ${job.monitored ? 'ph-ok' : 'ph-unknown'}`, text: job.monitored ? (job.outcome ? 'Last run' : 'No run') : 'Not monitored' }),
+                this._el('span', { cls: 'ph-detail', text: job.monitored ? `${job.detail}${when}` : job.detail }));
+        }));
     }
 
     // Live feed lost or session ended: the history no longer describes a continuous interval.

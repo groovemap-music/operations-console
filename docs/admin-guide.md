@@ -167,6 +167,45 @@ shown as waiting for that checkpoint rather than as fully read. An unknown or ze
 name their source, and catalog-api's trigger reaches the Discogs extractor, so runs are shown
 against the Discogs pipeline.
 
+## Platform health
+
+Below the pipelines, the Overview's **Platform Health** section shows every long-running service
+the stack runs besides the ingest pipelines, in three groups. Each row is **Healthy**, **Unhealthy**
+(it answered, but not with a healthy answer, and the row says what it answered) or **Unreachable**
+(no answer within 3 seconds). All checks run at once, every two seconds, over the `groovemap` network.
+
+| Group | Service | Checked by |
+|---|---|---|
+| Applications | catalog-api | `GET http://api:8005/health` (the health port; the API itself is 8004) |
+| | explore | `GET http://explore:8007/health` |
+| | insights | `GET http://insights:8009/health` |
+| Data | postgres, neo4j | the console's own connections (the same reading as the Storage tab) |
+| | valkey | a `PING` on `valkey:6379`, answered `+PONG` |
+| | rabbitmq | `GET {RABBITMQ_PROMETHEUS_URL}/metrics/detailed?family=node_coarse_metrics` |
+| Observability | victoria-metrics | `GET /health` on `VICTORIA_METRICS_URL` |
+| | victoria-traces | `GET http://victoria-traces:10428/health` |
+| | otel-collector | `GET http://otel-collector:13133/` (its `health_check` extension) |
+| | grafana | `GET /api/health` on `GRAFANA_API_URL` (default `http://grafana:3000`) |
+| | postgres-exporter | `GET http://postgres-exporter:9187/` |
+| | valkey-exporter | `GET http://valkey-exporter:9121/metrics`, healthy only while `redis_up` is `1` |
+| | cadvisor | `GET http://cadvisor:8080/healthz` |
+| | node-exporter | `GET http://node-exporter:9100/` |
+
+A platform service that is down raises an attention item (critical for the applications, the data
+services and the broker; a warning for observability, which the stack serves without) and its
+changes appear in the System Event Log as `service-down` and `service-recovered`. A datastore is
+raised once, by the datastore rule, not twice.
+
+A pipeline none of whose services answered stays on the Overview, marked **Pipeline down**, and
+raises one critical item; it is not hidden.
+
+**One-shot jobs** are listed under their own heading. `schema-init` and `rabbitmq-dlq-policy-init`
+leave no record the console can read (their only trace is a container exit state, behind the Docker
+socket, which the console never has), so they read **Not monitored**. `embeddings` shows its last
+completed load (dump and time) from `public.artist_embeddings`, when the console's PostgreSQL role can
+read that table; otherwise it reads Not monitored too. The record is written by the load, so it
+shows the last load that finished, not a run that failed or is still going.
+
 ## The attention bar and the header status
 
 Under the header, on every tab, the attention bar lists everything that needs an operator and is
@@ -180,7 +219,9 @@ datastore item opens the Storage tab, and a Grafana alert opens in Grafana.
 | A queue stalled, or with a backlog and no consumer; a dead-letter queue that is growing | Critical |
 | A dead-letter queue that holds messages and is not growing | Warning |
 | An unhealthy service, or an unavailable datastore | Critical |
-| A service whose status is unknown or starting; a pipeline whose queue metrics are unavailable | Warning |
+| A pipeline none of whose services answered | Critical |
+| An application, the broker or Valkey that is unhealthy or unreachable | Critical |
+| A service whose status is unknown or starting; a pipeline whose queue metrics are unavailable; an observability service that is unhealthy or unreachable | Warning |
 | A firing Grafana alert | Critical when labelled `severity=critical`, otherwise warning |
 
 Queue items use the matrix's own rules above, so the bar and the matrix cannot disagree. Grafana

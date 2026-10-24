@@ -66,6 +66,36 @@ LAYOUT_FAULTS = """
 """
 
 
+# Every service the live stack checks, one reading with the catalog-api unreachable, drawn over the live feed.
+PLATFORM_SCENARIO = """
+() => {
+  const groups = {
+    applications: ['catalog-api', 'explore', 'insights'],
+    data: ['postgres', 'neo4j', 'valkey', 'rabbitmq'],
+    observability: ['victoria-metrics', 'victoria-traces', 'otel-collector', 'grafana', 'postgres-exporter', 'valkey-exporter', 'cadvisor', 'node-exporter'],
+  };
+  const platform = Object.entries(groups).flatMap(([group, names]) => names.map((name) => ({
+    name, group, status: name === 'catalog-api' ? 'unreachable' : 'healthy', last_seen: null,
+    error: name === 'catalog-api' ? 'no answer within 3s, and a long enough explanation to wrap on a narrow screen' : null, source: 'probe',
+  })));
+  const jobs = [
+    { name: 'schema-init', monitored: false, detail: 'not monitored here' },
+    { name: 'embeddings', monitored: true, outcome: 'loaded', detail: 'last load wrote dump discogs-2026-09 (2026-09-01)', last_run: '2026-09-02T03:00:00Z' },
+  ];
+  window.dashboard.updateDashboard({ timestamp: new Date().toISOString(), pipelines: {}, databases: [], platform, jobs });
+}
+"""
+
+# Page overflow, and any platform row whose content spills out of it.
+PLATFORM_FAULTS = """
+() => {
+  const page = document.documentElement;
+  const spills = [...document.querySelectorAll('#platform-health .ph-row')].filter((el) => el.scrollWidth > el.clientWidth + 1).map((el) => el.id);
+  return { overflow: Math.max(0, page.scrollWidth - page.clientWidth), spills };
+}
+"""
+
+
 def two_x_consumers(route: Route) -> None:
     """Serve the real topology with two hypothetical consumers added to every pipeline."""
     topology = route.fetch().json()
@@ -185,6 +215,26 @@ class TestDashboardUI:
         expect(page.locator("#discogs-graphinator-artists-cell .mx-n")).to_have_text("10", timeout=10000)
         expect(page.locator("#operational-status-text")).to_have_text("Operational")
         expect(page.locator("#attention-bar")).to_be_hidden()
+
+    @pytest.mark.parametrize("viewport", [DESKTOP, PHONE], ids=["desktop", "phone"])
+    def test_platform_health_lists_every_service_by_group_and_flags_a_down_one(self, page: Page, viewport: dict[str, int]) -> None:
+        """Three groups and the jobs are drawn; a down service is marked and raised; no overflow at 390 px."""
+        page.set_viewport_size(viewport)
+        sign_in(page)
+        freeze_live_feed(page)
+        page.evaluate(PLATFORM_SCENARIO)
+        for group, count in (("applications", 3), ("data", 4), ("observability", 8)):
+            expect(page.locator(f'[data-platform-group="{group}"] .ph-row')).to_have_count(count)
+        expect(page.locator("#platform-catalog-api")).to_have_attribute("data-state", "unreachable")
+        expect(page.locator("#platform-catalog-api .ph-badge")).to_have_text("Unreachable")
+        expect(page.locator("#platform-valkey .ph-badge")).to_have_text("Healthy")
+        expect(page.locator("#job-schema-init .ph-badge")).to_have_text("Not monitored")
+        expect(page.locator("#job-embeddings .ph-detail")).to_contain_text("discogs-2026-09")
+        expect(page.locator("#attention-summary")).to_have_text("1 item needs attention · 1 critical · 0 warning")
+        expect(page.get_by_role("button", name=re.compile(r"catalog-api is unreachable"))).to_be_visible()
+        page.locator("#platform-health").scroll_into_view_if_needed()
+        expect(page.locator("#platform-health")).to_be_visible()
+        assert page.evaluate(PLATFORM_FAULTS) == {"overflow": 0, "spills": []}
 
     def test_desktop_surfaces_a_musicbrainz_fault_at_the_top_of_the_first_screen(self, page: Page) -> None:
         """Every fault is listed above the tabs, before the matrices, and the header reads Critical."""

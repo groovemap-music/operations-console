@@ -85,12 +85,38 @@ class TestDashboardAPIIntegration:
         assert response.status_code == 200
         assert "javascript" in response.headers["content-type"]
 
-    def test_musicbrainz_pipeline_absent_when_not_deployed(self, client: TestClient) -> None:
-        """Test that MusicBrainz pipeline is absent when services are not deployed."""
-        response = client.get("/api/metrics")
-        assert response.status_code == 200
-        data = response.json()
-        assert "musicbrainz" not in data["pipelines"]
+    def test_platform_services_and_jobs_are_reported(self, client: TestClient) -> None:
+        """The reading carries the platform services (grouped) and the one-shot jobs."""
+        data = client.get("/api/metrics").json()
+        # The two connected datastores sit first in the Data group, after the applications.
+        assert [(s["name"], s["group"], s["status"], s["source"]) for s in data["platform"]] == [
+            ("catalog-api", "applications", "healthy", "probe"),
+            ("postgres", "data", "healthy", "datastore"),
+            ("neo4j", "data", "healthy", "datastore"),
+            ("valkey", "data", "healthy", "probe"),
+            ("grafana", "observability", "healthy", "probe"),
+        ]
+        assert [(j["name"], j["monitored"]) for j in data["jobs"]] == [("schema-init", False)]
+
+
+class TestDashboardPipelineDown:
+    """A pipeline none of whose services answers is down, not missing."""
+
+    @pytest.fixture
+    def client_without_musicbrainz(self, fake_catalog: FakeCatalogApi) -> typing.Generator[TestClient]:
+        """Create a signed-in test client where no MusicBrainz service answers."""
+        from tests.dashboard_test_app import create_test_app_without_musicbrainz
+
+        with TestClient(create_test_app_without_musicbrainz(), headers={"Authorization": f"Bearer {fake_catalog.mint()}"}) as test_client:
+            yield test_client
+
+    def test_unreachable_pipeline_stays_visible_and_is_marked_down(self, client_without_musicbrainz: TestClient) -> None:
+        """The unreachable MusicBrainz pipeline is reported as down, and Discogs is not."""
+        data = client_without_musicbrainz.get("/api/metrics").json()
+        musicbrainz = data["pipelines"]["musicbrainz"]
+        assert musicbrainz["down"] is True
+        assert {s["status"] for s in musicbrainz["services"]} == {"unknown"}
+        assert data["pipelines"]["discogs"]["down"] is False
 
 
 class TestDashboardPipelineDetection:
