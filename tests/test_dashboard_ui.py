@@ -213,8 +213,13 @@ class TestDashboardUI:
             r"Discogs Artists → Graphinator: DLQ 12",
         ):
             item = bar.get_by_role("button", name=re.compile(name))
-            expect(item).to_be_in_viewport(ratio=1)
-            assert item.bounding_box()["y"] < matrix_top
+            expect(item).to_be_visible()
+            box = item.bounding_box()
+            list_box = page.locator("#attention-list").bounding_box()
+            # Inside the first screen and inside the list's own height (no inner scroll to reach it).
+            assert box["y"] + box["height"] <= PHONE["height"]
+            assert box["y"] + box["height"] <= list_box["y"] + list_box["height"] + 1
+            assert box["y"] < matrix_top
         assert page.evaluate(LAYOUT_FAULTS)["overflow"] == 0
 
     def test_an_attention_item_opens_its_cell_drawer_from_any_tab(self, page: Page) -> None:
