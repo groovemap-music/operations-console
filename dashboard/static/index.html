@@ -332,6 +332,49 @@
             border: 1px solid var(--mx-text-dim); border-radius: 6px; padding: 2px 8px;
         }
         .mx-drawer-close:focus-visible { outline: 2px solid var(--mx-accent); outline-offset: 2px; }
+        /* Run progress: the headline above each matrix, the view toggle, and the secondary view. */
+        .mx-headline { margin: 0 0 8px; font-size: 13px; color: var(--mx-text-mid); }
+        .mx-headline[hidden], #pipelines[hidden], #run-progress[hidden] { display: none; }
+        .mx-headline-text { color: var(--mx-text-high); font-size: 15px; font-weight: 600; }
+        .mx-headline[data-state="crit"] { border-left: 3px solid var(--mx-crit); padding-left: 8px; }
+        .ov-views { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--mx-border); border-radius: 8px; }
+        .ov-view-btn { font: inherit; font-size: 12px; font-weight: 600; color: var(--mx-text-mid); background: none; border: 0; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+        .ov-view-btn[aria-pressed="true"] { color: var(--mx-text-high); background: var(--mx-surface); box-shadow: inset 0 0 0 1px var(--mx-accent); }
+        .ov-view-btn:focus-visible, .rp-run-link:focus-visible { outline: 2px solid var(--mx-accent); outline-offset: 2px; }
+        .rp-pipeline { background: var(--mx-surface); border: 1px solid var(--mx-border); border-radius: 12px; padding: 12px; color: var(--mx-text-high); }
+        .rp-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; font-size: 12px; }
+        .rp-head h2 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; color: var(--mx-text-dim); }
+        .rp-run-link { font: inherit; font-size: 12px; font-weight: 600; color: var(--mx-accent); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
+        .rp-summary { margin: 6px 0; font-size: 13px; color: var(--mx-text-mid); }
+        .rp-unavailable { margin: 6px 0; font-size: 12px; color: var(--mx-text-mid); }
+        .rp-burnup { display: block; max-width: 100%; height: auto; margin: 8px 0 4px; }
+        .rp-burnup text { fill: var(--mx-text-dim); font-size: 11px; }
+        .rp-axis { stroke: var(--mx-border); }
+        .rp-now { stroke-dasharray: 2 3; }
+        .rp-line { fill: none; stroke-width: 2; }
+        .rp-projection { fill: none; stroke-width: 1.5; stroke-dasharray: 4 4; }
+        .rp-series-0 { stroke: var(--mx-accent); background: var(--mx-accent); }
+        .rp-series-1 { stroke: var(--mx-text-high); background: var(--mx-text-high); }
+        .rp-series-2 { stroke: var(--mx-ramp-3); background: var(--mx-ramp-3); }
+        .rp-series-3 { stroke: var(--mx-text-dim); background: var(--mx-text-dim); }
+        .rp-swatch { display: inline-block; width: 14px; height: 3px; vertical-align: 3px; margin-right: 4px; }
+        .rp-entity { border-top: 1px solid var(--mx-border); padding: 8px 0 6px; font-size: 13px; }
+        .rp-row { display: grid; grid-template-columns: minmax(90px, 150px) minmax(80px, 1fr) 44px minmax(0, 220px); gap: 4px 10px; align-items: center; padding: 3px 4px; }
+        .rp-row.rp-crit { outline: 2px solid var(--mx-crit); border-radius: 4px; background: var(--mx-crit-bg); }
+        .rp-name { font-weight: 600; min-width: 0; }
+        .rp-bar { position: relative; height: 12px; border-radius: 6px; background: var(--mx-ramp-0); border: 1px solid var(--mx-border); overflow: hidden; }
+        .rp-read { position: absolute; inset: 0 auto 0 0; background: var(--mx-ramp-2); opacity: 0.5; }
+        .rp-loaded { position: absolute; inset: 0 auto 0 0; background: var(--mx-accent); }
+        .rp-crit .rp-loaded { background: repeating-linear-gradient(135deg, var(--mx-crit) 0 4px, transparent 4px 8px); }
+        .rp-eta { font-size: 12px; color: var(--mx-text-mid); display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: center; }
+        .rp-gap { grid-column: 2 / -1; font-size: 12px; }
+        @media (max-width: 640px) {
+            .rp-row { grid-template-columns: minmax(0, 1fr) auto; }
+            .rp-row .rp-bar { grid-column: 1 / -1; grid-row: 2; }
+            .rp-row .rp-eta { grid-column: 1 / -1; }
+            .rp-gap { grid-column: 1 / -1; }
+        }
+        tr[data-highlight] { outline: 2px solid var(--mx-accent); outline-offset: -2px; }
     </style>
 </head>
 <body class="p-4 sm:p-8" style="background:#060a12;">
@@ -473,9 +516,20 @@
              ============================================================ -->
         <div id="tab-overview" class="space-y-8">
 
-            <!-- Each pipeline is an entity x consumer matrix, drawn by dashboard.js from /api/topology
-                 and filled from live metrics. -->
-            <div id="pipelines" class="space-y-4"></div>
+            <!-- The matrix is the primary view; Run progress is the secondary one. -->
+            <div class="space-y-3">
+                <div class="ov-views" role="group" aria-label="Overview view">
+                    <button type="button" class="ov-view-btn" data-overview-view="matrix" aria-pressed="true">Matrix</button>
+                    <button type="button" class="ov-view-btn" data-overview-view="progress" aria-pressed="false">Run progress</button>
+                </div>
+
+                <!-- Each pipeline is an entity x consumer matrix, drawn by dashboard.js from /api/topology
+                     and filled from live metrics, with the run's ETA headline above it. -->
+                <div id="pipelines" class="space-y-4"></div>
+
+                <!-- Per pipeline: the extraction run's burn-up and per entity x consumer bars, drawn by dashboard.js. -->
+                <div id="run-progress" class="space-y-4" hidden></div>
+            </div>
 
             <!-- Queue detail drawer: opened from a matrix cell, filled by dashboard.js. -->
             <dialog id="queue-drawer" class="mx-drawer" aria-labelledby="queue-drawer-title">

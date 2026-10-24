@@ -591,6 +591,9 @@ class AdminExtractions extends AdminInteractions {
             const rows = extractions.map(e => {
                 const tr = document.createElement('tr');
                 tr.className = 'border-b b-row';
+                // The Overview's Run progress view links here, to the run's own row.
+                tr.id = `extraction-run-${e.id}`;
+                tr.tabIndex = -1;
 
                 const tdDate = document.createElement('td');
                 tdDate.className = 'py-2.5 pr-4 mono t-mid';
@@ -605,16 +608,21 @@ class AdminExtractions extends AdminInteractions {
 
                 const tdDuration = document.createElement('td');
                 tdDuration.className = 'py-2.5 pr-4 mono t-mid';
-                tdDuration.textContent = e.duration || '\u2014';
+                tdDuration.textContent = this._formatRunDuration(e.duration_seconds);
 
                 const tdRecords = document.createElement('td');
                 tdRecords.className = 'py-2.5 pr-4 mono t-mid text-right';
-                tdRecords.textContent = e.records != null ? Number(e.records).toLocaleString() : '\u2014';
+                const records = this._runRecordTotal(e.record_counts);
+                tdRecords.textContent = records !== null ? records.toLocaleString() : '\u2014';
+                if (e.record_counts) {
+                    tdRecords.title = Object.entries(e.record_counts).filter(([k]) => k !== 'total')
+                        .map(([k, v]) => `${k}: ${Number(v).toLocaleString()}`).join(', ');
+                }
 
                 const tdError = document.createElement('td');
                 tdError.className = 'py-2.5 mono t-muted text-xs truncate max-w-[200px]';
-                tdError.textContent = e.error || '\u2014';
-                if (e.error) tdError.title = e.error;
+                tdError.textContent = e.error_message || '\u2014';
+                if (e.error_message) tdError.title = e.error_message;
 
                 tr.append(tdDate, tdStatus, tdDuration, tdRecords, tdError);
                 return tr;
@@ -633,6 +641,23 @@ class AdminExtractions extends AdminInteractions {
         } catch {
             // Silently fail — will retry on next auto-refresh
         }
+    }
+
+    // catalog-api's duration_seconds as "3h12m" (null while the run has not finished).
+    _formatRunDuration(seconds) {
+        if (seconds === null || seconds === undefined) return '\u2014';
+        if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s`;
+        if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+        const h = Math.floor(seconds / 3600);
+        const m = Math.round((seconds - h * 3600) / 60);
+        return m ? `${h}h${String(m).padStart(2, '0')}m` : `${h}h`;
+    }
+
+    // The extractor's final per-entity counts carry their own total; older records may not.
+    _runRecordTotal(counts) {
+        if (!counts || typeof counts !== 'object') return null;
+        if (counts.total != null) return Number(counts.total);
+        return Object.values(counts).reduce((sum, n) => sum + (Number(n) || 0), 0);
     }
 
     async triggerExtraction(source = 'discogs') {

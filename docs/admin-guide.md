@@ -115,6 +115,37 @@ backlog change, how long acks have been at zero, and its dead-letter queue. Esca
 Below 480 px wide, a pipeline with more than two consumers lists each entity's cells in two
 columns, and every cell names its consumer.
 
+## Run progress
+
+While an extraction runs, a headline above its pipeline's matrix says when it will finish:
+"Finishes in 25m, bottleneck Graphinator" names the time until the slowest consumer has loaded
+every expected record, and that consumer. "◆ Cannot finish: Tableinator · Releases stalled" lists
+every queue the matrix marks stalled, without a consumer, or with a growing DLQ. With no
+extraction running there is no headline.
+
+**Run progress**, next to **Matrix** above the pipelines, is the secondary view of the same run:
+per pipeline, a burn-up of the loaded fraction per consumer since the run started, dashed to 100 %
+at each consumer's ETA, and per entity a bar per consumer of the records loaded (solid) against
+those extracted but still queued (light). **Run details** opens the run's row in the Extractions
+tab. A finished run shows its duration, final counts, and what each consumer loaded.
+
+The numbers come from VictoriaMetrics through `/api/progress/{pipeline}`, for the run's start and
+end from the extraction history:
+
+| Number | Source |
+|---|---|
+| Expected records per entity | Records extracted in the run (`groovemap_extraction_records_total`) divided by the fraction of the file read (`groovemap_extraction_file_progress_ratio`) |
+| Loaded per queue | `rabbitmq_detailed_queue_messages_acked_total` minus its value at the run's start, corrected for counter resets |
+| ETA | Records still to load (expected, less loaded and dead-lettered) over the queue's 5-minute mean ack rate |
+
+Nothing is kept in the console: the baseline is read at the run's start time on every request,
+so a console restart mid-run changes nothing. When a total or a baseline cannot be derived (no
+file-progress sample in the run, an entity not extracted yet, no data from the run's start) the
+view says "progress unavailable" and why, and the headline says so too; it never shows a guessed
+total. An unknown or zero ack rate gives no ETA ("Finish time unknown"). Extraction records do not
+name their source, and catalog-api's trigger reaches the Discogs extractor, so runs are shown
+against the Discogs pipeline.
+
 ## The attention bar and the header status
 
 Under the header, on every tab, the attention bar lists everything that needs an operator and is
