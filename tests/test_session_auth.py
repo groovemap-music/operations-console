@@ -366,7 +366,34 @@ class TestWebSocketTickets:
             assert websocket.receive_json()["type"] == "metrics_update"
             time.sleep(0.3)
             # The 2-second broadcast loop keeps delivering to a socket that passed its rechecks.
+            messages = [websocket.receive_json()["type"] for _ in range(2)]
+            assert "metrics_update" in messages
+
+
+class TestEventBacklog:
+    @staticmethod
+    def _seed(events: Any) -> None:
+        from tests.test_events import _reading
+
+        events.observe(_reading())
+        events.observe(_reading(databases={"Neo4j": "unhealthy"}))
+
+    def test_a_connecting_client_receives_the_recent_events_after_the_first_reading(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        from dashboard import dashboard as console
+
+        self._seed(console.dashboard.events)
+        ticket = client.post("/api/ws-ticket", headers=_bearer(fake_catalog.mint())).json()["ticket"]
+        with client.websocket_connect(f"/ws?ticket={ticket}") as websocket:
             assert websocket.receive_json()["type"] == "metrics_update"
+            backlog = websocket.receive_json()
+        assert backlog["type"] == "event_backlog"
+        assert [(e["kind"], e["subject"]) for e in backlog["data"]] == [("datastore-down", "Neo4j")]
+
+    def test_a_client_with_nothing_to_catch_up_on_still_gets_an_empty_backlog(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        ticket = client.post("/api/ws-ticket", headers=_bearer(fake_catalog.mint())).json()["ticket"]
+        with client.websocket_connect(f"/ws?ticket={ticket}") as websocket:
+            websocket.receive_json()
+            assert websocket.receive_json() == {"type": "event_backlog", "data": []}
 
 
 class TestTicketNeverLogged:

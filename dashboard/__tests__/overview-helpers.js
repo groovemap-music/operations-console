@@ -105,7 +105,9 @@ export function makeDashboard({ narrow = false } = {}) {
         drawerReturnFocus: null,
         queuesUnavailable: {},
         activityLog: [],
-        maxLogEntries: 50,
+        maxLogEntries: 100,
+        lastServerEventId: 0,
+        auditTimer: null,
         topology: null,
         topologyRequest: null,
         pendingData: null,
@@ -116,7 +118,7 @@ export function makeDashboard({ narrow = false } = {}) {
         linkBases: { grafana: null, traces: null },
         linkSets: new Map(),
     });
-    for (const method of ['updateServices', 'updateDatabases', 'updateLastUpdated', 'renderActivityLog']) {
+    for (const method of ['updateServices', 'updateDatabases', 'updateLastUpdated']) {
         dashboard[method] = vi.fn();
     }
     return dashboard;

@@ -100,7 +100,14 @@ a stall, so a stall needs 60 seconds of real zero-ack readings. The browser keep
 minutes of readings for these rules; it starts them again when the live feed reconnects or a
 pipeline's queue metrics become unavailable, which a pipeline then shows with a banner and every
 cell marked unavailable. Each change into or out of a critical or warning state is written to the
-System Event Log.
+System Event Log of the browser that saw it.
+
+The System Event Log also lists what the console server observed, the same for every operator:
+a service going healthy or unhealthy, a datastore going up or down, queue metrics becoming
+unavailable or returning, and a dead-letter queue growing or emptying. The server keeps the most
+recent 200 of these, and a browser that connects or reconnects receives them at once. Recent
+extraction triggers and DLQ purges, with the operator who did them, are merged in from the audit
+log. Connecting and disconnecting are shown by the connection indicator only.
 
 Select a cell (or focus it and press Enter) to open the queue's details: its depth, ready and
 unacknowledged messages, consumers, publish and ack rates, the 5-minute mean ack rate, lag,
