@@ -1,9 +1,9 @@
 """Unit tests for the DashboardApp class."""
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import httpx
@@ -11,6 +11,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dashboard.dashboard import PIPELINE_CONFIGS, DashboardApp, DatabaseInfo, PipelineMetrics, QueueInfo, ServiceStatus, SystemMetrics
+
+
+if TYPE_CHECKING:
+    from tests.fake_catalog_api import FakeCatalogApi
 
 
 _RECORDED_METRICS = Path(__file__).parent / "fixtures" / "rabbitmq_4_4_metrics_detailed.txt"
@@ -1374,30 +1378,23 @@ class TestFastAPIEndpoints:
                 assert len(data) == 1
                 assert data[0]["name"] == "PostgreSQL"
 
-    def test_serve_admin_file_not_found(self) -> None:
-        """Test /admin endpoint returns 404 when admin.html does not exist."""
-        from fastapi import FastAPI
 
-        from dashboard.dashboard import serve_admin
+def _ws_ticket(catalog: FakeCatalogApi) -> str:
+    """Issue a WebSocket ticket for a bearer the fake catalog-api honours."""
+    from dashboard.session_auth import AdminSession, gate
 
-        test_app = FastAPI()
-        test_app.get("/admin")(serve_admin)
-
-        with patch("dashboard.dashboard.Path.read_text", side_effect=FileNotFoundError), TestClient(test_app) as client:
-            response = client.get("/admin")
-            assert response.status_code == 404
-            assert "Admin page not found" in response.text
+    session = AdminSession(admin_id="admin-1", email="admin@example.com", expires_at=datetime.now(UTC) + timedelta(hours=1))
+    ticket, _ = gate.tickets.issue(session, catalog.mint())
+    return ticket
 
 
 class TestWebSocketEndpoint:
     """Test WebSocket connection handling."""
 
     @pytest.mark.asyncio
-    async def test_websocket_connection_and_disconnect(self) -> None:
+    async def test_websocket_connection_and_disconnect(self, fake_catalog: FakeCatalogApi) -> None:
         """Test WebSocket connection lifecycle."""
-        from fastapi import FastAPI
-
-        from dashboard.dashboard import websocket_endpoint
+        from dashboard.dashboard import ConsoleApp, websocket_endpoint
 
         # Mock dashboard instance
         mock_dashboard_instance = Mock()
@@ -1410,10 +1407,10 @@ class TestWebSocketEndpoint:
         )
 
         with patch("dashboard.dashboard.dashboard", mock_dashboard_instance):
-            test_app = FastAPI()
+            test_app = ConsoleApp()
             test_app.websocket("/ws")(websocket_endpoint)
 
-            with TestClient(test_app) as client, client.websocket_connect("/ws") as _websocket:
+            with TestClient(test_app) as client, client.websocket_connect(f"/ws?ticket={_ws_ticket(fake_catalog)}") as _websocket:
                 # Verify connection was added
                 assert len(mock_dashboard_instance.websocket_connections) == 1
 
@@ -1426,11 +1423,9 @@ class TestWebSocketEndpoint:
                 # (handled by WebSocketDisconnect exception)
 
     @pytest.mark.asyncio
-    async def test_websocket_error_handling(self) -> None:
+    async def test_websocket_error_handling(self, fake_catalog: FakeCatalogApi) -> None:
         """Test WebSocket error handling."""
-        from fastapi import FastAPI
-
-        from dashboard.dashboard import websocket_endpoint
+        from dashboard.dashboard import ConsoleApp, websocket_endpoint
 
         # Mock dashboard instance
         mock_dashboard_instance = Mock()
@@ -1442,10 +1437,10 @@ class TestWebSocketEndpoint:
             patch("dashboard.dashboard.dashboard", mock_dashboard_instance),
             patch("dashboard.dashboard.logger") as _mock_logger,
         ):
-            test_app = FastAPI()
+            test_app = ConsoleApp()
             test_app.websocket("/ws")(websocket_endpoint)
 
-            with TestClient(test_app) as client, client.websocket_connect("/ws") as _websocket:
+            with TestClient(test_app) as client, client.websocket_connect(f"/ws?ticket={_ws_ticket(fake_catalog)}") as _websocket:
                 # Verify connection was added
                 assert len(mock_dashboard_instance.websocket_connections) == 1
 
@@ -1544,15 +1539,17 @@ class TestWebSocketGeneralException:
     """Test WebSocket general exception handler (lines 569-573)."""
 
     @pytest.mark.asyncio
-    async def test_websocket_general_exception_cleans_up(self) -> None:
+    async def test_websocket_general_exception_cleans_up(self, fake_catalog: FakeCatalogApi) -> None:
         """Test that a non-WebSocketDisconnect exception removes the connection."""
         from dashboard.dashboard import websocket_endpoint
+        from dashboard.session_auth import WS_TICKET_SCOPE_KEY
 
         mock_ws = AsyncMock()
+        mock_ws.scope = {WS_TICKET_SCOPE_KEY: _ws_ticket(fake_catalog)}
         mock_ws.accept = AsyncMock()
         mock_ws.send_text = AsyncMock()
-        # Make receive_text raise a generic exception (not WebSocketDisconnect)
-        mock_ws.receive_text = AsyncMock(side_effect=RuntimeError("network error"))
+        # Make receive raise a generic exception (not WebSocketDisconnect)
+        mock_ws.receive = AsyncMock(side_effect=RuntimeError("network error"))
 
         mock_dashboard_instance = Mock()
         mock_dashboard_instance.websocket_connections = set()

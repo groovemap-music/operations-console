@@ -1,373 +1,143 @@
-"""Test application factory for dashboard E2E tests."""
+"""Console test application: the production routes over a fixed metrics source.
+
+``create_test_app`` serves the console's real route table, including the session gate on every
+data route, the ticketed WebSocket, the admin proxy, and the static shell, over a
+``DashboardApp`` whose collectors return fixed readings instead of polling services, RabbitMQ,
+Neo4j, and PostgreSQL. Session validation goes wherever ``dashboard.session_auth.gate`` points:
+the in-process fake catalog-api in unit tests, or the standalone fake server the browser suite
+starts and names through ``API_HOST`` / ``API_PORT``.
+"""
 
 import asyncio
 import contextlib
-import logging
-from collections.abc import AsyncGenerator  # noqa: TC003  # FastAPI resolves lifespan annotations at runtime.
-from contextlib import asynccontextmanager
-from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock
+from collections.abc import AsyncGenerator, Callable  # noqa: TC003  # FastAPI resolves lifespan annotations at runtime.
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from datetime import UTC, datetime
+from unittest.mock import patch
 
-from fastapi import FastAPI, WebSocket
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import FastAPI  # noqa: TC002  # FastAPI resolves lifespan annotations at runtime.
+from fastapi.responses import JSONResponse
 
+from dashboard import dashboard as console
+from dashboard.catalog_contract import DISCOGS_EXCHANGE_PREFIX, MUSICBRAINZ_EXCHANGE_PREFIX
 from dashboard.config import DashboardConfig
+from dashboard.dashboard import DashboardApp
+from dashboard.session_auth import SessionRejected, session_rejected_handler
 
 
-logger = logging.getLogger(__name__)
+_CONFIG = DashboardConfig(
+    neo4j_host="neo4j://localhost:7687",
+    neo4j_username="test",
+    neo4j_password="test",
+    postgres_host="localhost:5432",
+    postgres_username="test",
+    postgres_password="test",
+    postgres_database="test",
+)
+
+_MUSICBRAINZ_SERVICES = {"extractor-musicbrainz", "brainzgraphinator", "brainztableinator"}
+
+# Readings are built on each call from `console.*`, never bound at import: a test that reloads
+# dashboard.dashboard replaces the model classes the production aggregation validates against.
+_QUEUE_READINGS: dict[str, list[tuple[str, int, int, int, float, float]]] = {
+    DISCOGS_EXCHANGE_PREFIX: [
+        (f"{DISCOGS_EXCHANGE_PREFIX}-graphinator-artists", 10, 5, 2, 0.5, 0.3),
+        (f"{DISCOGS_EXCHANGE_PREFIX}-tableinator-artists", 8, 3, 1, 0.4, 0.2),
+    ],
+    MUSICBRAINZ_EXCHANGE_PREFIX: [
+        (f"{MUSICBRAINZ_EXCHANGE_PREFIX}-brainzgraphinator-artists", 5, 2, 1, 0.3, 0.2),
+    ],
+}
 
 
-# Mock the dashboard app instance
-mock_dashboard_app = None
-
-
-class MockDashboardApp:
-    """Mock dashboard application for testing."""
+class MockDashboardApp(DashboardApp):
+    """The real dashboard aggregation and broadcast loop over fixed collector readings."""
 
     def __init__(self, include_musicbrainz: bool = False) -> None:
-        """Initialize mock dashboard."""
+        """Initialise without reading datastore configuration from the environment."""
+        with patch("dashboard.dashboard.get_config", return_value=_CONFIG):
+            super().__init__()
         self.include_musicbrainz = include_musicbrainz
-        self.config = DashboardConfig(
-            neo4j_host="neo4j://localhost:7687",
-            neo4j_username="test",
-            neo4j_password="test",
-            postgres_host="localhost:5432",
-            postgres_username="test",
-            postgres_password="test",
-            postgres_database="test",
-        )
-        self.websocket_connections: set[WebSocket] = set()
-        self.latest_metrics: dict[str, Any] | None = None
-        self.neo4j_driver = MagicMock()
-        self.update_task: asyncio.Task[None] | None = None
 
     async def startup(self) -> None:
-        """Mock startup."""
-        # Start mock update task
-        self.update_task = asyncio.create_task(self.mock_collect_metrics_loop())
+        """Run the real collection loop; no datastore clients are opened."""
+        self.update_task = asyncio.create_task(self.collect_metrics_loop())
 
     async def shutdown(self) -> None:
-        """Mock shutdown."""
+        """Stop the loop and close any live sockets."""
         if self.update_task:
             self.update_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self.update_task
+        await self.websockets.close_all()
 
-    async def mock_collect_metrics_loop(self) -> None:
-        """Mock metrics collection loop."""
-        while True:
-            try:
-                # Update mock metrics every 2 seconds
-                pipelines: dict[str, Any] = {
-                    "discogs": {
-                        "services": [
-                            {
-                                "name": "extractor-discogs",
-                                "status": "healthy",
-                                "last_seen": "2024-01-01T00:00:00+00:00",
-                                "current_task": None,
-                                "progress": None,
-                                "error": None,
-                                "extraction_progress": None,
-                                "last_extraction_time": None,
-                            },
-                            {
-                                "name": "graphinator",
-                                "status": "healthy",
-                                "last_seen": "2024-01-01T00:00:00+00:00",
-                                "current_task": None,
-                                "progress": None,
-                                "error": None,
-                                "extraction_progress": None,
-                                "last_extraction_time": None,
-                            },
-                            {
-                                "name": "tableinator",
-                                "status": "healthy",
-                                "last_seen": "2024-01-01T00:00:00+00:00",
-                                "current_task": None,
-                                "progress": None,
-                                "error": None,
-                                "extraction_progress": None,
-                                "last_extraction_time": None,
-                            },
-                        ],
-                        "queues": [
-                            {
-                                "name": "groovemap-discogs-graphinator-artists",
-                                "messages": 10,
-                                "messages_ready": 5,
-                                "messages_unacknowledged": 2,
-                                "consumers": 1,
-                                "message_rate": 0.5,
-                                "ack_rate": 0.3,
-                            },
-                            {
-                                "name": "groovemap-discogs-tableinator-artists",
-                                "messages": 8,
-                                "messages_ready": 3,
-                                "messages_unacknowledged": 1,
-                                "consumers": 1,
-                                "message_rate": 0.4,
-                                "ack_rate": 0.2,
-                            },
-                        ],
-                    },
-                }
-                if self.include_musicbrainz:
-                    pipelines["musicbrainz"] = {
-                        "services": [
-                            {
-                                "name": "extractor-musicbrainz",
-                                "status": "healthy",
-                                "last_seen": "2024-01-01T00:00:00+00:00",
-                                "current_task": None,
-                                "progress": None,
-                                "error": None,
-                                "extraction_progress": None,
-                                "last_extraction_time": None,
-                            },
-                            {
-                                "name": "brainzgraphinator",
-                                "status": "healthy",
-                                "last_seen": "2024-01-01T00:00:00+00:00",
-                                "current_task": None,
-                                "progress": None,
-                                "error": None,
-                                "extraction_progress": None,
-                                "last_extraction_time": None,
-                            },
-                            {
-                                "name": "brainztableinator",
-                                "status": "healthy",
-                                "last_seen": "2024-01-01T00:00:00+00:00",
-                                "current_task": None,
-                                "progress": None,
-                                "error": None,
-                                "extraction_progress": None,
-                                "last_extraction_time": None,
-                            },
-                        ],
-                        "queues": [
-                            {
-                                "name": "groovemap-musicbrainz-brainzgraphinator-artists",
-                                "messages": 5,
-                                "messages_ready": 2,
-                                "messages_unacknowledged": 1,
-                                "consumers": 1,
-                                "message_rate": 0.3,
-                                "ack_rate": 0.2,
-                            },
-                        ],
-                    }
-                self.latest_metrics = {
-                    "pipelines": pipelines,
-                    "databases": [
-                        {"name": "PostgreSQL", "status": "healthy", "connection_count": 5, "size": "100.5 MB", "error": None},
-                        {"name": "Neo4j", "status": "healthy", "connection_count": 1, "size": "1,000 nodes, 5,000 relationships", "error": None},
-                    ],
-                    "timestamp": "2024-01-01T00:00:00Z",
-                }
-                # Broadcast to all connected clients
-                await self.broadcast_metrics(self.latest_metrics)
-                await asyncio.sleep(2)
-            except asyncio.CancelledError:
-                break
+    async def get_service_statuses(self, service_configs: list[tuple[str, str]]) -> list[console.ServiceStatus]:
+        """Every Discogs service is healthy; MusicBrainz services only when deployed."""
+        statuses = []
+        for name, _url in service_configs:
+            deployed = self.include_musicbrainz or name not in _MUSICBRAINZ_SERVICES
+            statuses.append(
+                console.ServiceStatus(
+                    name=name,
+                    status="healthy" if deployed else "unknown",
+                    last_seen=datetime(2024, 1, 1, tzinfo=UTC) if deployed else None,
+                    current_task=None,
+                    progress=None,
+                    error=None if deployed else "not deployed",
+                )
+            )
+        return statuses
 
-    async def collect_all_metrics(self) -> dict[str, Any]:
-        """Return mock metrics."""
-        return self.latest_metrics or {
-            "pipelines": {},
-            "databases": [],
-            "timestamp": "2024-01-01T00:00:00Z",
-        }
+    async def get_queue_info(self, prefix: str) -> list[console.QueueInfo] | None:
+        """Fixed queue readings for the pipeline behind ``prefix``."""
+        return [
+            console.QueueInfo(
+                name=name, messages=messages, messages_ready=ready, messages_unacknowledged=unacked, consumers=1, message_rate=rate, ack_rate=ack
+            )
+            for name, messages, ready, unacked, rate, ack in _QUEUE_READINGS.get(prefix, [])
+        ]
 
-    async def broadcast_metrics(self, metrics: Any) -> None:
-        """Mock broadcast to all WebSocket connections."""
-        if not self.websocket_connections:
-            return
-
-        # Send metrics update to all connected clients
-        message = {"type": "metrics_update", "data": metrics}
-
-        disconnected = set()
-        for ws in self.websocket_connections:
-            try:
-                await ws.send_json(message)
-            except Exception:
-                disconnected.add(ws)
-
-        # Remove disconnected clients
-        self.websocket_connections -= disconnected
+    async def get_database_info(self) -> list[console.DatabaseInfo]:
+        """Fixed, healthy datastore readings."""
+        return [
+            console.DatabaseInfo(name="PostgreSQL", status="healthy", connection_count=5, size="100.5 MB", error=None),
+            console.DatabaseInfo(name="Neo4j", status="healthy", connection_count=1, size="1,000 nodes, 5,000 relationships", error=None),
+        ]
 
 
-@asynccontextmanager
-async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
-    """Manage test application lifecycle."""
-    global mock_dashboard_app
-    mock_dashboard_app = MockDashboardApp()
-    await mock_dashboard_app.startup()
-    yield
-    await mock_dashboard_app.shutdown()
+def _lifespan(include_musicbrainz: bool) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
+        previous = console.dashboard
+        console.dashboard = MockDashboardApp(include_musicbrainz=include_musicbrainz)
+        await console.dashboard.startup()
+        await console.session_gate.start()
+        try:
+            yield
+        finally:
+            await console.session_gate.aclose()
+            await console.dashboard.shutdown()
+            console.dashboard = previous
+
+    return lifespan
 
 
-def create_test_app() -> FastAPI:
-    """Create a test FastAPI app with mocked dependencies."""
-    app = FastAPI(
+def create_test_app(include_musicbrainz: bool = False) -> FastAPI:
+    """Create the console app with the production routes and a fixed metrics source."""
+    app = console.ConsoleApp(
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
         title="GrooveMap Dashboard",
         version="0.1.0",
         default_response_class=JSONResponse,
-        lifespan=lifespan,
+        lifespan=_lifespan(include_musicbrainz),
     )
-
-    # Add CORS middleware
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    # Add API routes
-
-    @app.get("/api/metrics")
-    async def get_metrics() -> dict[str, Any]:
-        """Get current system metrics."""
-        if mock_dashboard_app:
-            metrics = await mock_dashboard_app.collect_all_metrics()
-            return metrics
-        return {}
-
-    @app.get("/api/services")
-    async def get_services() -> dict[str, Any]:
-        """Get service statuses grouped by pipeline."""
-        if mock_dashboard_app and mock_dashboard_app.latest_metrics:
-            pipelines = mock_dashboard_app.latest_metrics.get("pipelines", {})
-            return {name: p["services"] for name, p in pipelines.items()}
-        return {}
-
-    @app.get("/api/queues")
-    async def get_queues() -> dict[str, Any]:
-        """Get queue information grouped by pipeline."""
-        if mock_dashboard_app and mock_dashboard_app.latest_metrics:
-            pipelines = mock_dashboard_app.latest_metrics.get("pipelines", {})
-            return {name: (p["queues"] if p.get("queues_available", True) else None) for name, p in pipelines.items()}
-        return {}
-
-    @app.get("/api/databases")
-    async def get_databases() -> list[dict[str, Any]]:
-        """Get database information."""
-        if mock_dashboard_app and mock_dashboard_app.latest_metrics:
-            databases = mock_dashboard_app.latest_metrics.get("databases", [])
-            return list(databases)  # Ensure we return a list
-        return []
-
-    @app.websocket("/ws")
-    async def websocket_endpoint(websocket: WebSocket) -> None:
-        """WebSocket endpoint for real-time updates."""
-        await websocket.accept()
-        logger.info("🔗 WebSocket connection accepted")
-        if mock_dashboard_app:
-            mock_dashboard_app.websocket_connections.add(websocket)
-        try:
-            # Send initial metrics update
-            if mock_dashboard_app and mock_dashboard_app.latest_metrics:
-                await websocket.send_json({"type": "metrics_update", "data": mock_dashboard_app.latest_metrics})
-            # Keep connection alive
-            while True:
-                try:
-                    data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
-                    logger.debug(f"🔄 Received WebSocket data: {data}")
-                except TimeoutError:
-                    # Send ping to keep connection alive
-                    await websocket.send_json({"type": "ping"})
-        except Exception as e:
-            logger.debug(f"🔧 WebSocket disconnected: {e}")
-        finally:
-            if mock_dashboard_app:
-                mock_dashboard_app.websocket_connections.discard(websocket)
-
-    # Configure static files
-    static_dir = Path(__file__).parent.parent / "dashboard" / "static"
-    logger.info(f"📁 Static dir path: {static_dir}")
-    logger.info(f"📁 Static dir exists: {static_dir.exists()}")
-
-    if static_dir.exists():
-        # Serve index.html at root
-        @app.get("/", response_class=FileResponse)
-        async def serve_index() -> FileResponse:
-            """Serve the index.html file."""
-            index_path = static_dir / "index.html"
-            logger.info(f"📄 Serving index.html from: {index_path}")
-            return FileResponse(str(index_path))
-
-        # Serve static assets
-        @app.get("/dashboard.js", response_class=FileResponse)
-        async def serve_js() -> FileResponse:
-            """Serve the dashboard.js file."""
-            return FileResponse(str(static_dir / "dashboard.js"))
-
-        # Mount static files for any additional assets
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-    else:
-        logger.error(f"❌ Static directory not found: {static_dir}")
-
+    app.add_exception_handler(SessionRejected, session_rejected_handler)
+    app.router.routes.extend(console.app.router.routes)
     return app
 
 
 def create_test_app_with_musicbrainz() -> FastAPI:
-    """Create a test FastAPI app with MusicBrainz pipeline included."""
-
-    @asynccontextmanager
-    async def mb_lifespan(_app: FastAPI) -> AsyncGenerator[None]:
-        """Manage test application lifecycle with MusicBrainz."""
-        global mock_dashboard_app
-        mock_dashboard_app = MockDashboardApp(include_musicbrainz=True)
-        await mock_dashboard_app.startup()
-        yield
-        await mock_dashboard_app.shutdown()
-
-    app = FastAPI(
-        title="GrooveMap Dashboard",
-        version="0.1.0",
-        default_response_class=JSONResponse,
-        lifespan=mb_lifespan,
-    )
-
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
-    @app.get("/api/metrics")
-    async def get_metrics() -> dict[str, Any]:
-        """Get current system metrics."""
-        if mock_dashboard_app:
-            metrics = await mock_dashboard_app.collect_all_metrics()
-            return metrics
-        return {}
-
-    @app.get("/api/services")
-    async def get_services() -> dict[str, Any]:
-        """Get service statuses grouped by pipeline."""
-        if mock_dashboard_app and mock_dashboard_app.latest_metrics:
-            pipelines = mock_dashboard_app.latest_metrics.get("pipelines", {})
-            return {name: p["services"] for name, p in pipelines.items()}
-        return {}
-
-    @app.get("/api/queues")
-    async def get_queues() -> dict[str, Any]:
-        """Get queue information grouped by pipeline."""
-        if mock_dashboard_app and mock_dashboard_app.latest_metrics:
-            pipelines = mock_dashboard_app.latest_metrics.get("pipelines", {})
-            return {name: (p["queues"] if p.get("queues_available", True) else None) for name, p in pipelines.items()}
-        return {}
-
-    return app
+    """Create the console test app with the MusicBrainz pipeline deployed."""
+    return create_test_app(include_musicbrainz=True)

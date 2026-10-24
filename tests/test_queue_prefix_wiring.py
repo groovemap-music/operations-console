@@ -13,7 +13,7 @@ hence the source-level assertions below, which are the negative test that was mi
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -22,6 +22,10 @@ from fastapi.testclient import TestClient
 from dashboard.catalog_contract import DISCOGS_EXCHANGE_PREFIX, MUSICBRAINZ_EXCHANGE_PREFIX
 from dashboard.dashboard import PIPELINE_CONFIGS, DashboardApp
 from dashboard.queue_metrics import queue_name_regex
+
+
+if TYPE_CHECKING:
+    from tests.fake_catalog_api import FakeCatalogApi
 
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -62,6 +66,7 @@ class TestQueuePrefixesEndpoint:
         mock_dashboard_config: Any,
         dashboard_mock_neo4j_driver: Any,
         dashboard_mock_psycopg_connect: Any,
+        fake_catalog: FakeCatalogApi,
     ) -> None:
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_dashboard_config),
@@ -70,7 +75,11 @@ class TestQueuePrefixesEndpoint:
         ):
             from dashboard.dashboard import app
 
-            response = TestClient(app, raise_server_exceptions=False).get("/api/queue-prefixes")
+            client = TestClient(app, raise_server_exceptions=False)
+            anonymous = client.get("/api/queue-prefixes")
+            response = client.get("/api/queue-prefixes", headers={"Authorization": f"Bearer {fake_catalog.mint()}"})
+
+        assert anonymous.status_code == 401
 
         assert response.status_code == 200
         assert response.json() == {"discogs": DISCOGS_EXCHANGE_PREFIX, "musicbrainz": MUSICBRAINZ_EXCHANGE_PREFIX}
@@ -83,7 +92,7 @@ class TestAdminJsPrefixesAreOverridable:
     def test_admin_js_fetches_queue_prefixes(self) -> None:
         source = (REPO_ROOT / "dashboard" / "static" / "admin.js").read_text(encoding="utf-8")
         assert "/api/queue-prefixes" in source, "admin.js must fetch the live prefixes"
-        assert "loadQueuePrefixes()" in source, "the fetched prefixes must actually be applied before rendering"
+        assert "loadQueuePrefixes(this.token)" in source, "the fetched prefixes must actually be applied before rendering"
 
 
 class TestQueueRegexFollowsPrefixes:

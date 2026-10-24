@@ -5,7 +5,7 @@ The operations console is the human-facing observability and privileged-administ
 ```mermaid
 flowchart LR
     Operator[Operator browser] -->|HTTP and WebSocket :8003| Console[operations-console]
-    Console -->|authenticated admin proxy| Catalog[catalog-api]
+    Console -->|session validation and authenticated admin proxy| Catalog[catalog-api]
     Catalog -->|trigger| DiscogsIngestion[discogs-ingestion]
     Catalog -->|trigger| MusicBrainzIngestion[musicbrainz-ingestion]
     DiscogsIngestion -->|groovemap-discogs events| RabbitMQ[(RabbitMQ)]
@@ -34,7 +34,7 @@ This repository consumes promoted, immutable copies of the catalog API, catalog-
 
 | Promoted authority | Producer revision | Local artifact |
 | --- | --- | --- |
-| `catalog-api` operations-console routes | `bc684e90f5b834d3ffba6a5b244ce7d075c08292` | [`contracts/catalog-api/operations-console/v1/routes.json`](../contracts/catalog-api/operations-console/v1/routes.json) |
+| `catalog-api` operations-console routes | `fb559abccd4d1ecb85db0c49db1d8851871d23ed` | [`contracts/catalog-api/operations-console/v1/routes.json`](../contracts/catalog-api/operations-console/v1/routes.json) |
 | `discogs-ingestion` catalog events | `c1bf1b4ada3ee88e1e6768a0be7fa6ed1b921831` | [`contracts/catalog-events/v1/discogs/contract.json`](../contracts/catalog-events/v1/discogs/contract.json) |
 | `musicbrainz-ingestion` catalog events | `f0dae1037c809c6855863aebc35d0a7d21366482` | [`contracts/catalog-events/v1/musicbrainz/contract.json`](../contracts/catalog-events/v1/musicbrainz/contract.json) |
 | `database-schema` persistence compatibility | `9a50949b1810f3e61adae2f89b86acec2e20c4a3` | [`contracts/persistence/v1/compatibility.json`](../contracts/persistence/v1/compatibility.json) |
@@ -46,7 +46,22 @@ the only supported promotion path.
 
 ## Browser and API surfaces
 
-The public monitoring page receives live metrics over WebSocket and exposes read-only health endpoints. The administrator page sends bearer-authenticated requests through a constrained proxy whose allowed paths come from the promoted `catalog-api` contract. Queue names are derived from the promoted exchange prefixes; arbitrary queue and URL input is rejected.
+The console is one shell at `/`: a login form, then a live Overview followed by the admin tabs. Only `/health` and the shell's static assets are public. Every console data route requires a bearer that `catalog-api` confirms through the promoted `admin_session` operation; the console caches a confirmed session for at most 30 seconds, keyed by a digest of the token, and treats any other answer as no session. A bearer `catalog-api` just called invalid is answered from a 10-second record, and every check shares one pooled HTTP client. The live Overview reaches its WebSocket with a single-use, 30-second ticket from an authenticated `POST /api/ws-ticket`, which the console strips from the query string before logging or tracing; the socket re-validates its bearer with `catalog-api`, bypassing the cache, when it opens and every 30 seconds after, closing with 4401 for a dead session and 4503 when `catalog-api` cannot answer, which the browser retries on an exponential backoff. No interactive API documentation is served. Admin tabs send bearer-authenticated requests through a constrained proxy whose allowed paths come from the promoted `catalog-api` contract. Queue names are derived from the promoted exchange prefixes; arbitrary queue and URL input is rejected.
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Console as operations-console
+    participant API as catalog-api
+    Browser->>Console: Data request with bearer
+    Console->>API: GET /api/admin/auth/session (cached up to 30 s)
+    API-->>Console: 200 session, or 401/403
+    Console-->>Browser: Data, or 401 and a reason
+    Browser->>Console: POST /api/ws-ticket with bearer
+    Console-->>Browser: Single-use ticket, 30 s
+    Browser->>Console: WebSocket /ws?ticket=...
+    Console-->>Browser: Live metrics, or close 4401
+```
 
 ```mermaid
 sequenceDiagram

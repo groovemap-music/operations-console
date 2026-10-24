@@ -31,7 +31,7 @@ function loadAdminDashboardClass() {
 function setupAdminDOM() {
     document.body.textContent = '';
 
-    ['login-view', 'admin-view', 'toast'].forEach((id) => {
+    ['login-view', 'console-view', 'toast'].forEach((id) => {
         const el = document.createElement('div');
         el.id = id;
         document.body.appendChild(el);

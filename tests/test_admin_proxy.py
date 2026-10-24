@@ -10,7 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from dashboard.admin_proxy import _auth_headers, _validate_path_segment, _validated_json_body, configure, router
+from dashboard.admin_proxy import _auth_headers, _validate_path_segment, _validated_json_body, configure, public_router, router
 
 
 def _mock_httpx(method: str = "post", status: int = 200, content: bytes = b"{}") -> tuple[AsyncMock, AsyncMock]:
@@ -42,6 +42,7 @@ def _mock_httpx_error(method: str = "post") -> tuple[AsyncMock, AsyncMock]:
 @pytest.fixture
 def proxy_app() -> FastAPI:
     app = FastAPI()
+    app.include_router(public_router)
     app.include_router(router)
     configure("localhost", 8004)
     return app

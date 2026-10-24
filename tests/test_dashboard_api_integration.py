@@ -1,4 +1,4 @@
-"""Integration tests for dashboard API using FastAPI TestClient."""
+"""Integration tests for the console's production routes over fixed metrics, signed in as an admin."""
 
 import typing
 
@@ -8,14 +8,18 @@ from fastapi.testclient import TestClient
 from tests.dashboard_test_app import create_test_app
 
 
+if typing.TYPE_CHECKING:
+    from tests.fake_catalog_api import FakeCatalogApi
+
+
 class TestDashboardAPIIntegration:
     """Test dashboard API endpoints with mocked dependencies."""
 
     @pytest.fixture
-    def client(self) -> typing.Generator[TestClient]:
-        """Create test client with mocked app."""
+    def client(self, fake_catalog: FakeCatalogApi) -> typing.Generator[TestClient]:
+        """Create a signed-in test client over the mocked app."""
         app = create_test_app()
-        with TestClient(app) as test_client:
+        with TestClient(app, headers={"Authorization": f"Bearer {fake_catalog.mint()}"}) as test_client:
             # TestClient handles async internally, no need for explicit asyncio.run
             yield test_client
 
@@ -93,12 +97,12 @@ class TestDashboardPipelineDetection:
     """Test pipeline auto-detection with MusicBrainz enabled."""
 
     @pytest.fixture
-    def client_with_musicbrainz(self) -> typing.Generator[TestClient]:
-        """Create test client with MusicBrainz pipeline included."""
+    def client_with_musicbrainz(self, fake_catalog: FakeCatalogApi) -> typing.Generator[TestClient]:
+        """Create a signed-in test client with the MusicBrainz pipeline included."""
         from tests.dashboard_test_app import create_test_app_with_musicbrainz
 
         app = create_test_app_with_musicbrainz()
-        with TestClient(app) as test_client:
+        with TestClient(app, headers={"Authorization": f"Bearer {fake_catalog.mint()}"}) as test_client:
             yield test_client
 
     def test_both_pipelines_present(self, client_with_musicbrainz: TestClient) -> None:
