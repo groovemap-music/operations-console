@@ -10,6 +10,8 @@ class Dashboard {
 
         this.gaugeStats = {};
         this.currentMaps = {};
+        // Pipelines whose last broker scrape failed; their queue data is unavailable, not empty.
+        this.queuesUnavailable = {};
 
         this.initializeWebSocket();
         this.fetchInitialData();
@@ -156,6 +158,7 @@ class Dashboard {
         // Update each pipeline's services and queues
         for (const [pipelineName, pipelineData] of Object.entries(pipelines)) {
             this.updateServices(pipelineName, pipelineData.services || []);
+            this.setQueuesUnavailable(pipelineName, pipelineData.queues_available === false);
             this.updateQueues(pipelineName, pipelineData.queues || []);
         }
 
@@ -239,6 +242,13 @@ class Dashboard {
     }
 
     // ─── Queue metrics ────────────────────────────────────────────────────────
+
+    setQueuesUnavailable(pipelineName, unavailable) {
+        this.queuesUnavailable[pipelineName] = unavailable;
+        document.querySelectorAll(`[data-queues-unavailable="${pipelineName}"]`).forEach(el => {
+            el.classList.toggle('hidden', !unavailable);
+        });
+    }
 
     updateQueues(pipelineName, queues) {
         const PIPELINE_ENTITY_TYPES = {
@@ -392,6 +402,8 @@ class Dashboard {
         const graphName = consumers?.graph || 'graphinator';
         const tableName = consumers?.table || 'tableinator';
 
+        const unavailable = this.queuesUnavailable[pipelineName] === true;
+
         const updateGauge = (circleId, textId, rate, disabled) => {
             const circle = document.getElementById(circleId);
             const text   = document.getElementById(textId);
@@ -436,10 +448,10 @@ class Dashboard {
         types.forEach(type => {
             const gq = graphMap[type];
             const tq = tableMap[type];
-            updateGauge(`${pipelineName}-rate-circle-${graphName}-${type}-publish`, `${pipelineName}-rate-text-${graphName}-${type}-publish`, gq?.message_rate || 0, isDlq);
-            updateGauge(`${pipelineName}-rate-circle-${tableName}-${type}-publish`, `${pipelineName}-rate-text-${tableName}-${type}-publish`, tq?.message_rate || 0, isDlq);
-            updateGauge(`${pipelineName}-rate-circle-${graphName}-${type}-ack`,     `${pipelineName}-rate-text-${graphName}-${type}-ack`,     gq?.ack_rate     || 0, isDlq);
-            updateGauge(`${pipelineName}-rate-circle-${tableName}-${type}-ack`,     `${pipelineName}-rate-text-${tableName}-${type}-ack`,     tq?.ack_rate     || 0, isDlq);
+            updateGauge(`${pipelineName}-rate-circle-${graphName}-${type}-publish`, `${pipelineName}-rate-text-${graphName}-${type}-publish`, gq?.message_rate || 0, isDlq || unavailable);
+            updateGauge(`${pipelineName}-rate-circle-${tableName}-${type}-publish`, `${pipelineName}-rate-text-${tableName}-${type}-publish`, tq?.message_rate || 0, isDlq || unavailable);
+            updateGauge(`${pipelineName}-rate-circle-${graphName}-${type}-ack`,     `${pipelineName}-rate-text-${graphName}-${type}-ack`,     gq?.ack_rate     || 0, isDlq || unavailable);
+            updateGauge(`${pipelineName}-rate-circle-${tableName}-${type}-ack`,     `${pipelineName}-rate-text-${tableName}-${type}-ack`,     tq?.ack_rate     || 0, isDlq || unavailable);
         });
     }
 

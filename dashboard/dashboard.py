@@ -668,16 +668,19 @@ async def get_services() -> JSONResponse:
 
 @app.get("/api/queues")
 async def get_queues() -> JSONResponse:
-    """Get queue information grouped by pipeline."""
-    if not dashboard:
+    """Get queue information grouped by pipeline from the live loop's latest snapshot.
+
+    Serving the snapshot (rather than scraping per request) keeps the rate window at the loop's
+    two-second poll. A pipeline whose scrape failed is null: unavailable, not an empty pipeline.
+    """
+    if not dashboard or not dashboard.latest_metrics:
         return JSONResponse(content={})
     result: dict[str, list[dict[str, Any]] | None] = {}
-    for pipeline_name, config in PIPELINE_CONFIGS.items():
-        queues = await dashboard.get_queue_info(config["queue_prefix"])
-        if queues is None:
-            result[pipeline_name] = None  # scrape failed: unavailable, not an empty pipeline
-        elif queues:
-            result[pipeline_name] = [q.model_dump(mode="json") for q in queues]
+    for pipeline_name, pipeline in dashboard.latest_metrics.pipelines.items():
+        if not pipeline.queues_available:
+            result[pipeline_name] = None
+        elif pipeline.queues:
+            result[pipeline_name] = [q.model_dump(mode="json") for q in pipeline.queues]
     return JSONResponse(content=result)
 
 

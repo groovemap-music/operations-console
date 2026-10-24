@@ -255,7 +255,7 @@ def create_test_app() -> FastAPI:
         """Get queue information grouped by pipeline."""
         if mock_dashboard_app and mock_dashboard_app.latest_metrics:
             pipelines = mock_dashboard_app.latest_metrics.get("pipelines", {})
-            return {name: p["queues"] for name, p in pipelines.items()}
+            return {name: (p["queues"] if p.get("queues_available", True) else None) for name, p in pipelines.items()}
         return {}
 
     @app.get("/api/databases")
@@ -367,7 +367,7 @@ def create_test_app_with_musicbrainz() -> FastAPI:
         """Get queue information grouped by pipeline."""
         if mock_dashboard_app and mock_dashboard_app.latest_metrics:
             pipelines = mock_dashboard_app.latest_metrics.get("pipelines", {})
-            return {name: p["queues"] for name, p in pipelines.items()}
+            return {name: (p["queues"] if p.get("queues_available", True) else None) for name, p in pipelines.items()}
         return {}
 
     return app

@@ -10,7 +10,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from dashboard.dashboard import PIPELINE_CONFIGS, DashboardApp, DatabaseInfo, QueueInfo, ServiceStatus, SystemMetrics
+from dashboard.dashboard import PIPELINE_CONFIGS, DashboardApp, DatabaseInfo, PipelineMetrics, QueueInfo, ServiceStatus, SystemMetrics
 
 
 _RECORDED_METRICS = Path(__file__).parent / "fixtures" / "rabbitmq_4_4_metrics_detailed.txt"
@@ -1326,7 +1326,9 @@ class TestFastAPIEndpoints:
         ]
 
         mock_dashboard_instance = Mock()
-        mock_dashboard_instance.get_queue_info = AsyncMock(return_value=mock_queues)
+        mock_dashboard_instance.latest_metrics = SystemMetrics(
+            pipelines={"discogs": PipelineMetrics(services=[], queues=mock_queues)}, databases=[], timestamp=datetime.now(UTC)
+        )
 
         with patch("dashboard.dashboard.dashboard", mock_dashboard_instance):
             test_app = FastAPI(default_response_class=JSONResponse)

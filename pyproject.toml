@@ -24,13 +24,11 @@ license-files = [
     "THIRD_PARTY_NOTICES.md",
 ]
 dependencies = [
-    "aio-pika>=10.1.1",
     "fastapi>=0.143.2",
-    "groovemap-runtime[neo4j,otel,otel-http,postgres,rabbitmq]==0.1.0",
+    "groovemap-runtime[neo4j,otel,otel-http,postgres]==0.1.0",
     "httpx>=0.28.1",
     "neo4j-rust-ext>=6.4.1.0",
     "orjson>=3.13.0",
-    "pika>=1.4.4",
     "prometheus-client>=0.25",
     "psycopg[binary]>=3.3.5",
     "pydantic>=2.14.1",
@@ -54,6 +52,7 @@ dev = [
     "commitizen>=4.19.2",
     "cyclonedx-bom>=7.5.0",
     "mypy>=2.4.0",
+    "pika>=1.4.4",
     "pip-audit>=2.10.1",
     "pip-licenses>=5.5.5",
     "playwright>=1.64.0",
