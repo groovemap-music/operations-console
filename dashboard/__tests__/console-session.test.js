@@ -132,7 +132,7 @@ describe('admin.js owns the session', () => {
         expect(visible('tab-extractions')).toBe(false);
         const tabs = [...document.querySelectorAll('.tab-btn')].map((btn) => btn.dataset.tab);
         expect(tabs[0]).toBe('overview');
-        expect(tabs.slice(1)).toEqual(['extractions', 'dlq', 'users', 'storage', 'queue-trends', 'system-health', 'audit-log', 'extraction-analysis']);
+        expect(tabs.slice(1)).toEqual(['extractions', 'dlq', 'users', 'storage', 'queue-trends', 'system-health', 'audit-log', 'extraction-analysis', 'ledger']);
         expect(document.querySelector('.tab-btn.active').dataset.tab).toBe('overview');
         expect(document.getElementById('admin-email').textContent).toBe('ops@example.com');
         expect(events).toContainEqual({ name: 'console:authenticated', detail: { session: 1 } });

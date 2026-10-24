@@ -23,7 +23,17 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
-ADMIN_TABS = ["Extractions", "DLQ Management", "User Activity", "Storage", "Queue Trends", "System Health", "Audit Log", "Extraction Analysis"]
+ADMIN_TABS = [
+    "Extractions",
+    "DLQ Management",
+    "User Activity",
+    "Storage",
+    "Queue Trends",
+    "System Health",
+    "Audit Log",
+    "Extraction Analysis",
+    "Ledger",
+]
 
 # Opens a WebSocket from the page and resolves with "message" on the first frame or the close code.
 _OPEN_FEED = """(url) => new Promise((resolve) => {

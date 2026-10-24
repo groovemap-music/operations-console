@@ -438,6 +438,41 @@
         .tp-edge-idle { stroke-dasharray: 3 4; }
         .tp-edge-unknown { stroke-dasharray: 1 5; stroke-linecap: round; }
         .badge-active { background: rgba(168,255,242,0.1); color: var(--accent-mint); border: 1px solid rgba(168,255,242,0.2); }
+        /* Identity Ledger tab (design ADR 0016 section 7, concept D): a per-month density strip, a
+           paged works table, and one work's drill-down. Backfilled events are hatched in the strip and
+           labelled in the drill-down: they are dated from the MusicBrainz full export, not recorded. */
+        .ledger-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color); }
+        .ledger-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+        .ledger-controls label { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+        .ledger-controls input, .ledger-controls select { font-size: 12px; text-transform: none; letter-spacing: normal; font-weight: 400; max-width: 100%; }
+        .ledger-strip { position: relative; width: 100%; height: 180px; }
+        .ledger-table { overflow-x: auto; max-width: 100%; }
+        .ledger-table .ledger-id { overflow-wrap: normal; white-space: nowrap; }
+        .ledger-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px; font-size: 11px; color: var(--text-dim); }
+        .ledger-legend span { display: inline-flex; align-items: center; gap: 4px; }
+        .ledger-swatch { display: inline-block; width: 12px; height: 10px; border-radius: 2px; }
+        .ledger-swatch-backfill { background-image: repeating-linear-gradient(135deg, rgba(255,255,255,0.75) 0 2px, transparent 2px 4px); border: 1px solid; }
+        .ledger-id { font-family: 'JetBrains Mono', monospace; overflow-wrap: anywhere; }
+        .ledger-work-link { color: var(--accent-mint); background: none; border: none; padding: 0; cursor: pointer; text-align: left; font: inherit; }
+        .ledger-work-link:hover { text-decoration: underline; }
+        .ledger-work-link:focus-visible { outline: 2px solid var(--accent-mint); outline-offset: 2px; }
+        .ledger-badge { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; white-space: nowrap; background: var(--inner-bg); color: var(--text-mid); }
+        .ledger-backfill { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; color: var(--accent-yellow); border: 1px dashed var(--accent-yellow); }
+        .ledger-recorded { font-size: 10px; color: var(--text-muted); }
+        .ledger-edition { border: 1px solid var(--inner-border); border-radius: 8px; padding: 12px; background: var(--bg-deep); min-width: 0; }
+        .ledger-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; font-size: 12px; margin: 8px 0; }
+        .ledger-fields dt { color: var(--text-muted); }
+        .ledger-fields dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+        .ledger-events { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; }
+        .ledger-events li { display: grid; grid-template-columns: 9.5rem 8rem minmax(0, 1fr) auto; gap: 4px 10px; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--row-border); }
+        .ledger-events li > .ledger-badge { justify-self: start; }
+        .ledger-events .ledger-detail { overflow-wrap: anywhere; color: var(--text-mid); }
+        @media (max-width: 640px) {
+            .ledger-fields { grid-template-columns: minmax(0, 1fr); }
+            .ledger-fields dd { margin-bottom: 4px; }
+            .ledger-events li { grid-template-columns: minmax(0, 1fr) auto; }
+            .ledger-events .ledger-detail { grid-column: 1 / -1; }
+        }
     </style>
 </head>
 <body class="p-4 sm:p-8" style="background:var(--bg-void);">
@@ -560,6 +595,9 @@
             </button>
             <button class="tab-btn" data-tab="extraction-analysis" id="tab-btn-extraction-analysis">
                 <span class="material-symbols-outlined text-sm">analytics</span> Extraction Analysis
+            </button>
+            <button class="tab-btn" data-tab="ledger" id="tab-btn-ledger">
+                <span class="material-symbols-outlined text-sm">account_tree</span> Ledger
             </button>
         </nav>
 
@@ -1447,6 +1485,134 @@
             </div><!-- /ea-view-prompt -->
 
         </div><!-- /tab-extraction-analysis -->
+
+        <!-- ============================================================
+             TAB: LEDGER (Identity Ledger, design ADR 0016 section 7)
+             ============================================================ -->
+        <div id="tab-ledger" class="space-y-6" style="display:none">
+
+            <!-- Events per UTC month, by type; backfilled segments are hatched -->
+            <section class="dashboard-card p-6" aria-labelledby="ledger-density-title">
+                <div class="ledger-head">
+                    <h3 id="ledger-density-title" class="text-sm font-semibold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-sm t-dim">calendar_view_month</span> Identity events per month
+                    </h3>
+                    <div class="ledger-controls">
+                        <label for="ledger-kind">Kind
+                            <select id="ledger-kind" class="border b-theme rounded px-2 py-1">
+                                <option value="release">Releases</option>
+                                <option value="master">Masters</option>
+                                <option value="artist">Artists</option>
+                                <option value="label">Labels</option>
+                            </select>
+                        </label>
+                        <span id="ledger-density-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
+                        <span id="ledger-density-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                            <span class="material-symbols-outlined text-xs">warning</span>
+                            <span id="ledger-density-error-msg"></span>
+                        </span>
+                    </div>
+                </div>
+                <div class="ledger-strip">
+                    <canvas id="ledger-density-chart" role="img" aria-label="Identity events per UTC month, by event type">Identity events per month</canvas>
+                </div>
+                <div id="ledger-density-legend" class="ledger-legend"></div>
+                <p id="ledger-density-backfill" class="text-xs t-dim mt-2" style="display:none"></p>
+                <p id="ledger-density-empty" class="text-xs t-muted mt-2" style="display:none">No identity events are recorded for this kind.</p>
+            </section>
+
+            <!-- Works whose editions carry identity events, most recent event first -->
+            <section class="dashboard-card p-6" aria-labelledby="ledger-works-title">
+                <div class="ledger-head">
+                    <h3 id="ledger-works-title" class="text-sm font-semibold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-sm t-dim">account_tree</span> Works with identity events
+                    </h3>
+                    <div class="ledger-controls">
+                        <label for="ledger-event-filter">Event
+                            <select id="ledger-event-filter" class="border b-theme rounded px-2 py-1">
+                                <option value="">All events</option>
+                                <option value="linked_at_ingest">Linked at ingest</option>
+                                <option value="reattached">Re-attached</option>
+                                <option value="promoted">Promoted</option>
+                                <option value="reverted">Reverted</option>
+                                <option value="evidence_attached">Evidence attached</option>
+                                <option value="alias_closed">Alias closed</option>
+                                <option value="link_added">Link added</option>
+                                <option value="link_changed">Link changed</option>
+                                <option value="link_removed">Link removed</option>
+                            </select>
+                        </label>
+                        <label for="ledger-since">Since (UTC)
+                            <input type="date" id="ledger-since" class="border b-theme rounded px-2 py-1">
+                        </label>
+                        <label for="ledger-until">Until (UTC)
+                            <input type="date" id="ledger-until" class="border b-theme rounded px-2 py-1">
+                        </label>
+                        <span id="ledger-works-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
+                        <span id="ledger-works-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                            <span class="material-symbols-outlined text-xs">warning</span>
+                            <span id="ledger-works-error-msg"></span>
+                        </span>
+                        <button id="ledger-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors flex items-center gap-1">
+                            <span class="material-symbols-outlined text-sm">refresh</span> Refresh
+                        </button>
+                    </div>
+                </div>
+                <div class="ledger-table overflow-x-auto">
+                    <table class="w-full text-xs">
+                        <thead>
+                            <tr class="border-b b-theme">
+                                <th class="text-left py-2 px-3 t-muted font-medium">Work</th>
+                                <th class="text-left py-2 px-3 t-muted font-medium">Providers</th>
+                                <th class="text-right py-2 px-3 t-muted font-medium">Editions</th>
+                                <th class="text-right py-2 px-3 t-muted font-medium">Evented</th>
+                                <th class="text-right py-2 px-3 t-muted font-medium">Repaired</th>
+                                <th class="text-right py-2 px-3 t-muted font-medium">Disagreements</th>
+                                <th class="text-left py-2 px-3 t-muted font-medium">First event</th>
+                                <th class="text-left py-2 px-3 t-muted font-medium">Last event</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ledger-works-body">
+                            <tr><td colspan="8" class="text-center py-8 t-muted">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div id="ledger-pagination" class="flex flex-wrap items-center justify-between gap-2 mt-4 pt-4 border-t b-theme" style="display:none">
+                    <span id="ledger-page-info" class="text-xs t-muted"></span>
+                    <div class="flex gap-2">
+                        <button id="ledger-prev-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded" disabled>Previous</button>
+                        <button id="ledger-next-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded" disabled>Next</button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- One work at a chosen transaction time: editions, states, work parents, former items, events -->
+            <section id="ledger-work" class="dashboard-card p-6" aria-labelledby="ledger-work-title" style="display:none">
+                <div class="ledger-head">
+                    <h3 id="ledger-work-title" class="text-sm font-semibold flex flex-wrap items-center gap-2 min-w-0">
+                        <span class="material-symbols-outlined text-sm t-dim">lan</span> Work <span id="ledger-work-id" class="ledger-id t-mid"></span>
+                    </h3>
+                    <div class="ledger-controls">
+                        <label for="ledger-as-of">As of (UTC)
+                            <input type="datetime-local" id="ledger-as-of" step="1" class="border b-theme rounded px-2 py-1">
+                        </label>
+                        <button id="ledger-as-of-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded">Read</button>
+                        <button id="ledger-now-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded">Now</button>
+                        <span id="ledger-work-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
+                        <span id="ledger-work-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                            <span class="material-symbols-outlined text-xs">warning</span>
+                            <span id="ledger-work-error-msg"></span>
+                        </span>
+                        <button id="ledger-work-close" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors flex items-center gap-1" aria-label="Close the work">
+                            <span class="material-symbols-outlined text-sm">close</span>
+                        </button>
+                    </div>
+                </div>
+                <p id="ledger-work-status" class="text-xs t-dim mb-3"></p>
+                <div id="ledger-work-summary" class="mb-4"></div>
+                <div id="ledger-editions" class="space-y-4"></div>
+            </section>
+        </div><!-- /tab-ledger -->
 
         <!-- ============================================================
              RECORD DETAIL MODAL
