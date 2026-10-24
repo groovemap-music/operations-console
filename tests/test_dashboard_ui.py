@@ -6,13 +6,16 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
+from tests.e2e_console import CONSOLE_URL, DATA_ROUTES, sign_in
+
 
 @pytest.mark.e2e
 @pytest.mark.usefixtures("test_server")
 class TestDashboardUI:
-    """Test the dashboard user interface.
+    """Test the console's live Overview, signed in as an admin.
 
-    The test server is automatically started by the test_server fixture.
+    The test server is automatically started by the test_server fixture, together with the fake
+    catalog-api the console validates sessions against.
 
     To run these tests:
     uv run pytest tests/dashboard/test_dashboard_ui.py -m e2e --browser chromium
@@ -20,9 +23,7 @@ class TestDashboardUI:
 
     def test_dashboard_loads(self, page: Page) -> None:
         """Test that the dashboard page loads successfully."""
-        dashboard_url = "http://localhost:8003"
-
-        page.goto(dashboard_url, wait_until="domcontentloaded", timeout=10000)
+        sign_in(page)
 
         # Page title is set in <title> tag
         expect(page).to_have_title("GrooveMap Operations Console")
@@ -33,8 +34,7 @@ class TestDashboardUI:
 
     def test_service_cards_display(self, page: Page) -> None:
         """Test that service cards are displayed."""
-        dashboard_url = "http://localhost:8003"
-        page.goto(dashboard_url, wait_until="domcontentloaded")
+        sign_in(page)
 
         # Each Discogs service has a dedicated card element with id="service-<name>"
         service_ids = ["extractor-discogs", "graphinator", "tableinator"]
@@ -44,8 +44,7 @@ class TestDashboardUI:
 
     def test_queue_section_display(self, page: Page) -> None:
         """Test that queue metrics sections are displayed."""
-        dashboard_url = "http://localhost:8003"
-        page.goto(dashboard_url, wait_until="domcontentloaded")
+        sign_in(page)
 
         # Bar chart section heading (scoped to Discogs pipeline to avoid strict mode violation)
         queue_heading = page.locator("#pipeline-discogs h2", has_text="Queue Size Metrics")
@@ -64,7 +63,7 @@ class TestDashboardUI:
 
     def test_unavailable_queue_metrics_are_explicit_and_recover(self, page: Page) -> None:
         """A failed broker scrape shows "Queue metrics unavailable" and N/A dials, then clears."""
-        page.goto("http://localhost:8003", wait_until="domcontentloaded")
+        sign_in(page)
         expect(page.locator("#discogs-rate-circle-graphinator-masters-publish")).to_be_visible(timeout=10000)
         # Stop the live feed overwriting the payloads this test injects.
         page.evaluate("() => { window.dashboard.ws.onmessage = null; }")
@@ -98,8 +97,7 @@ class TestDashboardUI:
 
     def test_database_cards_display(self, page: Page) -> None:
         """Test that database cards are displayed."""
-        dashboard_url = "http://localhost:8003"
-        page.goto(dashboard_url, wait_until="domcontentloaded")
+        sign_in(page)
 
         # Each database has a dedicated card element
         neo4j_card = page.locator("#db-neo4j")
@@ -115,8 +113,7 @@ class TestDashboardUI:
 
     def test_websocket_connection(self, page: Page) -> None:
         """Test that WebSocket connection is established."""
-        dashboard_url = "http://localhost:8003"
-        page.goto(dashboard_url, wait_until="domcontentloaded")
+        sign_in(page)
 
         # The connection-status widget lives in the event-log header
         connection_status = page.locator(".connection-status")
@@ -132,8 +129,7 @@ class TestDashboardUI:
 
     def test_activity_log_display(self, page: Page) -> None:
         """Test that the activity log is displayed."""
-        dashboard_url = "http://localhost:8003"
-        page.goto(dashboard_url, wait_until="domcontentloaded")
+        sign_in(page)
 
         # Event log panel is present
         activity_log = page.locator("#activityLog")
@@ -145,8 +141,7 @@ class TestDashboardUI:
 
     def test_responsive_design(self, page: Page) -> None:
         """Test that the dashboard is responsive."""
-        dashboard_url = "http://localhost:8003"
-        page.goto(dashboard_url, wait_until="domcontentloaded")
+        sign_in(page)
 
         # Desktop viewport
         page.set_viewport_size({"width": 1440, "height": 900})
@@ -160,11 +155,16 @@ class TestDashboardUI:
         expect(page.locator("#service-extractor-discogs")).to_be_visible(timeout=10000)
 
     def test_api_endpoints(self, page: Page) -> None:
-        """Test that API endpoints are accessible."""
-        dashboard_url = "http://localhost:8003"
+        """The data routes answer the signed-in session's bearer, and nothing without it."""
+        sign_in(page)
+        token = page.evaluate("() => localStorage.getItem('admin_token')")
+        headers = {"Authorization": f"Bearer {token}"}
+
+        for path in DATA_ROUTES:
+            assert page.request.get(f"{CONSOLE_URL}{path}").status == 401, path
 
         # Test metrics endpoint (pipeline-grouped structure)
-        response = page.request.get(f"{dashboard_url}/api/metrics")
+        response = page.request.get(f"{CONSOLE_URL}/api/metrics", headers=headers)
         assert response.ok
         data = response.json()
         assert "pipelines" in data
@@ -172,19 +172,19 @@ class TestDashboardUI:
         assert "timestamp" in data
 
         # Test services endpoint (grouped by pipeline)
-        response = page.request.get(f"{dashboard_url}/api/services")
+        response = page.request.get(f"{CONSOLE_URL}/api/services", headers=headers)
         assert response.ok
         services = response.json()
         assert isinstance(services, dict)
 
         # Test queues endpoint (grouped by pipeline)
-        response = page.request.get(f"{dashboard_url}/api/queues")
+        response = page.request.get(f"{CONSOLE_URL}/api/queues", headers=headers)
         assert response.ok
         queues = response.json()
         assert isinstance(queues, dict)
 
         # Test databases endpoint (flat list, unchanged)
-        response = page.request.get(f"{dashboard_url}/api/databases")
+        response = page.request.get(f"{CONSOLE_URL}/api/databases", headers=headers)
         assert response.ok
         databases = response.json()
         assert isinstance(databases, list)

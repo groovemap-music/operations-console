@@ -41,10 +41,11 @@ let DLQ_ITEMS = buildDlqItems(DLQ_SOURCE_PREFIXES);
 let DLQ_NAMES = DLQ_ITEMS.map(item => item.queue);
 
 // Replace the compiled-in defaults with the server's env-derived prefixes. Best effort:
-// on any failure the defaults stand, which is exactly the pre-existing behavior.
-async function loadQueuePrefixes() {
+// on any failure the defaults stand, which is exactly the pre-existing behavior. The route
+// is session-gated like every console data route, so it needs the bearer.
+async function loadQueuePrefixes(token) {
     try {
-        const response = await fetch('/api/queue-prefixes');
+        const response = await fetch('/api/queue-prefixes', { headers: { Authorization: `Bearer ${token}` } });
         if (!response.ok) return;
         const prefixes = await response.json();
         if (!prefixes || !prefixes.discogs || !prefixes.musicbrainz) return;
@@ -54,6 +55,26 @@ async function loadQueuePrefixes() {
         // Keep the defaults — a missing endpoint must not break the admin panel.
     }
 }
+
+// The console shell re-validates its session this often, and once more just after the
+// session's own expiry, so an expired, revoked, or unverifiable session returns to the login
+// form instead of leaving a stale console on screen.
+const SESSION_CHECK_INTERVAL_MS = 15000;
+
+// Why the login form is showing, keyed by the `reason` the console's session gate returns
+// (plus the two outcomes only the browser can observe).
+const SESSION_END_MESSAGES = {
+    'signed-out': 'You signed out.',
+    missing: 'Your session expired or was revoked. Sign in again.',
+    invalid: 'Your session expired or was revoked. Sign in again.',
+    unavailable: 'catalog-api is unreachable, so your session could not be verified. Sign in again once it is back.',
+    'console-unreachable': 'The operations console could not be reached. Sign in again once it is back.',
+};
+
+// Reasons after which the stored bearer is worthless and is discarded. After an outage the
+// bearer may still be live, so it is kept and a reload resumes the session once the
+// dependency is back.
+const SESSION_DISCARD_REASONS = new Set(['signed-out', 'missing', 'invalid']);
 
 const QUEUE_CHART_COLORS = [
     '#818cf8', '#34d399', '#f59e0b', '#f87171',
@@ -83,7 +104,10 @@ function _emptyRow(colSpan, message) {
 class AdminDashboardState {
     constructor() {
         this.token = localStorage.getItem('admin_token');
-        this.activeTab = 'extractions';
+        this.activeTab = 'overview';
+        this.signedIn = false;
+        this.sessionWatch = null;
+        this.sessionExpiryTimer = null;
         this.queueDepthChart = null;
         this.responseTimeChart = null;
         this.auditLogPage = 1;
@@ -120,7 +144,7 @@ class AdminInteractions {
         this.refreshSubscription = new RefreshSubscription();
         this.bindEvents();
         if (this.token) {
-            this.showPanel();
+            this.resumeSession();
         } else {
             this.showLogin();
         }
@@ -158,6 +182,9 @@ class AdminInteractions {
     // ─── Event binding ───────────────────────────────────────────────────────
 
     bindEvents() {
+        // The live Overview asks for a session check when its ticket or socket is refused.
+        document.addEventListener('console:session-check', () => this.onSessionCheckRequested());
+
         const loginBtn = document.getElementById('login-btn');
         if (loginBtn) {
             loginBtn.addEventListener('click', () => this.login());
@@ -329,7 +356,7 @@ class AdminInteractions {
             btn.classList.toggle('active', btn.dataset.tab === tabName);
         });
 
-        const panels = ['extractions', 'dlq', 'users', 'storage', 'queue-trends', 'system-health', 'audit-log', 'extraction-analysis'];
+        const panels = ['overview', 'extractions', 'dlq', 'users', 'storage', 'queue-trends', 'system-health', 'audit-log', 'extraction-analysis'];
         panels.forEach(name => {
             const el = document.getElementById(`tab-${name}`);
             if (el) el.style.display = name === tabName ? 'block' : 'none';
@@ -353,27 +380,123 @@ class AdminInteractions {
 
     // ─── View switching ──────────────────────────────────────────────────────
 
-    showLogin() {
-        document.getElementById('admin-view').style.display = 'none';
-        document.getElementById('login-view').style.display = 'flex';
+    showLogin(reason = null) {
+        const wasSignedIn = this.signedIn;
+        this.signedIn = false;
+        this.stopSessionWatch();
         this.stopAutoRefresh();
+        const consoleView = document.getElementById('console-view');
+        const loginView = document.getElementById('login-view');
+        if (consoleView) consoleView.style.display = 'none';
+        if (loginView) loginView.style.display = 'flex';
+
+        const reasonEl = document.getElementById('login-reason');
+        if (reasonEl) {
+            const message = reason ? (SESSION_END_MESSAGES[reason] || SESSION_END_MESSAGES.invalid) : '';
+            reasonEl.textContent = message;
+            reasonEl.dataset.reason = reason || '';
+            reasonEl.style.display = message ? 'block' : 'none';
+        }
+        if (wasSignedIn) {
+            document.dispatchEvent(new CustomEvent('console:signed-out'));
+        }
     }
 
-    showPanel() {
+    showPanel(session) {
+        this.signedIn = true;
         document.getElementById('login-view').style.display = 'none';
-        document.getElementById('admin-view').style.display = 'block';
+        document.getElementById('console-view').style.display = 'block';
+        this.switchTab('overview');
         // Refresh the prefixes first so the rendered DLQ names match the backend's
         // env-derived _VALID_DLQ_NAMES; re-render once they land.
-        loadQueuePrefixes().then(() => this.renderDlqList());
+        loadQueuePrefixes(this.token).then(() => this.renderDlqList());
         this.renderDlqList();
         this.loadExtractions();
         this.startAutoRefresh();
+        this.startSessionWatch(session);
 
-        const email = localStorage.getItem('admin_email');
+        const email = session?.email || localStorage.getItem('admin_email');
         const emailEl = document.getElementById('admin-email');
         if (emailEl && email) {
             emailEl.textContent = email;
         }
+        document.dispatchEvent(new CustomEvent('console:authenticated', { detail: { token: this.token } }));
+    }
+
+    // ─── Session ─────────────────────────────────────────────────────────────
+
+    // Ask the console whether the stored bearer is still a live admin session. The console
+    // answers from catalog-api (cached for at most 30 seconds); a 401 means expired or
+    // revoked, a 503 means catalog-api could not answer.
+    async checkSession() {
+        if (!this.token) return { ok: false, reason: 'missing' };
+        try {
+            const response = await fetch('/api/session', {
+                headers: { Authorization: `Bearer ${this.token}` },
+                cache: 'no-store',
+            });
+            if (response.ok) return { ok: true, session: await response.json() };
+            const body = await response.json().catch(() => ({}));
+            return { ok: false, reason: body.reason || (response.status === 503 ? 'unavailable' : 'invalid') };
+        } catch {
+            return { ok: false, reason: 'console-unreachable' };
+        }
+    }
+
+    async resumeSession() {
+        const token = this.token;
+        const result = await this.checkSession();
+        if (token !== this.token) return;
+        if (result.ok) {
+            this.showPanel(result.session);
+        } else {
+            this.endSession(result.reason);
+        }
+    }
+
+    async verifySession() {
+        const token = this.token;
+        const result = await this.checkSession();
+        if (token !== this.token || !this.signedIn) return result;
+        if (!result.ok) this.endSession(result.reason);
+        return result;
+    }
+
+    async onSessionCheckRequested() {
+        if (!this.signedIn) return;
+        const result = await this.verifySession();
+        if (result.ok && this.signedIn) {
+            document.dispatchEvent(new CustomEvent('console:authenticated', { detail: { token: this.token } }));
+        }
+    }
+
+    endSession(reason) {
+        if (SESSION_DISCARD_REASONS.has(reason)) {
+            this.token = null;
+            localStorage.removeItem('admin_token');
+            localStorage.removeItem('admin_email');
+        }
+        this.showLogin(reason);
+    }
+
+    startSessionWatch(session) {
+        this.stopSessionWatch();
+        this.sessionWatch = setInterval(() => this.verifySession(), SESSION_CHECK_INTERVAL_MS);
+        const expiresAt = Date.parse(session?.expires_at ?? '');
+        if (Number.isFinite(expiresAt)) {
+            // One second past expiry, so the check lands after catalog-api stops honouring it.
+            const delay = Math.max(expiresAt - Date.now(), 0) + 1000;
+            if (delay <= 2147483647) {
+                this.sessionExpiryTimer = setTimeout(() => this.verifySession(), delay);
+            }
+        }
+    }
+
+    stopSessionWatch() {
+        if (this.sessionWatch) clearInterval(this.sessionWatch);
+        if (this.sessionExpiryTimer) clearTimeout(this.sessionExpiryTimer);
+        this.sessionWatch = null;
+        this.sessionExpiryTimer = null;
     }
 
     // ─── Auth ────────────────────────────────────────────────────────────────
@@ -405,7 +528,8 @@ class AdminInteractions {
                 this.token = data.access_token;
                 localStorage.setItem('admin_token', data.access_token);
                 localStorage.setItem('admin_email', email);
-                this.showPanel();
+                document.getElementById('login-password').value = '';
+                await this.resumeSession();
             } else {
                 const err = await response.json().catch(() => ({}));
                 errorEl.textContent = err.detail || 'Invalid credentials';
@@ -425,10 +549,7 @@ class AdminInteractions {
         } catch {
             // Ignore errors on logout
         }
-        this.token = null;
-        localStorage.removeItem('admin_token');
-        localStorage.removeItem('admin_email');
-        this.showLogin();
+        this.endSession('signed-out');
     }
 
     async authFetch(url, options = {}) {
@@ -438,9 +559,7 @@ class AdminInteractions {
         }
         const response = await fetch(url, { ...options, headers });
         if (response.status === 401) {
-            this.token = null;
-            localStorage.removeItem('admin_token');
-            this.showLogin();
+            this.endSession('invalid');
             throw new Error('Session expired');
         }
         return response;
@@ -730,7 +849,7 @@ class AdminServices extends AdminQueues {
     }
 
     _renderNeo4j(neo4j) {
-        const badge = document.getElementById('neo4j-status-badge');
+        const badge = document.getElementById('storage-neo4j-status-badge');
         if (badge) {
             const ok = neo4j.status === 'ok';
             badge.className = `text-[10px] px-2 py-0.5 rounded uppercase font-bold ${ok ? 'badge-ok' : 'badge-error'}`;

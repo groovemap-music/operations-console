@@ -1,7 +1,18 @@
 // Dashboard JavaScript
+
+// The console closes the live WebSocket with this code when its ticket was missing, reused,
+// or expired, or when the session it was opened with stopped being valid.
+const WS_CLOSE_UNAUTHENTICATED = 4401;
+
+// The Overview's live view. It reads nothing until admin.js confirms a session and announces
+// it with `console:authenticated`; `console:signed-out` stops it again. Every data request and
+// every WebSocket ticket carries the session's bearer.
 class Dashboard {
     constructor() {
         this.ws = null;
+        this.token = null;
+        this.active = false;
+        this.connecting = false;
         this.reconnectInterval = null;
         this.activityLog = [];
         this.maxLogEntries = 50;
@@ -13,8 +24,8 @@ class Dashboard {
         // Pipelines whose last broker scrape failed; their queue data is unavailable, not empty.
         this.queuesUnavailable = {};
 
-        this.initializeWebSocket();
-        this.fetchInitialData();
+        document.addEventListener('console:authenticated', (event) => this.start(event.detail?.token));
+        document.addEventListener('console:signed-out', () => this.stop());
 
         const dlqToggle = document.getElementById('dlq-toggle');
         if (dlqToggle) {
@@ -22,22 +33,90 @@ class Dashboard {
         }
     }
 
+    // ─── Session lifecycle ────────────────────────────────────────────────────
+
+    start(token) {
+        if (!token) return;
+        const resumed = this.active && this.token === token;
+        this.token = token;
+        this.active = true;
+        if (!resumed) this.fetchInitialData();
+        this.initializeWebSocket();
+    }
+
+    stop() {
+        this.active = false;
+        this.token = null;
+        if (this.reconnectInterval) {
+            clearInterval(this.reconnectInterval);
+            this.reconnectInterval = null;
+        }
+        const socket = this.ws;
+        this.ws = null;
+        if (socket) {
+            try { socket.close(1000); } catch (_) { /* ignore */ }
+        }
+        this.updateConnectionStatus('disconnected');
+    }
+
+    // Hand the decision back to admin.js, which owns the session: it either confirms the
+    // session (and announces it again, which reconnects) or returns to the login form.
+    requestSessionCheck() {
+        document.dispatchEvent(new CustomEvent('console:session-check'));
+    }
+
+    _authHeaders() {
+        return { Authorization: `Bearer ${this.token}` };
+    }
+
     // ─── WebSocket ────────────────────────────────────────────────────────────
 
-    initializeWebSocket() {
+    // Browsers cannot send Authorization on a WebSocket, so each connection first trades the
+    // bearer for a single-use ticket (valid 30 s) and presents it as `/ws?ticket=...`.
+    async _fetchTicket() {
+        const response = await fetch('/api/ws-ticket', { method: 'POST', headers: this._authHeaders(), cache: 'no-store' });
+        if (response.status === 401 || response.status === 503) {
+            this.requestSessionCheck();
+            return null;
+        }
+        if (!response.ok) throw new Error(`ticket request failed: ${response.status}`);
+        const body = await response.json();
+        return body.ticket || null;
+    }
+
+    async initializeWebSocket() {
+        if (!this.active || this.connecting) return;
         // Skip if already connecting or connected — prevents reconnect churn
         if (this.ws && (this.ws.readyState === WebSocket.CONNECTING || this.ws.readyState === WebSocket.OPEN)) {
             return;
         }
+        this.connecting = true;
+        let ticket;
+        try {
+            ticket = await this._fetchTicket();
+        } catch {
+            ticket = undefined;
+        } finally {
+            this.connecting = false;
+        }
+        if (!this.active) return;
+        if (ticket === null) return;  // admin.js is re-checking the session
+        if (ticket === undefined) {
+            this.updateConnectionStatus('disconnected');
+            this.reconnect();
+            return;
+        }
+
         // Close any existing WebSocket to prevent connection leaks on reconnect
         if (this.ws) {
             try { this.ws.close(); } catch (_) { /* ignore */ }
         }
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${protocol}//${window.location.host}/ws`;
-        this.ws = new WebSocket(wsUrl);
+        const wsUrl = `${protocol}//${window.location.host}/ws?ticket=${encodeURIComponent(ticket)}`;
+        const socket = new WebSocket(wsUrl);
+        this.ws = socket;
 
-        this.ws.onopen = () => {
+        socket.onopen = () => {
             this.updateConnectionStatus('connected');
             this.addLogEntry('Connected to dashboard', 'info');
             if (this.reconnectInterval) {
@@ -46,7 +125,7 @@ class Dashboard {
             }
         };
 
-        this.ws.onmessage = (event) => {
+        socket.onmessage = (event) => {
             try {
                 const message = JSON.parse(event.data);
                 if (message.type === 'metrics_update') {
@@ -57,12 +136,21 @@ class Dashboard {
             }
         };
 
-        this.ws.onerror = () => {
-            this.updateConnectionStatus('disconnected');
+        socket.onerror = () => {
+            if (this.ws === socket) this.updateConnectionStatus('disconnected');
         };
 
-        this.ws.onclose = () => {
+        socket.onclose = (event) => {
+            // A socket that was replaced or stopped must not trigger a reconnect.
+            if (this.ws !== socket) return;
             this.updateConnectionStatus('disconnected');
+            if (!this.active) return;
+            if (event.code === WS_CLOSE_UNAUTHENTICATED) {
+                this.addLogEntry('Live feed closed: the session is no longer valid', 'warning');
+                this.ws = null;
+                this.requestSessionCheck();
+                return;
+            }
             this.addLogEntry('Disconnected from dashboard', 'warning');
             this.reconnect();
         };
@@ -132,8 +220,10 @@ class Dashboard {
 
     async fetchInitialData() {
         try {
-            const response = await fetch('/api/metrics');
-            if (response.ok) {
+            const response = await fetch('/api/metrics', { headers: this._authHeaders() });
+            if (response.status === 401 || response.status === 503) {
+                this.requestSessionCheck();
+            } else if (response.ok) {
                 const data = await response.json();
                 this.updateDashboard(data);
             }

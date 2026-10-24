@@ -8,7 +8,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 const source = readFileSync(resolve(here, '../static/admin.js'), 'utf8')
     .replace(/document\.addEventListener\(\s*['"]DOMContentLoaded['"][\s\S]*$/, '');
-const html = readFileSync(resolve(here, '../static/admin.html'), 'utf8');
+const html = readFileSync(resolve(here, '../static/index.html'), 'utf8');
 
 describe('Valkey storage panel', () => {
     let app;

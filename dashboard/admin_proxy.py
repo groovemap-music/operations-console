@@ -19,6 +19,7 @@ from fastapi import APIRouter, Query, Request, Response
 from starlette.responses import JSONResponse
 
 from dashboard import catalog_admin_contract
+from dashboard.session_auth import gate as session_gate
 
 
 logger = structlog.get_logger(__name__)
@@ -174,8 +175,16 @@ async def proxy_login(request: Request) -> Response:
 
 @router.post("/admin/api/logout")
 async def proxy_logout(request: Request) -> Response:
-    """Proxy logout requests to the API service."""
-    return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_LOGOUT_PATH)
+    """Proxy logout requests to the API service.
+
+    The console's cached session for this bearer is dropped whatever catalog-api answers, so the
+    next gated request re-validates instead of riding the cache for up to 30 seconds after a
+    revocation.
+    """
+    try:
+        return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_LOGOUT_PATH)
+    finally:
+        session_gate.forget(request.headers.get("authorization"))
 
 
 @router.get("/admin/api/extractions")

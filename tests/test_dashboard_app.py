@@ -1,7 +1,7 @@
 """Unit tests for the DashboardApp class."""
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
@@ -1374,19 +1374,14 @@ class TestFastAPIEndpoints:
                 assert len(data) == 1
                 assert data[0]["name"] == "PostgreSQL"
 
-    def test_serve_admin_file_not_found(self) -> None:
-        """Test /admin endpoint returns 404 when admin.html does not exist."""
-        from fastapi import FastAPI
 
-        from dashboard.dashboard import serve_admin
+def _ws_ticket() -> str:
+    """Issue a live-session WebSocket ticket straight from the gate's ticket store."""
+    from dashboard.session_auth import AdminSession, gate
 
-        test_app = FastAPI()
-        test_app.get("/admin")(serve_admin)
-
-        with patch("dashboard.dashboard.Path.read_text", side_effect=FileNotFoundError), TestClient(test_app) as client:
-            response = client.get("/admin")
-            assert response.status_code == 404
-            assert "Admin page not found" in response.text
+    session = AdminSession(admin_id="admin-1", email="admin@example.com", expires_at=datetime.now(UTC) + timedelta(hours=1))
+    ticket, _ = gate.tickets.issue(session, "bearer")
+    return ticket
 
 
 class TestWebSocketEndpoint:
@@ -1395,9 +1390,7 @@ class TestWebSocketEndpoint:
     @pytest.mark.asyncio
     async def test_websocket_connection_and_disconnect(self) -> None:
         """Test WebSocket connection lifecycle."""
-        from fastapi import FastAPI
-
-        from dashboard.dashboard import websocket_endpoint
+        from dashboard.dashboard import ConsoleApp, websocket_endpoint
 
         # Mock dashboard instance
         mock_dashboard_instance = Mock()
@@ -1410,10 +1403,10 @@ class TestWebSocketEndpoint:
         )
 
         with patch("dashboard.dashboard.dashboard", mock_dashboard_instance):
-            test_app = FastAPI()
+            test_app = ConsoleApp()
             test_app.websocket("/ws")(websocket_endpoint)
 
-            with TestClient(test_app) as client, client.websocket_connect("/ws") as _websocket:
+            with TestClient(test_app) as client, client.websocket_connect(f"/ws?ticket={_ws_ticket()}") as _websocket:
                 # Verify connection was added
                 assert len(mock_dashboard_instance.websocket_connections) == 1
 
@@ -1428,9 +1421,7 @@ class TestWebSocketEndpoint:
     @pytest.mark.asyncio
     async def test_websocket_error_handling(self) -> None:
         """Test WebSocket error handling."""
-        from fastapi import FastAPI
-
-        from dashboard.dashboard import websocket_endpoint
+        from dashboard.dashboard import ConsoleApp, websocket_endpoint
 
         # Mock dashboard instance
         mock_dashboard_instance = Mock()
@@ -1442,10 +1433,10 @@ class TestWebSocketEndpoint:
             patch("dashboard.dashboard.dashboard", mock_dashboard_instance),
             patch("dashboard.dashboard.logger") as _mock_logger,
         ):
-            test_app = FastAPI()
+            test_app = ConsoleApp()
             test_app.websocket("/ws")(websocket_endpoint)
 
-            with TestClient(test_app) as client, client.websocket_connect("/ws") as _websocket:
+            with TestClient(test_app) as client, client.websocket_connect(f"/ws?ticket={_ws_ticket()}") as _websocket:
                 # Verify connection was added
                 assert len(mock_dashboard_instance.websocket_connections) == 1
 
@@ -1547,8 +1538,10 @@ class TestWebSocketGeneralException:
     async def test_websocket_general_exception_cleans_up(self) -> None:
         """Test that a non-WebSocketDisconnect exception removes the connection."""
         from dashboard.dashboard import websocket_endpoint
+        from dashboard.session_auth import WS_TICKET_SCOPE_KEY
 
         mock_ws = AsyncMock()
+        mock_ws.scope = {WS_TICKET_SCOPE_KEY: _ws_ticket()}
         mock_ws.accept = AsyncMock()
         mock_ws.send_text = AsyncMock()
         # Make receive_text raise a generic exception (not WebSocketDisconnect)

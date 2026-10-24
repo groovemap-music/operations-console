@@ -1,6 +1,6 @@
 """Regression test for the audit action filter.
 
-Pins dashboard/static/admin.html's audit-log action-filter `<select>` to being
+Pins the console shell (dashboard/static/index.html)'s audit-log action-filter `<select>` to being
 well-formed markup. The opening tag was previously missing its closing '>',
 which the HTML tokenizer parses as bogus attributes on the `<select>` (rather
 than a nested `<option>`), silently dropping the `value=""` ("All Actions")
@@ -13,7 +13,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 
-_ADMIN_HTML = Path(__file__).resolve().parents[1] / "dashboard" / "static" / "admin.html"
+_ADMIN_HTML = Path(__file__).resolve().parents[1] / "dashboard" / "static" / "index.html"
 
 
 class _SelectOptionCollector(HTMLParser):

@@ -28,9 +28,9 @@ from common import (
     shutdown_telemetry,
     start_event_loop_monitor,
 )
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -40,6 +40,17 @@ from dashboard.admin_proxy import router as admin_router
 from dashboard.catalog_contract import DISCOGS_EXCHANGE_PREFIX, MUSICBRAINZ_EXCHANGE_PREFIX
 from dashboard.config import get_config
 from dashboard.queue_metrics import RateTracker, parse_queue_samples, scrape_params
+from dashboard.session_auth import (
+    WS_CLOSE_UNAUTHENTICATED,
+    WS_TICKET_SCOPE_KEY,
+    AdminSession,
+    SessionRejected,
+    install_ticket_redaction,
+    require_session,
+    session_rejected_handler,
+    take_ws_ticket,
+)
+from dashboard.session_auth import gate as session_gate
 
 
 # Suppress per-request httpx INFO logs (health checks every 2s are too noisy)
@@ -77,6 +88,14 @@ _cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()] i
 # send_text applies TCP backpressure and can block indefinitely for a stalled client
 # (sleeping laptop, zero-window peer); this bounds the blast radius to that one client.
 _WS_SEND_TIMEOUT_SECONDS = 5.0
+
+# How often an open WebSocket re-validates the session it was opened with. Matches the
+# session cache's 30-second ceiling, so a revoked session loses its live feed within about a
+# minute even when no browser tab is left polling to notice.
+_WS_SESSION_RECHECK_SECONDS = 30.0
+
+# Every route that returns pipeline, queue, or datastore data requires a live admin session.
+_SESSION_REQUIRED = [Depends(require_session)]
 
 
 class ServiceStatus(BaseModel):
@@ -608,7 +627,23 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         shutdown_telemetry()
 
 
-app = FastAPI(
+class ConsoleApp(FastAPI):
+    """FastAPI app that takes the WebSocket ticket out of the query string before anything reads it.
+
+    Middleware, including the OpenTelemetry middleware ``instrument_fastapi_app`` wraps around
+    the whole stack, runs inside ``__call__``, so stripping here is the only point every
+    request-target reader sits behind.
+    """
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        """Strip the ticket, then serve the request."""
+        take_ws_ticket(scope)
+        await super().__call__(scope, receive, send)
+
+
+install_ticket_redaction()
+
+app = ConsoleApp(
     title="GrooveMap Dashboard",
     version="0.1.0",
     license_info={"name": "GNU Affero General Public License v3 only", "identifier": "AGPL-3.0-only"},
@@ -616,6 +651,7 @@ app = FastAPI(
     default_response_class=JSONResponse,
     lifespan=lifespan,
 )
+app.add_exception_handler(SessionRejected, session_rejected_handler)
 
 # Add CORS middleware
 app.add_middleware(
@@ -640,7 +676,7 @@ async def health_check() -> JSONResponse:
     )
 
 
-@app.get("/api/metrics")
+@app.get("/api/metrics", dependencies=_SESSION_REQUIRED)
 async def get_metrics() -> JSONResponse:
     """Get current system metrics."""
     if dashboard and dashboard.latest_metrics:
@@ -653,7 +689,7 @@ async def get_metrics() -> JSONResponse:
         return JSONResponse(content={})
 
 
-@app.get("/api/services")
+@app.get("/api/services", dependencies=_SESSION_REQUIRED)
 async def get_services() -> JSONResponse:
     """Get service statuses grouped by pipeline."""
     if not dashboard:
@@ -666,7 +702,7 @@ async def get_services() -> JSONResponse:
     return JSONResponse(content=result)
 
 
-@app.get("/api/queues")
+@app.get("/api/queues", dependencies=_SESSION_REQUIRED)
 async def get_queues() -> JSONResponse:
     """Get queue information grouped by pipeline from the live loop's latest snapshot.
 
@@ -684,7 +720,7 @@ async def get_queues() -> JSONResponse:
     return JSONResponse(content=result)
 
 
-@app.get("/api/queue-prefixes")
+@app.get("/api/queue-prefixes", dependencies=_SESSION_REQUIRED)
 async def get_queue_prefixes() -> JSONResponse:
     """Expose the env-derived exchange/queue prefixes to the admin frontend.
 
@@ -696,7 +732,7 @@ async def get_queue_prefixes() -> JSONResponse:
     return JSONResponse(content={"discogs": DISCOGS_EXCHANGE_PREFIX, "musicbrainz": MUSICBRAINZ_EXCHANGE_PREFIX})
 
 
-@app.get("/api/databases")
+@app.get("/api/databases", dependencies=_SESSION_REQUIRED)
 async def get_databases() -> JSONResponse:
     """Get database information."""
     if not dashboard:
@@ -705,10 +741,46 @@ async def get_databases() -> JSONResponse:
     return JSONResponse(content=[d.model_dump(mode="json") for d in databases])
 
 
+@app.get("/api/session")
+async def get_session(session: AdminSession = Depends(require_session)) -> JSONResponse:
+    """Report the live admin session; the console shell polls this to notice expiry or revocation."""
+    return JSONResponse(
+        content={"admin_id": session.admin_id, "email": session.email, "expires_at": session.expires_at.isoformat()},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@app.post("/api/ws-ticket")
+async def issue_ws_ticket(request: Request) -> JSONResponse:
+    """Mint a single-use ticket, valid for 30 seconds, that opens one live WebSocket."""
+    session, token = await session_gate.validate(request.headers.get("authorization"))
+    ticket, lifetime = session_gate.tickets.issue(session, token)
+    return JSONResponse(content={"ticket": ticket, "expires_in": int(lifetime)}, headers={"Cache-Control": "no-store"})
+
+
+async def _discard_websocket(websocket: WebSocket) -> None:
+    if dashboard and dashboard._ws_lock:
+        async with dashboard._ws_lock:
+            if websocket in dashboard.websocket_connections:
+                dashboard.websocket_connections.discard(websocket)
+                console_telemetry.record_websocket_connection_delta(-1)
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    """WebSocket endpoint for real-time updates."""
+    """WebSocket endpoint for real-time updates, opened with a ticket from ``POST /api/ws-ticket``.
+
+    A missing, reused, or expired ticket is accepted only to be closed with 4401: a close before
+    accept reaches the browser as a bare handshake failure, which it cannot tell from a network
+    drop. While open, the socket re-validates its session every 30 seconds and at the session's
+    expiry, and closes with 4401 as soon as catalog-api stops honouring it.
+    """
+    grant = session_gate.tickets.redeem(websocket.scope.get(WS_TICKET_SCOPE_KEY))
     await websocket.accept()
+    if grant is None:
+        await websocket.close(code=WS_CLOSE_UNAUTHENTICATED)
+        return
+
     if dashboard:
         if dashboard._ws_lock is None:
             dashboard._ws_lock = asyncio.Lock()
@@ -728,23 +800,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 ).decode()
             )
 
-        # Keep connection alive
+        # Keep the connection alive until the client leaves or the session ends.
+        session = grant.session
         while True:
-            await websocket.receive_text()
+            wait = max(min(_WS_SESSION_RECHECK_SECONDS, session.seconds_left()), 0.0)
+            try:
+                await asyncio.wait_for(websocket.receive_text(), timeout=wait)
+            except TimeoutError:
+                try:
+                    session = await session_gate.validate_token(grant.token)
+                except SessionRejected:
+                    await _discard_websocket(websocket)
+                    await websocket.close(code=WS_CLOSE_UNAUTHENTICATED)
+                    return
 
     except WebSocketDisconnect:
-        if dashboard and dashboard._ws_lock:
-            async with dashboard._ws_lock:
-                if websocket in dashboard.websocket_connections:
-                    dashboard.websocket_connections.discard(websocket)
-                    console_telemetry.record_websocket_connection_delta(-1)
+        await _discard_websocket(websocket)
     except Exception as e:
         logger.error(f"❌ WebSocket error: {e}")
-        if dashboard and dashboard._ws_lock:
-            async with dashboard._ws_lock:
-                if websocket in dashboard.websocket_connections:
-                    dashboard.websocket_connections.discard(websocket)
-                    console_telemetry.record_websocket_connection_delta(-1)
+        await _discard_websocket(websocket)
 
 
 # Admin proxy routes (must be before StaticFiles catch-all)
@@ -753,19 +827,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 _admin_api_host = os.getenv("API_HOST", "api")
 _admin_api_port = int(os.getenv("API_PORT", "8004"))
 configure_admin_proxy(_admin_api_host, _admin_api_port)
+session_gate.configure(_admin_api_host, _admin_api_port, cache_seconds=float(os.getenv("SESSION_CACHE_SECONDS", "30")))
 app.include_router(admin_router)
 
 
 @app.get("/admin")
 @app.get("/admin.html")
-async def serve_admin() -> HTMLResponse:
-    """Serve every admin-page alias with its build-specific source link."""
-    admin_path = Path(__file__).parent / "static" / "admin.html"
-    try:
-        content = admin_path.read_text().replace("__GROOVEMAP_SOURCE_URL__", SOURCE_URL)
-    except FileNotFoundError:
-        return HTMLResponse("<h1>Admin page not found</h1>", status_code=404)
-    return HTMLResponse(content)
+async def redirect_admin() -> RedirectResponse:
+    """The admin tabs live in the console shell at /; keep old admin links working."""
+    return RedirectResponse("/", status_code=307)
 
 
 # Mount static files for the UI
@@ -775,7 +845,7 @@ static_dir = Path(__file__).parent / "static"
 @app.get("/")
 @app.get("/index.html")
 async def serve_index() -> HTMLResponse:
-    """Serve every console-page alias with its build-specific source link."""
+    """Serve the console shell; it shows only the login form until a session is confirmed."""
     index_path = static_dir / "index.html"
     try:
         content = index_path.read_text().replace("__GROOVEMAP_SOURCE_URL__", SOURCE_URL)
