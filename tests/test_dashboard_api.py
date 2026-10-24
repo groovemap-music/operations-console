@@ -181,6 +181,21 @@ class TestQueuesEndpointServesLiveSnapshot:
         assert response.status_code == 200
         assert response.json() == {"discogs": [queue.model_dump(mode="json")], "musicbrainz": None}
 
+    def test_unknown_rates_are_null_and_computed_zero_stays_zero(self) -> None:
+        from datetime import UTC, datetime
+
+        from dashboard.dashboard import PipelineMetrics, QueueInfo, SystemMetrics
+
+        unknown = QueueInfo(name="u", messages=1, messages_ready=1, messages_unacknowledged=0, consumers=1, message_rate=None, ack_rate=None)
+        idle = QueueInfo(name="i", messages=0, messages_ready=0, messages_unacknowledged=0, consumers=1, message_rate=0.0, ack_rate=0.0)
+        snapshot = SystemMetrics(
+            pipelines={"discogs": PipelineMetrics(services=[], queues=[unknown, idle])}, databases=[], timestamp=datetime.now(UTC)
+        )
+
+        rows = self._get(snapshot).json()["discogs"]
+
+        assert [(row["message_rate"], row["ack_rate"]) for row in rows] == [(None, None), (0.0, 0.0)]
+
     def test_empty_before_the_first_poll(self) -> None:
         response = self._get(None)
 

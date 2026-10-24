@@ -529,12 +529,26 @@ class Dashboard {
                 circle.style.strokeDashoffset = C;
                 text.textContent = 'N/A';
                 text.className = 't-muted';
+                text.removeAttribute('aria-label');
+                text.removeAttribute('title');
                 // Hide min–max stats when disabled
                 const container = text.closest('.flex.flex-col');
                 const statsEl = container?.querySelector('.gauge-stats');
                 if (statsEl) statsEl.textContent = '';
                 return;
             }
+
+            // A null rate is "not computable this interval", which is not a zero: show a dash.
+            if (rate === null || rate === undefined) {
+                circle.style.strokeDashoffset = C;
+                text.textContent = '—';
+                text.className = 't-muted';
+                text.setAttribute('aria-label', 'rate unknown');
+                text.setAttribute('title', 'Rate unknown');
+                return;
+            }
+            text.removeAttribute('aria-label');
+            text.removeAttribute('title');
 
             // Track per-gauge min (non-zero) and max
             const s = this.gaugeStats[circleId] ??= { min: Infinity, max: 0 };
@@ -564,10 +578,10 @@ class Dashboard {
         types.forEach(type => {
             const gq = graphMap[type];
             const tq = tableMap[type];
-            updateGauge(`${pipelineName}-rate-circle-${graphName}-${type}-publish`, `${pipelineName}-rate-text-${graphName}-${type}-publish`, gq?.message_rate || 0, isDlq || unavailable);
-            updateGauge(`${pipelineName}-rate-circle-${tableName}-${type}-publish`, `${pipelineName}-rate-text-${tableName}-${type}-publish`, tq?.message_rate || 0, isDlq || unavailable);
-            updateGauge(`${pipelineName}-rate-circle-${graphName}-${type}-ack`,     `${pipelineName}-rate-text-${graphName}-${type}-ack`,     gq?.ack_rate     || 0, isDlq || unavailable);
-            updateGauge(`${pipelineName}-rate-circle-${tableName}-${type}-ack`,     `${pipelineName}-rate-text-${tableName}-${type}-ack`,     tq?.ack_rate     || 0, isDlq || unavailable);
+            updateGauge(`${pipelineName}-rate-circle-${graphName}-${type}-publish`, `${pipelineName}-rate-text-${graphName}-${type}-publish`, gq?.message_rate ?? null, isDlq || unavailable);
+            updateGauge(`${pipelineName}-rate-circle-${tableName}-${type}-publish`, `${pipelineName}-rate-text-${tableName}-${type}-publish`, tq?.message_rate ?? null, isDlq || unavailable);
+            updateGauge(`${pipelineName}-rate-circle-${graphName}-${type}-ack`,     `${pipelineName}-rate-text-${graphName}-${type}-ack`,     gq?.ack_rate     ?? null, isDlq || unavailable);
+            updateGauge(`${pipelineName}-rate-circle-${tableName}-${type}-ack`,     `${pipelineName}-rate-text-${tableName}-${type}-ack`,     tq?.ack_rate     ?? null, isDlq || unavailable);
         });
     }
 
