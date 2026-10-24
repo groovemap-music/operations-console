@@ -34,7 +34,7 @@ This repository consumes promoted, immutable copies of the catalog API, catalog-
 
 | Promoted authority | Producer revision | Local artifact |
 | --- | --- | --- |
-| `catalog-api` operations-console routes | `fb559abccd4d1ecb85db0c49db1d8851871d23ed` | [`contracts/catalog-api/operations-console/v1/routes.json`](../contracts/catalog-api/operations-console/v1/routes.json) |
+| `catalog-api` operations-console routes | `f109c8b65f8ccd31edec624d237350b24e24db0c` | [`contracts/catalog-api/operations-console/v1/routes.json`](../contracts/catalog-api/operations-console/v1/routes.json) |
 | `discogs-ingestion` catalog events | `c1bf1b4ada3ee88e1e6768a0be7fa6ed1b921831` | [`contracts/catalog-events/v1/discogs/contract.json`](../contracts/catalog-events/v1/discogs/contract.json) |
 | `musicbrainz-ingestion` catalog events | `f0dae1037c809c6855863aebc35d0a7d21366482` | [`contracts/catalog-events/v1/musicbrainz/contract.json`](../contracts/catalog-events/v1/musicbrainz/contract.json) |
 | `database-schema` persistence compatibility | `9a50949b1810f3e61adae2f89b86acec2e20c4a3` | [`contracts/persistence/v1/compatibility.json`](../contracts/persistence/v1/compatibility.json) |
@@ -76,6 +76,6 @@ sequenceDiagram
 
 ## Runtime lifecycle
 
-Startup initializes Neo4j and PostgreSQL clients and the console's two-second live metrics loop; queue metrics are scraped over HTTP from the broker's Prometheus endpoint, so startup does not need RabbitMQ AMQP to be reachable. The historical queue and service-health collector runs in `catalog-api`; the console reaches its authenticated history routes through the admin proxy. A partial dependency failure is reported in health data instead of being presented as healthy. Shutdown snapshots connected WebSockets before awaiting close operations, cancels the live collector, and closes each client without holding the connection-set lock across network I/O.
+Startup initializes Neo4j and PostgreSQL clients and the console's two-second live metrics loop; queue metrics are scraped over HTTP from the broker's Prometheus endpoint, so startup does not need RabbitMQ AMQP to be reachable. Queue and service-health history is read from VictoriaMetrics by the console itself, not from `catalog-api`. A partial dependency failure is reported in health data instead of being presented as healthy. Shutdown snapshots connected WebSockets before awaiting close operations, cancels the live collector, and closes each client without holding the connection-set lock across network I/O.
 
 The image is `operations-console`, runs as numeric user `1000:1000`, and embeds its exact forty-character source revision in OCI metadata and the browser-visible corresponding-source link.

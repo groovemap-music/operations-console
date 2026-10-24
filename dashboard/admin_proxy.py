@@ -267,41 +267,6 @@ async def proxy_dlq_purge(queue: str, request: Request) -> Response:
 
 
 # ---------------------------------------------------------------------------
-# Phase 3 — Queue Health Trends & System Health proxy routes
-# ---------------------------------------------------------------------------
-
-
-@router.get("/admin/api/queues/history")
-async def proxy_queue_history(
-    request: Request,
-    range: str | None = Query(default=None, pattern=r"^[0-9]+[hdwm]$"),
-    granularity: str | None = Query(default=None, pattern=r"^[0-9]+(min|hour|day)$"),
-) -> Response:
-    """Proxy queue history requests to the API service."""
-    params: dict[str, str] = {}
-    if range is not None:
-        params["range"] = range
-    if granularity is not None:
-        params["granularity"] = granularity
-    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_QUEUE_HISTORY_PATH, params=params)
-
-
-@router.get("/admin/api/health/history")
-async def proxy_health_history(
-    request: Request,
-    range: str | None = Query(default=None, pattern=r"^[0-9]+[hdwm]$"),
-    granularity: str | None = Query(default=None, pattern=r"^[0-9]+(min|hour|day)$"),
-) -> Response:
-    """Proxy health history requests to the API service."""
-    params: dict[str, str] = {}
-    if range is not None:
-        params["range"] = range
-    if granularity is not None:
-        params["granularity"] = granularity
-    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_HEALTH_HISTORY_PATH, params=params)
-
-
-# ---------------------------------------------------------------------------
 # Phase 4 — Audit Log proxy route
 # ---------------------------------------------------------------------------
 
