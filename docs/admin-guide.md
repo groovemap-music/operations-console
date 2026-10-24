@@ -108,6 +108,31 @@ backlog change, how long acks have been at zero, and its dead-letter queue. Esca
 Below 480 px wide, a pipeline with more than two consumers lists each entity's cells in two
 columns, and every cell names its consumer.
 
+## The attention bar and the header status
+
+Under the header, on every tab, the attention bar lists everything that needs an operator and is
+hidden while nothing does. It shows a count and every critical (◆) and warning (▲) item, critical
+first, and **Hide** collapses the list until a new item appears. Each item opens what it is about:
+a queue item opens that matrix cell's detail drawer, a service item scrolls to its node, a
+datastore item opens the Storage tab, and a Grafana alert opens in Grafana.
+
+| Item | Severity |
+|---|---|
+| A queue stalled, or with a backlog and no consumer; a dead-letter queue that is growing | Critical |
+| A dead-letter queue that holds messages and is not growing | Warning |
+| An unhealthy service, or an unavailable datastore | Critical |
+| A service whose status is unknown or starting; a pipeline whose queue metrics are unavailable | Warning |
+| A firing Grafana alert | Critical when labelled `severity=critical`, otherwise warning |
+
+Queue items use the matrix's own rules above, so the bar and the matrix cannot disagree. Grafana
+alerts appear only when `GRAFANA_URL` and `GRAFANA_TOKEN_FILE` are configured
+([configuration](configuration.md#grafana-alerts)); if Grafana does not answer, the bar keeps the
+items derived from the live feed and says "Grafana alerts unavailable".
+
+The header status (Operational, Warning, Critical, Offline) is computed from the same items. It
+reads Unknown only before the console has reported any pipeline or datastore, and Connecting until
+the first reading.
+
 ## Triggering an extraction
 
 Use **Trigger Discogs Extraction** or **Trigger MusicBrainz Extraction** in the admin panel.

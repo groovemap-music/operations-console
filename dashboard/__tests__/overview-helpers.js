@@ -10,7 +10,7 @@ const DASHBOARD_JS_PATH = resolve(__dirname, '..', 'static', 'dashboard.js');
 function loadDashboardScript() {
     const code = readFileSync(DASHBOARD_JS_PATH, 'utf-8');
     const withoutAutoInit = code.replace(/document\.addEventListener\(\s*['"]DOMContentLoaded['"][\s\S]*$/, '');
-    const wrapped = `(function() {\n${withoutAutoInit}\nglobalThis.__Dashboard = Dashboard;\nglobalThis.__QueueHealth = QueueHealth;\nglobalThis.__matrixLayout = matrixLayout;\n})();`;
+    const wrapped = `(function() {\n${withoutAutoInit}\nglobalThis.__Dashboard = Dashboard;\nglobalThis.__QueueHealth = QueueHealth;\nglobalThis.__Attention = Attention;\nglobalThis.__matrixLayout = matrixLayout;\n})();`;
     vm.runInThisContext(wrapped, { filename: DASHBOARD_JS_PATH });
 }
 
@@ -23,6 +23,12 @@ export function loadDashboardClass() {
 export function loadQueueHealth() {
     loadDashboardScript();
     return { QueueHealth: globalThis.__QueueHealth, matrixLayout: globalThis.__matrixLayout };
+}
+
+/** The attention bar's pure derivation, as dashboard.js defines it. */
+export function loadAttention() {
+    loadDashboardScript();
+    return globalThis.__Attention;
 }
 
 /** The shape /api/topology returns, built the way the server derives it. */
@@ -65,6 +71,14 @@ export const discogs = () =>
     });
 
 /** The shell's queue detail drawer, as index.html declares it. */
+/** The shell's attention bar, as index.html declares it. */
+export const ATTENTION_MARKUP = `
+<section id="attention-bar" hidden>
+  <span id="attention-summary"></span><button id="attention-toggle" type="button" hidden>Hide</button>
+  <p id="attention-note" hidden></p><ul id="attention-list"></ul>
+</section>
+<span id="operational-status-dot"></span><span id="operational-status-text"></span>`;
+
 export const DRAWER_MARKUP = `
 <dialog id="queue-drawer">
   <h2 id="queue-drawer-title"></h2><p id="queue-drawer-subtitle"></p>
@@ -74,7 +88,7 @@ export const DRAWER_MARKUP = `
 
 /** A dashboard with the live-view side effects stubbed, an empty `#pipelines` container, and the drawer. */
 export function makeDashboard({ narrow = false } = {}) {
-    document.body.innerHTML = `<div id="pipelines"></div>${DRAWER_MARKUP}`;
+    document.body.innerHTML = `${ATTENTION_MARKUP}<div id="pipelines"></div>${DRAWER_MARKUP}`;
     const Dashboard = loadDashboardClass();
     const dashboard = Object.create(Dashboard.prototype);
     Object.assign(dashboard, {
@@ -89,8 +103,12 @@ export function makeDashboard({ narrow = false } = {}) {
         topology: null,
         topologyRequest: null,
         pendingData: null,
+        lastReading: null,
+        alerts: null,
+        attentionSeen: new Set(),
+        attentionCollapsed: false,
     });
-    for (const method of ['updateServices', 'updateDatabases', 'updateLastUpdated', 'updateOverallStatus', 'renderActivityLog']) {
+    for (const method of ['updateServices', 'updateDatabases', 'updateLastUpdated', 'renderActivityLog']) {
         dashboard[method] = vi.fn();
     }
     return dashboard;

@@ -38,6 +38,25 @@ The console parses `CACHE_WARMING_ENABLED` and `CACHE_WEBHOOK_SECRET` for config
 compatibility. Current dashboard code does not open a Valkey client or perform cache warming;
 the admin storage panel displays measurements supplied by `catalog-api`.
 
+## Grafana alerts
+
+The attention bar can list firing Grafana alerts. It is off unless both variables are set; with
+either missing, `GET /api/alerts` answers `configured: false` and the bar shows only the problems
+derived from the live feed.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GRAFANA_URL` | unset | Base URL of Grafana, such as `https://grafana.example.net`. |
+| `GRAFANA_TOKEN_FILE` | unset | Path to a file holding a Grafana service-account token with read access to alert rules and the Alertmanager API (`alert.instances:read`). Only the file form is read; there is no plain-variable fallback. |
+
+The console asks `{GRAFANA_URL}/api/alertmanager/grafana/api/v2/alerts` (active, not silenced, not
+inhibited) from the server, behind the admin session like every other data route, through its own
+`GET /api/alerts`. The token is never sent to the browser, and neither it nor an upstream error
+message is logged or returned. Alert links point only into the configured Grafana. When Grafana is
+configured but does not answer, the token file cannot be read, or the response is not an alert
+list, the route answers `available: false` with a note and the bar shows it beside the derived
+items.
+
 ## HTTP, logging, source, and telemetry
 
 | Variable | Default | Meaning |

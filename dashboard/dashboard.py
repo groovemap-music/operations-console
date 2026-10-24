@@ -40,6 +40,7 @@ from dashboard.admin_proxy import public_router as admin_public_router
 from dashboard.admin_proxy import router as admin_router
 from dashboard.catalog_contract import DISCOGS_EXCHANGE_PREFIX, MUSICBRAINZ_EXCHANGE_PREFIX
 from dashboard.config import get_config
+from dashboard.grafana_alerts import router as grafana_alerts_router
 from dashboard.history import router as history_router
 from dashboard.queue_metrics import RateTracker, parse_queue_samples, scrape_params
 from dashboard.session_auth import (
@@ -882,6 +883,7 @@ session_gate.configure(_admin_api_host, _admin_api_port, cache_seconds=cache_sec
 app.include_router(admin_public_router)
 app.include_router(admin_router, dependencies=_SESSION_REQUIRED)
 app.include_router(history_router, dependencies=_SESSION_REQUIRED)
+app.include_router(grafana_alerts_router, dependencies=_SESSION_REQUIRED)
 
 
 @app.get("/admin")

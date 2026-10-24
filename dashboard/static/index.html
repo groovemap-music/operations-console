@@ -212,6 +212,23 @@
             --mx-ramp-3-text: #0d1b2a;
             --mx-backdrop: rgba(13, 27, 42, 0.4);
         }
+        .attention-bar {
+            background: var(--mx-surface); border: 1px solid var(--mx-crit); border-radius: 12px; padding: 8px 12px;
+            color: var(--mx-text-high); font-size: 13px;
+        }
+        .attention-bar[hidden], .attention-bar [hidden] { display: none; }
+        .attention-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; }
+        .attention-toggle { font: inherit; font-size: 12px; font-weight: 700; color: var(--mx-accent); background: none; border: 0; cursor: pointer; padding: 2px 4px; }
+        .attention-note { margin: 4px 0 0; font-size: 12px; color: var(--mx-warn); }
+        .attention-note::before { content: "▲ "; }
+        /* Capped so the tabs stay reachable below even a long list. */
+        .attention-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 30vh; overflow-y: auto; }
+        .attention-link {
+            display: block; width: 100%; text-align: left; font: inherit; color: inherit; background: none; border: 0;
+            border-radius: 6px; padding: 4px 6px; cursor: pointer; text-decoration: none; overflow-wrap: anywhere;
+        }
+        .attention-link:hover { background: var(--mx-crit-bg); }
+        .attention-link:focus-visible { outline: 2px solid var(--mx-accent); outline-offset: 1px; }
         .mx-legend {
             display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--mx-text-mid);
             background: var(--mx-surface); border: 1px solid var(--mx-border); border-radius: 12px; padding: 8px 12px;
@@ -390,6 +407,17 @@
                 </button>
             </div>
         </header>
+
+        <!-- Attention bar: every critical and warning item, at the top of every tab. Hidden (quiet and
+             empty) when nothing is wrong; filled by dashboard.js from the live feed and /api/alerts. -->
+        <section id="attention-bar" class="attention-bar" aria-label="Needs attention" hidden>
+            <div class="attention-head">
+                <strong id="attention-summary" role="status"></strong>
+                <button id="attention-toggle" type="button" class="attention-toggle" aria-controls="attention-list" aria-expanded="true" hidden>Hide</button>
+            </div>
+            <p id="attention-note" class="attention-note" hidden></p>
+            <ul id="attention-list" class="attention-list"></ul>
+        </section>
 
         <nav class="flex items-center gap-2 mb-6 dashboard-card p-2 overflow-x-auto whitespace-nowrap">
             <button class="tab-btn active" data-tab="overview" id="tab-btn-overview">
