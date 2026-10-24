@@ -111,9 +111,11 @@ def _lifespan(include_musicbrainz: bool) -> Callable[[FastAPI], AbstractAsyncCon
         previous = console.dashboard
         console.dashboard = MockDashboardApp(include_musicbrainz=include_musicbrainz)
         await console.dashboard.startup()
+        await console.session_gate.start()
         try:
             yield
         finally:
+            await console.session_gate.aclose()
             await console.dashboard.shutdown()
             console.dashboard = previous
 
@@ -123,6 +125,9 @@ def _lifespan(include_musicbrainz: bool) -> Callable[[FastAPI], AbstractAsyncCon
 def create_test_app(include_musicbrainz: bool = False) -> FastAPI:
     """Create the console app with the production routes and a fixed metrics source."""
     app = console.ConsoleApp(
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
         title="GrooveMap Dashboard",
         version="0.1.0",
         default_response_class=JSONResponse,

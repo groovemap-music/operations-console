@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import socket
 import threading
 import time
@@ -152,7 +153,7 @@ class TestSessionStates:
         def refuse(request: httpx.Request) -> httpx.Response:
             raise httpx.ConnectError("connection refused", request=request)
 
-        gate.transport = httpx.MockTransport(refuse)
+        gate.use_transport(httpx.MockTransport(refuse))
         _assert_denied(client, _bearer("some-live-looking-token"), 503, "unavailable")
 
     @pytest.mark.parametrize(
@@ -165,19 +166,19 @@ class TestSessionStates:
         ],
     )
     def test_a_malformed_session_body_denies_access(self, client: TestClient, body: Any) -> None:
-        gate.transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=body))
+        gate.use_transport(httpx.MockTransport(lambda _request: httpx.Response(200, json=body)))
         response = client.get("/api/metrics", headers=_bearer("some-token"))
         assert response.status_code == 503
         assert response.json()["reason"] == "unavailable"
 
     def test_a_200_for_an_already_expired_session_is_rejected(self, client: TestClient) -> None:
         expired = {"admin_id": "a", "email": "e", "expires_at": (datetime.now(UTC) - timedelta(seconds=1)).isoformat()}
-        gate.transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=expired))
+        gate.use_transport(httpx.MockTransport(lambda _request: httpx.Response(200, json=expired)))
         assert client.get("/api/metrics", headers=_bearer("some-token")).json()["reason"] == "invalid"
 
     def test_a_naive_expiry_is_read_as_utc(self, client: TestClient) -> None:
         later = {"admin_id": "a", "email": "e", "expires_at": (datetime.now(UTC) + timedelta(hours=1)).replace(tzinfo=None).isoformat()}
-        gate.transport = httpx.MockTransport(lambda _request: httpx.Response(200, json=later))
+        gate.use_transport(httpx.MockTransport(lambda _request: httpx.Response(200, json=later)))
         assert client.get("/api/metrics", headers=_bearer("some-token")).status_code == 200
 
 
@@ -463,3 +464,241 @@ class TestTicketNeverLogged:
 
         assert any("WebSocket /ws" in line for line in records), "control: the socket was logged at all"
         assert not [line for line in records if ticket in line]
+
+
+PUBLIC_ROUTES = {"/health", "/", "/index.html", "/admin", "/admin.html", "/admin/api/login"}
+
+
+def _flat_routes(routes: list[Any], prefix: str = "") -> list[tuple[str, Any]]:
+    """(path, route) for every route, descending into routers included with include_router."""
+    flat: list[tuple[str, Any]] = []
+    for route in routes:
+        included = getattr(route, "original_router", None)
+        if included is not None:
+            flat += _flat_routes(included.routes, prefix + getattr(route.include_context, "prefix", ""))
+        else:
+            flat.append((prefix + getattr(route, "path", ""), route))
+    return flat
+
+
+class TestEveryRouteIsGated:
+    """A route added later without the session gate fails here, whatever it is."""
+
+    def test_the_test_app_serves_exactly_the_production_routes(self) -> None:
+        from dashboard.dashboard import app as production
+
+        assert [getattr(route, "path", None) for route in create_test_app().routes] == [getattr(route, "path", None) for route in production.routes]
+
+    def test_every_route_outside_the_public_allowlist_refuses_an_anonymous_caller(self, client: TestClient) -> None:
+        from fastapi.routing import APIRoute, APIWebSocketRoute
+        from starlette.routing import Mount
+
+        from dashboard.dashboard import app as production
+
+        probed: list[str] = []
+        for path, route in _flat_routes(production.routes):
+            if isinstance(route, Mount):
+                continue  # the static shell assets; covered below
+            concrete = re.sub(r"\{[^}]+\}", "probe", path)
+            if isinstance(route, APIWebSocketRoute):
+                assert _close_code(client, concrete) == WS_CLOSE_UNAUTHENTICATED, path
+                probed.append(path)
+                continue
+            assert isinstance(route, APIRoute), path
+            if path in PUBLIC_ROUTES:
+                continue
+            for method in sorted(route.methods - {"HEAD"}):
+                response = client.request(method, concrete)
+                assert response.status_code == 401, f"{method} {path} answered {response.status_code}"
+                assert response.json()["reason"] == "missing", f"{method} {path}"
+                probed.append(f"{method} {path}")
+        assert "GET /api/metrics" in probed and "GET /admin/api/storage" in probed and "/ws" in probed
+
+    @pytest.mark.parametrize("path", ["/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"])
+    def test_api_documentation_is_not_served(self, client: TestClient, path: str) -> None:
+        assert client.get(path).status_code == 404
+
+    def test_static_assets_are_code_not_data(self, client: TestClient) -> None:
+        for asset in ("/dashboard.js", "/admin.js", "/brand/favicon.svg"):
+            assert client.get(asset).status_code == 200, asset
+        assert client.get("/api").status_code == 404
+
+    def test_anonymous_admin_proxy_calls_never_reach_catalog_api(self, client: TestClient) -> None:
+        with patch("dashboard.admin_proxy._proxy_request") as proxied:
+            assert client.get("/admin/api/extractions").status_code == 401
+            assert client.post("/admin/api/dlq/purge/q").status_code == 401
+        proxied.assert_not_called()
+
+
+def _flood(websocket: Any, stop: threading.Event) -> None:
+    while not stop.is_set():
+        try:
+            websocket.send_text("x")
+        except Exception:
+            return
+
+
+def _receive_until_closed(websocket: Any, within_seconds: float) -> WebSocketDisconnect:
+    """Drain frames until the server closes; fail instead of hanging if it never does."""
+    deadline = time.monotonic() + within_seconds
+    while time.monotonic() < deadline:
+        try:
+            websocket.receive_text()  # the 2-second broadcast keeps this from blocking for long
+        except WebSocketDisconnect as closed:
+            return closed
+    pytest.fail(f"the server kept the socket open for {within_seconds} s")
+
+
+class TestOpenSocketRechecks:
+    """An open socket re-validates on a fixed schedule that client frames cannot postpone."""
+
+    def test_a_flooding_client_is_still_closed_when_its_session_is_revoked(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        token = fake_catalog.mint()
+        ticket = client.post("/api/ws-ticket", headers=_bearer(token)).json()["ticket"]
+        with patch("dashboard.dashboard._WS_SESSION_RECHECK_SECONDS", 0.2), client.websocket_connect(f"/ws?ticket={ticket}") as websocket:
+            assert websocket.receive_json()["type"] == "metrics_update"
+            # Revoked upstream, but still in the console's positive cache: the re-check must not trust it.
+            fake_catalog.revoke(token)
+            assert gate.cache.get(session_auth.token_digest(token)) is not None
+            stop = threading.Event()
+            flooder = threading.Thread(target=_flood, args=(websocket, stop), daemon=True)
+            flooder.start()
+            started = time.monotonic()
+            try:
+                closed = _receive_until_closed(websocket, within_seconds=5)
+            finally:
+                stop.set()
+                flooder.join(timeout=5)
+        assert closed.code == WS_CLOSE_UNAUTHENTICATED
+        assert time.monotonic() - started < 3
+
+    def test_a_flooding_client_is_still_closed_when_its_session_expires(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        token = fake_catalog.mint(lifetime_seconds=1.0)
+        ticket = client.post("/api/ws-ticket", headers=_bearer(token)).json()["ticket"]
+        with client.websocket_connect(f"/ws?ticket={ticket}") as websocket:
+            stop = threading.Event()
+            flooder = threading.Thread(target=_flood, args=(websocket, stop), daemon=True)
+            flooder.start()
+            try:
+                closed = _receive_until_closed(websocket, within_seconds=5)
+            finally:
+                stop.set()
+                flooder.join(timeout=5)
+        assert closed.code == WS_CLOSE_UNAUTHENTICATED
+
+    def test_rechecks_ask_catalog_api_instead_of_the_cache(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        token = fake_catalog.mint()
+        ticket = client.post("/api/ws-ticket", headers=_bearer(token)).json()["ticket"]
+        calls_before_open = fake_catalog.session_calls
+        with patch("dashboard.dashboard._WS_SESSION_RECHECK_SECONDS", 0.1), client.websocket_connect(f"/ws?ticket={ticket}") as websocket:
+            websocket.receive_json()
+            time.sleep(0.5)
+        # One fresh check on open plus several scheduled ones, none served from the warm cache.
+        assert fake_catalog.session_calls - calls_before_open >= 3
+
+
+class TestTicketsDieWithTheSession:
+    def test_a_ticket_minted_before_logout_is_refused(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        token = fake_catalog.mint()
+        ticket = client.post("/api/ws-ticket", headers=_bearer(token)).json()["ticket"]
+
+        async def upstream_logout(*_args: Any, **_kwargs: Any) -> httpx.Response:
+            fake_catalog.revoke(token)
+            return httpx.Response(200, json={"logged_out": True})
+
+        with patch("dashboard.admin_proxy._proxy_request", side_effect=upstream_logout):
+            assert client.post("/admin/api/logout", headers=_bearer(token)).status_code == 200
+
+        assert len(gate.tickets) == 0, "logout purges the bearer's outstanding tickets"
+        assert _close_code(client, f"/ws?ticket={ticket}") == WS_CLOSE_UNAUTHENTICATED
+
+    def test_a_ticket_whose_bearer_was_revoked_elsewhere_is_refused(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        """No logout through the console, so the ticket survives and the cache is warm; redeem still asks catalog-api."""
+        token = fake_catalog.mint()
+        ticket = client.post("/api/ws-ticket", headers=_bearer(token)).json()["ticket"]
+        fake_catalog.revoke(token)
+        assert gate.cache.get(session_auth.token_digest(token)) is not None
+        assert _close_code(client, f"/ws?ticket={ticket}") == WS_CLOSE_UNAUTHENTICATED
+
+    def test_purge_drops_only_that_bearers_tickets(self) -> None:
+        store = TicketStore()
+        mine, _ = store.issue(_session(), "mine")
+        theirs, _ = store.issue(_session(), "theirs")
+        store.purge(session_auth.token_digest("mine"))
+        assert store.redeem(mine) is None
+        assert store.redeem(theirs) is not None
+
+
+class TestCacheSecondsConfiguration:
+    @pytest.mark.parametrize("raw", ["nan", "NaN", "inf", "-inf", "thirty"])
+    def test_a_non_finite_or_non_numeric_value_fails_startup(self, raw: str) -> None:
+        with pytest.raises(ValueError):
+            session_auth.cache_seconds_from_env(raw)
+
+    @pytest.mark.parametrize(("raw", "expected"), [(None, 30.0), ("", 30.0), ("5", 5.0), ("0", 0.0), ("300", 300.0)])
+    def test_finite_values_are_accepted_and_the_cache_clamps_them(self, raw: str | None, expected: float) -> None:
+        assert session_auth.cache_seconds_from_env(raw) == expected
+        assert SessionCache(expected).ttl_seconds == min(expected, 30.0)
+
+    def test_the_cache_itself_refuses_a_non_finite_ttl(self) -> None:
+        with pytest.raises(ValueError):
+            SessionCache(float("nan"))
+
+    def test_the_console_reads_the_setting_through_the_finite_check(self) -> None:
+        from pathlib import Path
+
+        source = (Path(__file__).resolve().parents[1] / "dashboard" / "dashboard.py").read_text()
+        assert 'cache_seconds=cache_seconds_from_env(os.getenv("SESSION_CACHE_SECONDS"))' in source
+
+
+class TestUpstreamAmplification:
+    def test_checks_share_one_client_for_the_lifespan(self, fake_catalog: FakeCatalogApi) -> None:
+        with TestClient(create_test_app()) as client:
+            shared = gate._client
+            assert shared is not None
+            for _ in range(3):
+                client.get("/api/metrics", headers=_bearer(fake_catalog.mint()))
+            assert gate._client is shared
+        assert gate._client is None
+        assert shared.is_closed
+
+    def test_the_same_dead_bearer_is_not_rechecked_for_a_while(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        for _ in range(5):
+            assert client.get("/api/metrics", headers=_bearer("dead-bearer")).status_code == 401
+        assert fake_catalog.session_calls == 1
+
+    def test_junk_bearers_from_one_client_are_throttled(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        limit = session_auth.FAILED_CHECKS_PER_CLIENT
+        for index in range(limit):
+            assert client.get("/api/metrics", headers=_bearer(f"junk-{index}")).status_code == 401
+        throttled = client.get("/api/metrics", headers=_bearer("junk-one-more"))
+        assert throttled.status_code == 429
+        assert throttled.json()["reason"] == "throttled"
+        assert throttled.headers["retry-after"] == "60"
+        assert fake_catalog.session_calls == limit
+
+    def test_a_confirmed_session_behind_a_throttled_address_keeps_working(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        token = fake_catalog.mint()
+        assert client.get("/api/metrics", headers=_bearer(token)).status_code == 200
+        for index in range(session_auth.FAILED_CHECKS_PER_CLIENT):
+            client.get("/api/metrics", headers=_bearer(f"junk-{index}"))
+        gate.cache.evict(session_auth.token_digest(token))
+        assert client.get("/api/metrics", headers=_bearer(token)).status_code == 200
+
+    def test_the_throttle_window_slides(self) -> None:
+        now = [1000.0]
+        throttle = session_auth.FailureThrottle(max_failures=2, window_seconds=60, monotonic=lambda: now[0])
+        throttle.record_invalid("1.2.3.4", "a")
+        throttle.record_invalid("1.2.3.4", "b")
+        assert throttle.throttled("1.2.3.4")
+        assert not throttle.throttled("5.6.7.8")
+        now[0] += 60.1
+        assert not throttle.throttled("1.2.3.4")
+
+    def test_an_invalid_answer_is_reused_only_briefly(self) -> None:
+        now = [1000.0]
+        throttle = session_auth.FailureThrottle(invalid_ttl_seconds=10, monotonic=lambda: now[0])
+        throttle.record_invalid(None, "digest")
+        assert throttle.known_invalid("digest")
+        now[0] += 10.1
+        assert not throttle.known_invalid("digest")

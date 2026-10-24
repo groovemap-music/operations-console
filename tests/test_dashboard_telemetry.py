@@ -480,7 +480,8 @@ class TestWebsocketFramesAreNotTraced:
         session = AdminSession(admin_id="admin-1", email="admin@example.com", expires_at=datetime.now(UTC) + timedelta(hours=1))
         ticket, _ = gate.tickets.issue(session, "bearer")
 
-        with ws_client.websocket_connect(f"/ws?ticket={ticket}") as websocket:
+        # The socket re-validates its bearer on open; this test is about spans, not sessions.
+        with patch.object(gate, "validate_token", AsyncMock(return_value=session)), ws_client.websocket_connect(f"/ws?ticket={ticket}") as websocket:
             assert websocket.receive_json()["type"] == "metrics_update"
             for _ in range(20):
                 websocket.send_text("ping")

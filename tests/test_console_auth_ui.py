@@ -67,6 +67,8 @@ class TestAnonymousBrowser:
             assert response.json()["reason"] == "missing", path
         assert page.request.post(f"{CONSOLE_URL}/api/ws-ticket").status == 401
         assert page.request.get(f"{CONSOLE_URL}/health").status == 200
+        for path in ("/docs", "/redoc", "/openapi.json"):
+            assert page.request.get(f"{CONSOLE_URL}{path}").status == 404, path
 
     @pytest.mark.parametrize("query", ["", "?ticket=forged"])
     def test_an_anonymous_websocket_is_closed_with_4401(self, page: Page, query: str) -> None:

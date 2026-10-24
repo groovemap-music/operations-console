@@ -131,6 +131,7 @@ describe('admin.js owns the session', () => {
     it.each([
         [401, { reason: 'invalid' }, 'Your session expired or was revoked. Sign in again.', null],
         [503, { reason: 'unavailable' }, 'catalog-api is unreachable, so your session could not be verified. Sign in again once it is back.', 'stale-token'],
+        [429, { reason: 'throttled' }, 'Too many failed session checks from this address. Wait a minute and sign in again.', 'stale-token'],
     ])('returns a stored session answered %i to the login form with its reason', async (status, body, message, kept) => {
         localStorage.setItem('admin_token', 'stale-token');
         installFetch({ '/api/session': () => jsonResponse(status, body) });
@@ -306,7 +307,7 @@ describe('dashboard.js reads only inside a session', () => {
         expect(events.map((event) => event.name)).not.toContain('console:session-check');
     });
 
-    it.each([401, 503])('asks for a session check when the ticket request is refused with %i', async (status) => {
+    it.each([401, 429, 503])('asks for a session check when the ticket request is refused with %i', async (status) => {
         const { dashboard } = startedDashboard({
             '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
             '/api/ws-ticket': () => jsonResponse(status, { reason: 'invalid' }),

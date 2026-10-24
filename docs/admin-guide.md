@@ -31,23 +31,38 @@ sign-in the live **Overview** tab comes first, followed by the admin tabs. The o
 `http://<host>:8003/admin` and `/admin.html` addresses redirect to `/`.
 
 Every data route (`/api/metrics`, `/api/services`, `/api/queues`, `/api/databases`,
-`/api/queue-prefixes`, `/api/session`) and the live WebSocket require a live admin session;
-only `/health` and the login page are public. The console holds no JWT secret: it asks
-`catalog-api` (`GET /api/admin/auth/session`) whether the bearer is live and caches a yes for at
-most 30 seconds. A 401 or 403 from `catalog-api` (missing, expired, revoked, password-changed,
-or non-admin token) is answered `401` with `"reason": "invalid"`; a `catalog-api` error or an
-unreachable `catalog-api` is answered `503` with `"reason": "unavailable"`.
+`/api/queue-prefixes`, `/api/session`, `POST /api/ws-ticket`), every admin proxy route except
+`POST /admin/api/login`, and the live WebSocket require a live admin session. Only `/health`,
+the login page and its static assets, the `/admin` redirects, and the login route are public;
+the console serves no `/docs`, `/redoc`, or `/openapi.json`. The console holds no JWT secret:
+it asks `catalog-api` (`GET /api/admin/auth/session`) whether the bearer is live and caches a
+yes for at most 30 seconds. A 401 or 403 from `catalog-api` (missing, expired, revoked,
+password-changed, or non-admin token) is answered `401` with `"reason": "invalid"`; a
+`catalog-api` error or an unreachable `catalog-api` is answered `503` with
+`"reason": "unavailable"`.
+
+Bearers cannot be used to make the console hammer `catalog-api`: an `invalid` answer for a
+bearer is reused for 10 seconds, and a client address that causes 20 `invalid` answers within
+a minute has further unknown bearers refused with `429` (`"reason": "throttled"`,
+`Retry-After: 60`) until the minute slides. A session the console has already confirmed is
+never throttled, so junk sent through a shared reverse-proxy address cannot sign out the
+operators behind it. Every check goes through one shared HTTP client.
 
 The console returns to the login form, with the reason shown above it, when you sign out, when
 the session expires or is revoked while the console is open, and when `catalog-api` cannot be
 reached to confirm it. The open console re-checks its session every 15 seconds and just after
 the session's expiry. Signing out through the console also drops its cached copy of the session
-at once; a session revoked elsewhere stops working within the 30-second cache window.
+and every outstanding WebSocket ticket for it at once; a session revoked elsewhere stops
+working for HTTP requests within the 30-second cache window.
 
 The live Overview cannot send `Authorization` on a WebSocket, so it first posts the bearer to
 `POST /api/ws-ticket` for a single-use ticket valid for 30 seconds and opens
-`/ws?ticket=<ticket>`. A missing, reused, or expired ticket is closed with code `4401`, as is an
-open socket whose session stops being valid (re-checked every 30 seconds and at expiry). The
+`/ws?ticket=<ticket>`. Opening the socket re-validates the ticket's bearer with `catalog-api`,
+bypassing the cache. A missing, reused, expired, or logged-out ticket is closed with code
+`4401`, as is an open socket whose session stops being valid: the socket asks `catalog-api`
+again, bypassing the cache, on a fixed 30-second schedule and at the session's expiry, so a
+revocation closes it within 30 seconds. The console never expects frames from the browser;
+any it receives are discarded and cannot delay a re-check. The
 console removes the ticket from the request's query string before its access log or request
 spans read it and redacts it from server log lines, but a reverse proxy in front of the console
 keeps its own access log: configure it not to log query strings for `/ws`.

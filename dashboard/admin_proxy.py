@@ -25,6 +25,8 @@ from dashboard.session_auth import gate as session_gate
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+# Login is mounted without the console's session gate; every route on `router` is mounted behind it.
+login_router = APIRouter()
 
 # Fixed internal API base URL — set once at startup from env vars, never
 # from user input.  This is NOT an SSRF vector because callers cannot
@@ -163,7 +165,7 @@ async def _validated_json_body(request: Request) -> bytes | None:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/admin/api/login")
+@login_router.post("/admin/api/login")
 async def proxy_login(request: Request) -> Response:
     """Proxy login requests to the API service."""
     try:

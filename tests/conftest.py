@@ -154,11 +154,12 @@ def fake_catalog() -> Iterator[FakeCatalogApi]:
     """Point the console's session gate at an in-process fake catalog-api for one test."""
     from dashboard.session_auth import gate
 
-    saved = (gate.api_base_url, gate.cache, gate.tickets, gate.transport)
+    saved = dict(vars(gate))
     catalog = FakeCatalogApi()
     gate.configure("catalog-api.test", 8004, transport=httpx.ASGITransport(app=catalog.app))
     yield catalog
-    gate.api_base_url, gate.cache, gate.tickets, gate.transport = saved
+    vars(gate).clear()
+    vars(gate).update(saved)
 
 
 @pytest.fixture(scope="session")

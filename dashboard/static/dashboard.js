@@ -4,6 +4,10 @@
 // or expired, or when the session it was opened with stopped being valid.
 const WS_CLOSE_UNAUTHENTICATED = 4401;
 
+// Statuses with which the session gate refuses a request: no or a dead session (401), too
+// many failed checks from this address (429), or catalog-api unable to answer (503).
+const SESSION_REFUSALS = new Set([401, 429, 503]);
+
 // The Overview's live view. It reads nothing until admin.js confirms a session and announces
 // it with `console:authenticated`; `console:signed-out` stops it again. Every data request and
 // every WebSocket ticket carries the session's bearer.
@@ -75,7 +79,7 @@ class Dashboard {
     // bearer for a single-use ticket (valid 30 s) and presents it as `/ws?ticket=...`.
     async _fetchTicket() {
         const response = await fetch('/api/ws-ticket', { method: 'POST', headers: this._authHeaders(), cache: 'no-store' });
-        if (response.status === 401 || response.status === 503) {
+        if (SESSION_REFUSALS.has(response.status)) {
             this.requestSessionCheck();
             return null;
         }
@@ -221,7 +225,7 @@ class Dashboard {
     async fetchInitialData() {
         try {
             const response = await fetch('/api/metrics', { headers: this._authHeaders() });
-            if (response.status === 401 || response.status === 503) {
+            if (SESSION_REFUSALS.has(response.status)) {
                 this.requestSessionCheck();
             } else if (response.ok) {
                 const data = await response.json();

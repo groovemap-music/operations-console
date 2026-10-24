@@ -36,6 +36,7 @@ from pydantic import BaseModel
 
 from dashboard import telemetry as console_telemetry
 from dashboard.admin_proxy import configure as configure_admin_proxy
+from dashboard.admin_proxy import login_router as admin_login_router
 from dashboard.admin_proxy import router as admin_router
 from dashboard.catalog_contract import DISCOGS_EXCHANGE_PREFIX, MUSICBRAINZ_EXCHANGE_PREFIX
 from dashboard.config import get_config
@@ -45,6 +46,7 @@ from dashboard.session_auth import (
     WS_TICKET_SCOPE_KEY,
     AdminSession,
     SessionRejected,
+    cache_seconds_from_env,
     install_ticket_redaction,
     require_session,
     session_rejected_handler,
@@ -620,9 +622,11 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     global dashboard
     dashboard = DashboardApp()
     await dashboard.startup()
+    await session_gate.start()
     try:
         yield
     finally:
+        await session_gate.aclose()
         await dashboard.shutdown()
         shutdown_telemetry()
 
@@ -643,7 +647,12 @@ class ConsoleApp(FastAPI):
 
 install_ticket_redaction()
 
+# No interactive docs or OpenAPI document: anonymous callers get the login shell and /health
+# only. `app.openapi()` still builds the schema, and the AGPL source link stays in the page.
 app = ConsoleApp(
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
     title="GrooveMap Dashboard",
     version="0.1.0",
     license_info={"name": "GNU Affero General Public License v3 only", "identifier": "AGPL-3.0-only"},
@@ -753,7 +762,8 @@ async def get_session(session: AdminSession = Depends(require_session)) -> JSONR
 @app.post("/api/ws-ticket")
 async def issue_ws_ticket(request: Request) -> JSONResponse:
     """Mint a single-use ticket, valid for 30 seconds, that opens one live WebSocket."""
-    session, token = await session_gate.validate(request.headers.get("authorization"))
+    client = request.client.host if request.client else None
+    session, token = await session_gate.validate(request.headers.get("authorization"), client=client)
     ticket, lifetime = session_gate.tickets.issue(session, token)
     return JSONResponse(content={"ticket": ticket, "expires_in": int(lifetime)}, headers={"Cache-Control": "no-store"})
 
@@ -770,14 +780,22 @@ async def _discard_websocket(websocket: WebSocket) -> None:
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """WebSocket endpoint for real-time updates, opened with a ticket from ``POST /api/ws-ticket``.
 
-    A missing, reused, or expired ticket is accepted only to be closed with 4401: a close before
-    accept reaches the browser as a bare handshake failure, which it cannot tell from a network
-    drop. While open, the socket re-validates its session every 30 seconds and at the session's
-    expiry, and closes with 4401 as soon as catalog-api stops honouring it.
+    The ticket is redeemed and its bearer re-validated with catalog-api, bypassing the session
+    cache, before anything is sent. A missing, reused, expired, or logged-out ticket is accepted
+    only to be closed with 4401: a close before accept reaches the browser as a bare handshake
+    failure, which it cannot tell from a network drop. While open, the socket re-validates its
+    session against catalog-api (again bypassing the cache) on a fixed 30-second schedule and at
+    the session's expiry, and closes with 4401 as soon as catalog-api stops honouring it. The
+    console never expects client frames; any that arrive are discarded and cannot postpone a
+    re-check.
     """
     grant = session_gate.tickets.redeem(websocket.scope.get(WS_TICKET_SCOPE_KEY))
     await websocket.accept()
-    if grant is None:
+    session: AdminSession | None = None
+    if grant is not None:
+        with contextlib.suppress(SessionRejected):
+            session = await session_gate.validate_token(grant.token, fresh=True)
+    if grant is None or session is None:
         await websocket.close(code=WS_CLOSE_UNAUTHENTICATED)
         return
 
@@ -800,19 +818,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 ).decode()
             )
 
-        # Keep the connection alive until the client leaves or the session ends.
-        session = grant.session
+        # Keep the connection alive until the client leaves or the session ends. The re-check
+        # deadline is monotonic and only moves after a re-check, so client frames cannot hold
+        # it off; it is tested before every receive, so a client that always has a frame
+        # queued cannot starve it either.
+        next_check = time.monotonic() + _WS_SESSION_RECHECK_SECONDS
         while True:
-            wait = max(min(_WS_SESSION_RECHECK_SECONDS, session.seconds_left()), 0.0)
-            try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=wait)
-            except TimeoutError:
+            if time.monotonic() >= next_check or session.seconds_left() <= 0:
                 try:
-                    session = await session_gate.validate_token(grant.token)
+                    session = await session_gate.validate_token(grant.token, fresh=True)
                 except SessionRejected:
                     await _discard_websocket(websocket)
                     await websocket.close(code=WS_CLOSE_UNAUTHENTICATED)
                     return
+                next_check = time.monotonic() + _WS_SESSION_RECHECK_SECONDS
+            wait = max(min(next_check - time.monotonic(), session.seconds_left()), 0.0)
+            try:
+                message = await asyncio.wait_for(websocket.receive(), timeout=wait)
+            except TimeoutError:
+                continue
+            if message["type"] == "websocket.disconnect":
+                raise WebSocketDisconnect(message.get("code", 1000))
+            # Any other frame is not part of the console's protocol and is discarded.
 
     except WebSocketDisconnect:
         await _discard_websocket(websocket)
@@ -827,8 +854,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 _admin_api_host = os.getenv("API_HOST", "api")
 _admin_api_port = int(os.getenv("API_PORT", "8004"))
 configure_admin_proxy(_admin_api_host, _admin_api_port)
-session_gate.configure(_admin_api_host, _admin_api_port, cache_seconds=float(os.getenv("SESSION_CACHE_SECONDS", "30")))
-app.include_router(admin_router)
+session_gate.configure(_admin_api_host, _admin_api_port, cache_seconds=cache_seconds_from_env(os.getenv("SESSION_CACHE_SECONDS")))
+# Login is the only public proxy route; every other admin route also needs a live session here,
+# so an anonymous request is refused by the console before it costs a catalog-api call.
+app.include_router(admin_login_router)
+app.include_router(admin_router, dependencies=_SESSION_REQUIRED)
 
 
 @app.get("/admin")

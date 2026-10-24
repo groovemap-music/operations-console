@@ -7,11 +7,16 @@ deny it as an invalid session; a 5xx, a malformed body, or an unreachable catalo
 as unavailable, because the console cannot tell a live session from a dead one without its
 authority. A positive answer is cached for at most 30 seconds, keyed by a SHA-256 of the
 token and never past the session's own expiry, which keeps the console's polling inside
-catalog-api's per-token rate limit. Failures are never cached.
+catalog-api's per-token rate limit. Only an "invalid" answer is remembered, briefly, so the
+same dead bearer is not re-checked on every request; and each client address may make only a
+bounded number of failed checks per minute, so a stream of junk bearers cannot be amplified
+into catalog-api calls. One shared HTTP client, opened and closed by the app lifespan, carries
+every check.
 
 Browsers cannot set ``Authorization`` on a WebSocket, so an authenticated
 ``POST /api/ws-ticket`` mints a single-use ticket valid for 30 seconds and the browser opens
-``/ws?ticket=...``. ``take_ws_ticket`` moves the ticket out of the ASGI scope's query string
+``/ws?ticket=...``. Logging out purges the bearer's outstanding tickets, and the socket
+re-validates the bearer with catalog-api, bypassing the cache, when it opens. ``take_ws_ticket`` moves the ticket out of the ASGI scope's query string
 before any access logger or tracer reads it, and ``TicketRedactingFilter`` redacts it from
 server log records written before the application sees the request (the websocket library's
 own debug line). Only a ticket removed from the query string can be redeemed, so a code path
@@ -22,10 +27,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import re
 import secrets
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Callable  # noqa: TC003  # dataclass fields resolve annotations at runtime.
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -36,6 +42,7 @@ import httpx
 import structlog
 from common import describe_exception
 from fastapi import Request  # noqa: TC002  # FastAPI resolves dependency annotations at runtime.
+from httpx import AsyncClient
 from starlette.responses import JSONResponse
 
 from dashboard import catalog_admin_contract
@@ -50,18 +57,25 @@ WS_TICKET_SCOPE_KEY = "groovemap.ws_ticket"
 _VALIDATION_TIMEOUT_SECONDS = 5.0
 _MAX_CACHED_SESSIONS = 1024
 _MAX_OUTSTANDING_TICKETS = 4096
+_MAX_TRACKED_CLIENTS = 4096
+# Failed validations one client address may cause per window before its unknown bearers are
+# refused without asking catalog-api, and how long one bearer's "invalid" answer is reused.
+FAILED_CHECKS_PER_CLIENT = 20
+FAILED_CHECK_WINDOW_SECONDS = 60.0
+INVALID_ANSWER_SECONDS = 10.0
 
 # RFC 6750 b64token, bounded. Anything else is rejected without a catalog-api round trip, so
 # an anonymous client cannot turn arbitrary header bytes into upstream validation calls.
 _BEARER_TOKEN = re.compile(r"^[A-Za-z0-9\-._~+/]{1,4096}=*$")
 
-Reason = Literal["missing", "invalid", "unavailable"]
+Reason = Literal["missing", "invalid", "unavailable", "throttled"]
 
-_REJECTION_STATUS: dict[str, int] = {"missing": 401, "invalid": 401, "unavailable": 503}
+_REJECTION_STATUS: dict[str, int] = {"missing": 401, "invalid": 401, "unavailable": 503, "throttled": 429}
 _REJECTION_DETAIL: dict[str, str] = {
     "missing": "Sign in to use the operations console",
     "invalid": "Your admin session has expired or was revoked; sign in again",
     "unavailable": "catalog-api could not verify your admin session; sign in again once it is reachable",
+    "throttled": "Too many failed session checks from this address; wait a minute and try again",
 }
 
 
@@ -97,6 +111,17 @@ class SessionRejected(Exception):
         return _REJECTION_DETAIL[self.reason]
 
 
+def cache_seconds_from_env(raw: str | None) -> float:
+    """Parse ``SESSION_CACHE_SECONDS``; anything but a finite number of seconds fails startup.
+
+    ``nan`` passes both ``min`` and ``max`` unchanged and would make every cache entry immortal.
+    """
+    value = SESSION_CACHE_MAX_SECONDS if raw is None or not raw.strip() else float(raw)
+    if not math.isfinite(value):
+        raise ValueError(f"SESSION_CACHE_SECONDS must be a finite number of seconds, got {raw!r}")
+    return value
+
+
 def token_digest(token: str) -> str:
     """Return the cache key for a bearer token; the token itself is never stored as a key."""
     return hashlib.sha256(token.encode()).hexdigest()
@@ -123,6 +148,8 @@ class SessionCache:
         wall_clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         """Create a cache whose entries live at most ``ttl_seconds`` (capped at 30)."""
+        if not math.isfinite(ttl_seconds):
+            raise ValueError(f"session cache TTL must be finite, got {ttl_seconds!r}")
         self.ttl_seconds = min(max(ttl_seconds, 0.0), SESSION_CACHE_MAX_SECONDS)
         self.max_entries = max_entries
         self._monotonic = monotonic
@@ -215,10 +242,79 @@ class TicketStore:
             return None
         return grant
 
+    def purge(self, key: str) -> None:
+        """Drop every outstanding ticket issued for the bearer whose digest is ``key``."""
+        for ticket_key in [ticket_key for ticket_key, (_, grant) in self._tickets.items() if token_digest(grant.token) == key]:
+            del self._tickets[ticket_key]
+
     def _prune(self) -> None:
         now = self._monotonic()
         for key in [key for key, (deadline, _) in self._tickets.items() if now >= deadline]:
             del self._tickets[key]
+
+
+class FailureThrottle:
+    """Bounds how many unknown bearers a client can make the console check with catalog-api.
+
+    Two limits: a bearer catalog-api just called invalid is refused again for a few seconds
+    without asking, and a client address that caused ``max_failures`` invalid answers inside
+    the window has further unknown bearers refused until the window slides.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_failures: int = FAILED_CHECKS_PER_CLIENT,
+        window_seconds: float = FAILED_CHECK_WINDOW_SECONDS,
+        invalid_ttl_seconds: float = INVALID_ANSWER_SECONDS,
+        max_entries: int = _MAX_TRACKED_CLIENTS,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """Create an empty throttle."""
+        self.max_failures = max_failures
+        self.window_seconds = window_seconds
+        self.invalid_ttl_seconds = invalid_ttl_seconds
+        self.max_entries = max_entries
+        self._monotonic = monotonic
+        self._failures: OrderedDict[str, deque[float]] = OrderedDict()
+        self._invalid: OrderedDict[str, float] = OrderedDict()
+
+    def known_invalid(self, key: str) -> bool:
+        """True while catalog-api's recent "invalid" answer for this bearer digest still stands."""
+        deadline = self._invalid.get(key)
+        if deadline is None:
+            return False
+        if self._monotonic() >= deadline:
+            del self._invalid[key]
+            return False
+        return True
+
+    def throttled(self, client: str) -> bool:
+        """True when ``client`` has used up its failed checks for the current window."""
+        return len(self._recent(client)) >= self.max_failures
+
+    def record_invalid(self, client: str | None, key: str) -> None:
+        """Remember an invalid answer for ``key`` and charge it to ``client``."""
+        now = self._monotonic()
+        self._invalid[key] = now + self.invalid_ttl_seconds
+        self._invalid.move_to_end(key)
+        while len(self._invalid) > self.max_entries:
+            self._invalid.popitem(last=False)
+        if client is None:
+            return
+        failures = self._recent(client)
+        failures.append(now)
+        self._failures[client] = failures
+        self._failures.move_to_end(client)
+        while len(self._failures) > self.max_entries:
+            self._failures.popitem(last=False)
+
+    def _recent(self, client: str) -> deque[float]:
+        failures = self._failures.get(client, deque())
+        horizon = self._monotonic() - self.window_seconds
+        while failures and failures[0] <= horizon:
+            failures.popleft()
+        return failures
 
 
 class SessionGate:
@@ -229,7 +325,13 @@ class SessionGate:
         self.api_base_url = "http://api:8004"
         self.cache = SessionCache()
         self.tickets = TicketStore()
+        self.throttle = FailureThrottle()
         self.transport: httpx.AsyncBaseTransport | None = None
+        self._client: AsyncClient | None = None
+        # Digests of bearers catalog-api confirmed, until their sessions expire. A confirmed
+        # session's re-checks are never throttled, so junk from a shared address (a reverse
+        # proxy) cannot sign out the operators behind it.
+        self._confirmed: OrderedDict[str, AdminSession] = OrderedDict()
 
     def configure(
         self,
@@ -239,42 +341,100 @@ class SessionGate:
         cache_seconds: float = SESSION_CACHE_MAX_SECONDS,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        """Point the gate at catalog-api and reset its cache and tickets (called at startup)."""
+        """Point the gate at catalog-api and reset its stores (called at import and in tests)."""
         self.api_base_url = f"http://{api_host}:{api_port}"
         self.cache = SessionCache(cache_seconds)
         self.tickets = TicketStore()
-        self.transport = transport
+        self.throttle = FailureThrottle()
+        self._confirmed = OrderedDict()
+        self.use_transport(transport)
 
-    async def validate(self, authorization: str | None) -> tuple[AdminSession, str]:
+    def use_transport(self, transport: httpx.AsyncBaseTransport | None) -> None:
+        """Send future checks through ``transport``; the shared client is rebuilt on next start."""
+        self.transport = transport
+        self._client = None
+
+    async def start(self) -> None:
+        """Open the shared catalog-api client (called from the app lifespan)."""
+        if self._client is None:
+            self._client = AsyncClient(timeout=_VALIDATION_TIMEOUT_SECONDS, transport=self.transport)
+
+    async def aclose(self) -> None:
+        """Close the shared catalog-api client (called from the app lifespan)."""
+        client, self._client = self._client, None
+        if client is not None:
+            await client.aclose()
+
+    async def validate(self, authorization: str | None, *, client: str | None = None) -> tuple[AdminSession, str]:
         """Return the live session behind an ``Authorization`` header value, and its bearer."""
         if not authorization:
             raise SessionRejected("missing")
         token = bearer_token(authorization)
         if token is None:
             raise SessionRejected("invalid")
-        return await self.validate_token(token), token
+        return await self.validate_token(token, client=client), token
 
-    async def validate_token(self, token: str) -> AdminSession:
-        """Return the live session for ``token`` from the cache or from catalog-api."""
+    async def validate_token(self, token: str, *, client: str | None = None, fresh: bool = False) -> AdminSession:
+        """Return the live session for ``token``.
+
+        ``fresh`` skips the positive cache and asks catalog-api, so a caller that must notice a
+        revocation promptly (an open WebSocket) never rides a cached answer. ``client`` is the
+        requesting address the failed-check throttle charges.
+        """
         key = token_digest(token)
-        cached = self.cache.get(key)
-        if cached is not None:
-            return cached
-        session = await self._fetch_session(token)
+        if not fresh:
+            cached = self.cache.get(key)
+            if cached is not None:
+                return cached
+        if self.throttle.known_invalid(key):
+            raise SessionRejected("invalid")
+        if client is not None and not self._is_confirmed(key) and self.throttle.throttled(client):
+            raise SessionRejected("throttled")
+        try:
+            session = await self._fetch_session(token)
+        except SessionRejected as rejected:
+            if rejected.reason == "invalid":
+                self.cache.evict(key)
+                self._confirmed.pop(key, None)
+                self.throttle.record_invalid(client, key)
+            raise
         self.cache.put(key, session)
+        self._confirmed[key] = session
+        self._confirmed.move_to_end(key)
+        while len(self._confirmed) > _MAX_CACHED_SESSIONS:
+            self._confirmed.popitem(last=False)
         return session
 
     def forget(self, authorization: str | None) -> None:
-        """Evict the cached session behind a header value, e.g. after a successful logout."""
+        """Drop everything held for a bearer after logout: cached session and open tickets."""
         token = bearer_token(authorization)
         if token is not None:
-            self.cache.evict(token_digest(token))
+            key = token_digest(token)
+            self.cache.evict(key)
+            self.tickets.purge(key)
+            self._confirmed.pop(key, None)
+
+    def _is_confirmed(self, key: str) -> bool:
+        session = self._confirmed.get(key)
+        if session is None:
+            return False
+        if session.seconds_left() <= 0:
+            del self._confirmed[key]
+            return False
+        return True
+
+    async def _get(self, url: str, token: str) -> httpx.Response:
+        headers = {"Authorization": f"Bearer {token}"}
+        if self._client is not None:
+            return await self._client.get(url, headers=headers)
+        # Outside the app lifespan (a bare TestClient), fall back to a one-off client.
+        async with AsyncClient(timeout=_VALIDATION_TIMEOUT_SECONDS, transport=self.transport) as client:
+            return await client.get(url, headers=headers)
 
     async def _fetch_session(self, token: str) -> AdminSession:
         url = f"{self.api_base_url}{catalog_admin_contract.ADMIN_SESSION_PATH}"
         try:
-            async with httpx.AsyncClient(timeout=_VALIDATION_TIMEOUT_SECONDS, transport=self.transport) as client:
-                response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+            response = await self._get(url, token)
         except httpx.HTTPError as exc:
             logger.warning("⚠️ catalog-api unreachable for admin-session validation", url=url, error=describe_exception(exc))
             raise SessionRejected("unavailable") from exc
@@ -313,7 +473,7 @@ gate = SessionGate()
 
 async def require_session(request: Request) -> AdminSession:
     """FastAPI dependency: the request's live admin session, or a SessionRejected response."""
-    session, _ = await gate.validate(request.headers.get("authorization"))
+    session, _ = await gate.validate(request.headers.get("authorization"), client=request.client.host if request.client else None)
     return session
 
 
@@ -321,11 +481,10 @@ async def session_rejected_handler(_request: Request, exc: Exception) -> JSONRes
     """Render a SessionRejected as ``{"detail", "reason"}`` with the matching status."""
     if not isinstance(exc, SessionRejected):  # pragma: no cover - registered for SessionRejected only
         raise exc
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"detail": exc.detail, "reason": exc.reason},
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    headers = {"WWW-Authenticate": "Bearer"}
+    if exc.reason == "throttled":
+        headers["Retry-After"] = str(int(FAILED_CHECK_WINDOW_SECONDS))
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail, "reason": exc.reason}, headers=headers)
 
 
 def take_ws_ticket(scope: dict[str, Any]) -> None:

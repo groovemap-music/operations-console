@@ -68,6 +68,7 @@ const SESSION_END_MESSAGES = {
     missing: 'Your session expired or was revoked. Sign in again.',
     invalid: 'Your session expired or was revoked. Sign in again.',
     unavailable: 'catalog-api is unreachable, so your session could not be verified. Sign in again once it is back.',
+    throttled: 'Too many failed session checks from this address. Wait a minute and sign in again.',
     'console-unreachable': 'The operations console could not be reached. Sign in again once it is back.',
 };
 
