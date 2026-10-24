@@ -395,3 +395,59 @@ agree:
   flagged ones.
 
 Both tabs auto-refresh every 60 seconds and respect the currently selected time range.
+
+## Identity Ledger
+
+The **Ledger** tab is the console's first view of the Identity Ledger: concept D of
+[design ADR 0016](https://github.com/groovemap-music/design/blob/main/docs/adr/0016-strata-graph-view.md)
+section 7. It shows how catalog identity changed over time as a table, with no graph view. It
+reads three read-only `catalog-api` routes through the console's admin proxy:
+
+| Console route | `catalog-api` operation | Reads |
+| --- | --- | --- |
+| `GET /admin/api/identity/ledger/density?kind=` | `admin_identity_ledger_density` | Identity events per UTC month, by type and provenance |
+| `GET /admin/api/identity/ledger/works?page=&page_size=&event=&since=&until=` | `admin_identity_ledger_works` | Works whose editions carry identity events, latest event first |
+| `GET /admin/api/identity/ledger/works/{work_id}?as_of=&edition_limit=` | `admin_identity_ledger_work` | One work's editions, states, and events at `as_of` |
+
+The proxy rejects a malformed request before it reaches `catalog-api`. That covers an unknown
+event or kind, a `page_size` above 100, an `edition_limit` outside 1 to 500, an `as_of`, `since`
+or `until` that is not an RFC 3339 instant with an offset, and an unsafe `work_id` path segment.
+
+The tab reads nothing until you open it, because the strip and the list each scan the alias
+table at catalog scale. After that it re-reads only when you press **Refresh** or change a
+filter. It does not auto-refresh.
+
+- **Identity events per month.** A stacked bar per UTC month for the chosen kind (releases,
+  masters, artists, or labels), split by event type. Empty months stay on the axis, so it reads
+  as time.
+- **Works with identity events.** Paged 50 at a time, like the audit log. **Event** keeps only
+  that event type. **Since** and **Until** are UTC days, and both are included; the console
+  sends `until` as the start of the next day, because `catalog-api` treats it as exclusive.
+  Counts and the first and last event cover the matching events only. **Editions** and
+  **Disagreements** describe the whole work.
+- **Work drill-down.** Choose a work id to open it. **As of (UTC)** reads the ledger at that
+  transaction time, and **Now** returns to the present. Each edition shows its state
+  (`not_recorded`, `discogs_only`, `musicbrainz_only`, `unresolved`, `split`, or `linked`),
+  its primary work and any other work parent, its provider rows, the items superseded into it,
+  and its events. Hover over an event type to see the rule that produces it. **Work
+  disagreement** marks an edition whose Discogs master and MusicBrainz release group resolve to
+  different works; the Discogs side is listed first as the primary work. Choosing the other
+  work opens it.
+
+### The two provenances
+
+Every event carries `dated_from`, and the tab shows both values differently:
+
+- **Recorded by GrooveMap** (`groovemap`). GrooveMap's own tables, plus the link changes
+  `musicbrainz-sql-loader` records when it loads a dump. These times are when the change was
+  recorded.
+- **Dated from the MusicBrainz full export** (`musicbrainz_fullexport`). The one-time
+  `catalog-identity-ledger-backfill` dated each MusicBrainz release's Discogs link from the full
+  export. About 9% of those dates belong to an older link that MusicBrainz later replaced, so
+  read them as estimates, not as recorded times. In the drill-down every such event carries
+  the label "dated from the MusicBrainz full export". In the strip their segments are hatched
+  and their months are highlighted on the axis, and the note under the legend lists those
+  months.
+
+A MusicBrainz row keeps no history of its Discogs link. A past `unresolved` or `split` state is
+therefore computed from today's link.
