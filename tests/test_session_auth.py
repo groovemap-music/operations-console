@@ -381,6 +381,11 @@ class TestEventBacklog:
     def test_a_connecting_client_receives_the_recent_events_after_the_first_reading(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
         from dashboard import dashboard as console
 
+        # The live loop runs in another thread: let it record its own first reading (the baseline) before seeding,
+        # or that reading can land between the seeded ones and add an event of its own.
+        deadline = time.monotonic() + 5
+        while console.dashboard.latest_metrics is None and time.monotonic() < deadline:
+            time.sleep(0.01)
         self._seed(console.dashboard.events)
         ticket = client.post("/api/ws-ticket", headers=_bearer(fake_catalog.mint())).json()["ticket"]
         with client.websocket_connect(f"/ws?ticket={ticket}") as websocket:

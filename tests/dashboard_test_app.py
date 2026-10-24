@@ -22,6 +22,7 @@ from dashboard import dashboard as console
 from dashboard.catalog_contract import DISCOGS_EXCHANGE_PREFIX, MUSICBRAINZ_EXCHANGE_PREFIX
 from dashboard.config import DashboardConfig
 from dashboard.dashboard import DashboardApp
+from dashboard.platform_health import GROUP_APPLICATIONS, GROUP_DATA, GROUP_OBSERVABILITY, JobStatus, PlatformService
 from dashboard.session_auth import SessionRejected, session_rejected_handler
 
 
@@ -53,15 +54,25 @@ _QUEUE_READINGS: dict[str, list[tuple[str, int, int, int, float, float]]] = {
 class MockDashboardApp(DashboardApp):
     """The real dashboard aggregation and broadcast loop over fixed collector readings."""
 
-    def __init__(self, include_musicbrainz: bool = False) -> None:
+    def __init__(self, include_musicbrainz: bool = True) -> None:
         """Initialise without reading datastore configuration from the environment."""
         with patch("dashboard.dashboard.get_config", return_value=_CONFIG):
             super().__init__()
         self.include_musicbrainz = include_musicbrainz
 
     async def startup(self) -> None:
-        """Run the real collection loop; no datastore clients are opened."""
-        self.update_task = asyncio.create_task(self.collect_metrics_loop())
+        """Take the first reading, then run the real collection loop; no datastore clients are opened.
+
+        The first reading is in place (and is the event baseline) before the app serves a request, so a
+        request or a seeded event cannot race the loop's first poll, which waits one interval.
+        """
+        self.latest_metrics = await self.collect_all_metrics()
+        self.events.observe(self.latest_metrics)
+        self.update_task = asyncio.create_task(self._loop_after_first_interval())
+
+    async def _loop_after_first_interval(self) -> None:
+        await asyncio.sleep(2)
+        await self.collect_metrics_loop()
 
     async def shutdown(self) -> None:
         """Stop the loop and close any live sockets."""
@@ -72,7 +83,7 @@ class MockDashboardApp(DashboardApp):
         await self.websockets.close_all()
 
     async def get_service_statuses(self, service_configs: list[tuple[str, str]]) -> list[console.ServiceStatus]:
-        """Every Discogs service is healthy; MusicBrainz services only when deployed."""
+        """Every Discogs service is healthy; MusicBrainz services only when deployed, else none of them answers."""
         statuses = []
         for name, _url in service_configs:
             deployed = self.include_musicbrainz or name not in _MUSICBRAINZ_SERVICES
@@ -96,6 +107,18 @@ class MockDashboardApp(DashboardApp):
             )
             for name, messages, ready, unacked, rate, ack in _QUEUE_READINGS.get(prefix, [])
         ]
+
+    async def get_platform_health(self) -> list[PlatformService]:
+        """One healthy service per group; nothing is probed."""
+        seen = datetime(2024, 1, 1, tzinfo=UTC)
+        return [
+            PlatformService(name=name, group=group, status="healthy", last_seen=seen, error=None)
+            for name, group in (("catalog-api", GROUP_APPLICATIONS), ("valkey", GROUP_DATA), ("grafana", GROUP_OBSERVABILITY))
+        ]
+
+    async def get_job_status(self) -> list[JobStatus]:
+        """Jobs without a readable record."""
+        return [JobStatus(name="schema-init", monitored=False, detail="not monitored here")]
 
     async def get_database_info(self) -> list[console.DatabaseInfo]:
         """Fixed, healthy datastore readings."""
@@ -122,7 +145,7 @@ def _lifespan(include_musicbrainz: bool) -> Callable[[FastAPI], AbstractAsyncCon
     return lifespan
 
 
-def create_test_app(include_musicbrainz: bool = False) -> FastAPI:
+def create_test_app(include_musicbrainz: bool = True) -> FastAPI:
     """Create the console app with the production routes and a fixed metrics source."""
     app = console.ConsoleApp(
         docs_url=None,
@@ -141,3 +164,8 @@ def create_test_app(include_musicbrainz: bool = False) -> FastAPI:
 def create_test_app_with_musicbrainz() -> FastAPI:
     """Create the console test app with the MusicBrainz pipeline deployed."""
     return create_test_app(include_musicbrainz=True)
+
+
+def create_test_app_without_musicbrainz() -> FastAPI:
+    """Create the console test app with no MusicBrainz service answering: its pipeline is down."""
+    return create_test_app(include_musicbrainz=False)

@@ -97,6 +97,13 @@ export const ATTENTION_MARKUP = `
 </section>
 <span id="operational-status-dot"></span><span id="operational-status-text"></span>`;
 
+/** The shell's platform health section, as index.html declares it. */
+export const PLATFORM_MARKUP = `
+<div id="platform-health">
+  <ul data-platform-group="applications"></ul><ul data-platform-group="data"></ul>
+  <ul data-platform-group="observability"></ul><ul data-platform-jobs></ul>
+</div>`;
+
 export const DRAWER_MARKUP = `
 <dialog id="queue-drawer">
   <h2 id="queue-drawer-title"></h2><p id="queue-drawer-subtitle"></p>
@@ -116,7 +123,7 @@ export const TOPOLOGY_MARKUP = `
  * and the topology dialog. `narrow` is a phone (stacked matrix), `wide` a desktop (topology control).
  */
 export function makeDashboard({ narrow = false, wide = true } = {}) {
-    document.body.innerHTML = `${ATTENTION_MARKUP}<div id="pipelines"></div>${DRAWER_MARKUP}${TOPOLOGY_MARKUP}`;
+    document.body.innerHTML = `${ATTENTION_MARKUP}<div id="pipelines"></div>${PLATFORM_MARKUP}${DRAWER_MARKUP}${TOPOLOGY_MARKUP}`;
     const Dashboard = loadDashboardClass();
     const dashboard = Object.create(Dashboard.prototype);
     Object.assign(dashboard, {

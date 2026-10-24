@@ -31,7 +31,10 @@ LEVEL_WARNING = "warning"
 LEVEL_ERROR = "error"
 
 # A service in either status is not serving; every other status (healthy, starting, extracting) is.
-_SERVICE_DOWN = frozenset({"unhealthy", "unknown"})
+_SERVICE_DOWN = frozenset({"unhealthy", "unknown", "unreachable"})
+
+# The platform group whose outage is a warning rather than an error: the stack serves without it.
+_OBSERVABILITY = "observability"
 
 
 def _plural(count: int) -> str:
@@ -52,6 +55,7 @@ class EventDetector:
     ring: deque[dict[str, Any]] = field(init=False)
     _next_id: int = field(default=1, init=False)
     _services: dict[tuple[str, str], bool] = field(default_factory=dict, init=False)
+    _platform: dict[str, bool] = field(default_factory=dict, init=False)
     _datastores: dict[str, bool] = field(default_factory=dict, init=False)
     _available: dict[str, bool] = field(default_factory=dict, init=False)
     _dlq_depth: dict[tuple[str, str], int] = field(default_factory=dict, init=False)
@@ -70,6 +74,7 @@ class EventDetector:
         for pipeline_id, pipeline in metrics.pipelines.items():
             self._services_of(pipeline_id, pipeline.services, found)
             self._broker_of(pipeline_id, pipeline, found)
+        self._platform_of(metrics.platform, found)
         self._datastores_of(metrics, found)
         stamp = metrics.timestamp.astimezone(UTC).isoformat()
         events = []
@@ -92,6 +97,22 @@ class EventDetector:
                 found.append((LEVEL_INFO, "service-recovered", service.name, f"{service.name} is {service.status}"))
             else:
                 level = LEVEL_ERROR if service.status == "unhealthy" else LEVEL_WARNING
+                found.append((level, "service-down", service.name, f"{service.name} is {service.status}"))
+
+    def _platform_of(self, platform: list[Any], found: list[tuple[str, str, str, str]]) -> None:
+        """Platform services; a datastore row is left to ``_datastores_of``, which reports it once."""
+        for service in platform:
+            if service.source != "probe":
+                continue
+            serving = service.status not in _SERVICE_DOWN
+            previous = self._platform.get(service.name)
+            self._platform[service.name] = serving
+            if previous is None or previous == serving:
+                continue
+            if serving:
+                found.append((LEVEL_INFO, "service-recovered", service.name, f"{service.name} is {service.status}"))
+            else:
+                level = LEVEL_WARNING if service.group == _OBSERVABILITY else LEVEL_ERROR
                 found.append((level, "service-down", service.name, f"{service.name} is {service.status}"))
 
     def _datastores_of(self, metrics: SystemMetrics, found: list[tuple[str, str, str, str]]) -> None:

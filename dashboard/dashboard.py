@@ -44,6 +44,18 @@ from dashboard.deep_links import router as deep_links_router
 from dashboard.events import EventDetector
 from dashboard.grafana_alerts import router as grafana_alerts_router
 from dashboard.history import router as history_router
+from dashboard.platform_health import (
+    JOB_CACHE_SECONDS,
+    LAST_EMBEDDINGS_LOAD_SQL,
+    JobStatus,
+    PlatformService,
+    build_probes,
+    datastore_services,
+    embeddings_job,
+    embeddings_unreadable,
+    poll_platform,
+    unmonitored_jobs,
+)
 from dashboard.progress import configure as configure_progress
 from dashboard.progress import router as progress_router
 from dashboard.queue_metrics import RateTracker, parse_queue_samples, scrape_params
@@ -153,6 +165,7 @@ class PipelineMetrics(BaseModel):
     services: list[ServiceStatus]
     queues: list[QueueInfo]
     queues_available: bool = True  # False when the broker scrape failed; `queues` is then empty, not an idle pipeline
+    down: bool = False  # True when no service of the pipeline answered: it is down, not absent
 
 
 class SystemMetrics(BaseModel):
@@ -161,6 +174,8 @@ class SystemMetrics(BaseModel):
     pipelines: dict[str, PipelineMetrics]
     databases: list[DatabaseInfo]
     timestamp: datetime
+    platform: list[PlatformService] = []  # every long-running service outside the pipelines, in display order
+    jobs: list[JobStatus] = []  # one-shot jobs: the last run where a durable record is readable
 
 
 class WebSocketConnections:
@@ -275,6 +290,7 @@ class DashboardApp:
         self.postgres_conn: AsyncResilientPostgreSQL | None = None
         self.update_task: asyncio.Task | None = None
         self._db_info_lock: asyncio.Lock | None = None
+        self._job_cache: tuple[float, list[JobStatus]] | None = None
 
     @property
     def websocket_connections(self) -> set[WebSocket]:
@@ -389,23 +405,74 @@ class DashboardApp:
                 await asyncio.sleep(5)
 
     async def collect_all_metrics(self) -> SystemMetrics:
-        """Collect all system metrics grouped by pipeline."""
-        pipelines: dict[str, PipelineMetrics] = {}
+        """Collect all system metrics: the pipelines, the platform services, the datastores, and the jobs.
 
-        for pipeline_name, config in PIPELINE_CONFIGS.items():
-            services = await self.get_service_statuses(config["services"])
-            queues = await self.get_queue_info(config["queue_prefix"])
-            # Auto-detect: include pipeline only if at least one service is reachable
-            if any(s.status != "unknown" for s in services):
-                pipelines[pipeline_name] = PipelineMetrics(services=services, queues=queues or [], queues_available=queues is not None)
-
-        databases = await self.get_database_info()
-
+        Every source is read at once. A pipeline none of whose services answered is still reported,
+        marked ``down``: it is down, not absent.
+        """
+        names = list(PIPELINE_CONFIGS)
+        pipeline_readings, platform, databases, jobs = await asyncio.gather(
+            asyncio.gather(*(self._collect_pipeline(PIPELINE_CONFIGS[name]) for name in names)),
+            self.get_platform_health(),
+            self.get_database_info(),
+            self.get_job_status(),
+        )
         return SystemMetrics(
-            pipelines=pipelines,
+            pipelines=dict(zip(names, pipeline_readings, strict=True)),
             databases=databases,
             timestamp=datetime.now(UTC),
+            platform=[*self._platform_with_datastores(platform, databases)],
+            jobs=jobs,
         )
+
+    async def _collect_pipeline(self, config: dict) -> PipelineMetrics:
+        services, queues = await asyncio.gather(self.get_service_statuses(config["services"]), self.get_queue_info(config["queue_prefix"]))
+        return PipelineMetrics(
+            services=services,
+            queues=queues or [],
+            queues_available=queues is not None,
+            down=all(service.status == "unknown" for service in services),
+        )
+
+    @staticmethod
+    def _platform_with_datastores(probed: list[PlatformService], databases: list[DatabaseInfo]) -> list[PlatformService]:
+        """The probed services, with the datastores the console is connected to placed first in the Data group."""
+        stores = datastore_services(databases)
+        first_data = next((index for index, service in enumerate(probed) if service.group == "data"), len(probed))
+        return [*probed[:first_data], *stores, *probed[first_data:]]
+
+    async def get_platform_health(self) -> list[PlatformService]:
+        """Check every long-running platform service at once."""
+        return await poll_platform(build_probes(self.config.rabbitmq_prometheus_url))
+
+    async def get_job_status(self) -> list[JobStatus]:
+        """One-shot jobs: the last embeddings load from its durable record, the rest as not monitored.
+
+        Reused for ``JOB_CACHE_SECONDS``: the embeddings run is monthly.
+        """
+        now = time.monotonic()
+        if self._job_cache is not None and now - self._job_cache[0] < JOB_CACHE_SECONDS:
+            return self._job_cache[1]
+        jobs = [*unmonitored_jobs(), await self._embeddings_job()]
+        self._job_cache = (now, jobs)
+        return jobs
+
+    async def _embeddings_job(self) -> JobStatus:
+        if self._db_info_lock is None:
+            self._db_info_lock = asyncio.Lock()
+        try:
+            if self.postgres_conn is None:
+                return embeddings_unreadable()
+            async with self._db_info_lock:
+                conn = await self.postgres_conn.get_connection()
+                async with conn.cursor() as cur:
+                    await cur.execute(LAST_EMBEDDINGS_LOAD_SQL)
+                    row = await cur.fetchone()
+            return embeddings_job(tuple(row) if row else None)
+        except Exception as error:
+            # No table, no grant for the console's role, or no database: there is no record to read.
+            logger.info("Embeddings load record not readable: %s", error)
+            return embeddings_unreadable()
 
     @staticmethod
     async def _poll_service(client: httpx.AsyncClient, name: str, url: str) -> ServiceStatus:
@@ -439,9 +506,9 @@ class DashboardApp:
                 return ServiceStatus(name=name, status="unknown", last_seen=None, current_task=None, progress=None, error=str(error))
 
     async def get_service_statuses(self, service_configs: list[tuple[str, str]]) -> list[ServiceStatus]:
-        """Poll services in configuration order through one shared client."""
+        """Poll the services at once through one shared client; the readings keep configuration order."""
         async with httpx.AsyncClient(timeout=5.0) as client:
-            return [await self._poll_service(client, name, url) for name, url in service_configs]
+            return list(await asyncio.gather(*(self._poll_service(client, name, url) for name, url in service_configs)))
 
     async def get_queue_info(self, prefix: str) -> list[QueueInfo] | None:
         """Read live queue metrics for queues under ``prefix`` from the RabbitMQ Prometheus endpoint.
