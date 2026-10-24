@@ -313,6 +313,14 @@
         .mx-drawer-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
         .mx-drawer-head h2 { font-size: 16px; font-weight: 600; margin: 0; }
         #queue-drawer-subtitle { font-size: 12px; color: var(--mx-text-mid); margin: 2px 0 0; }
+        .mx-links { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; }
+        .mx-links[hidden] { display: none; }
+        .mx-drawer .mx-links { display: flex; margin: 0 0 12px; }
+        .mx-link { color: var(--mx-accent); font-weight: 600; text-decoration: underline; }
+        .mx-link::after { content: " ↗"; text-decoration: none; display: inline-block; }
+        .mx-link:focus-visible { outline: 2px solid var(--mx-accent); outline-offset: 2px; }
+        .attention-links { display: flex; padding: 0 6px 2px 24px; }
+        .attention-links[hidden] { display: none; }
         .mx-drawer-state { font-size: 12px; font-weight: 700; margin: 12px 0; color: var(--mx-text-mid); }
         .mx-drawer-state[data-state="crit"] { color: var(--mx-crit); }
         .mx-drawer-state[data-state="warn"] { color: var(--mx-warn); }
@@ -479,6 +487,7 @@
                     <button id="queue-drawer-close" type="button" class="mx-drawer-close" aria-label="Close queue details">Close</button>
                 </div>
                 <p id="queue-drawer-state" class="mx-drawer-state" role="status"></p>
+                <nav id="queue-drawer-links" class="mx-links" aria-label="Grafana links" hidden></nav>
                 <dl id="queue-drawer-numbers"></dl>
             </dialog>
 
@@ -504,6 +513,7 @@
                             </div>
                             <span id="neo4j-status-badge" class="text-[10px] t-muted font-bold uppercase">Unknown</span>
                         </div>
+                        <nav class="mx-links mt-3" data-datastore-links="neo4j" aria-label="Neo4j links" hidden></nav>
                         <div class="grid grid-cols-2 gap-4 mt-6">
                             <div class="p-4 rounded-lg bg-inner border">
                                 <p class="text-[9px] t-muted uppercase font-bold tracking-wider">Total Nodes</p>
@@ -525,6 +535,7 @@
                             </div>
                             <span id="postgresql-status-badge" class="text-[10px] t-muted font-bold uppercase">Unknown</span>
                         </div>
+                        <nav class="mx-links mt-3" data-datastore-links="postgresql" aria-label="PostgreSQL links" hidden></nav>
                         <div class="grid grid-cols-2 gap-4 mt-6">
                             <div class="p-4 rounded-lg bg-inner border">
                                 <p class="text-[9px] t-muted uppercase font-bold tracking-wider">Connections</p>
