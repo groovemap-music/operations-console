@@ -8,7 +8,8 @@ from repository_source import RepositorySourceError, tracked_tree_text
 
 
 ROOT = Path(__file__).resolve().parents[1]
-AUTOMATION_REVISION = "833cb464507678c38ab78bd4718ce697399463e9"
+AUTOMATION_CI_REVISION = "dbf22ed83d486e9484fc8c6385c7c3e5995700e4"
+AUTOMATION_RELEASE_REVISION = "833cb464507678c38ab78bd4718ce697399463e9"
 PYTHON_LIBRARIES_REVISION = "9bac0220df80fdb550fde78d4db8228ca4273625"
 E2E_PROJECTS = {"chromium", "firefox", "webkit", "iphone", "ipad"}
 COVERAGE_FILES = (
@@ -48,7 +49,7 @@ assert "dependabot" not in ci.lower()
 assert "fallback-command" not in ci
 assert workflow_jobs(ci) == {"required"}
 ci_target = re.search(r"groovemap-music/automation/\.github/workflows/reusable-ci\.yml@([^\s]+)", ci)
-assert ci_target is not None and ci_target.group(1) == AUTOMATION_REVISION
+assert ci_target is not None and ci_target.group(1) == AUTOMATION_CI_REVISION
 coverage_files = workflow_block_input(ci, "coverage-files")
 assert coverage_files == COVERAGE_FILES
 browser_mapping_lines = workflow_block_input(ci, "browser-coverage-mapping")
@@ -83,7 +84,7 @@ for marker in (
 release = (ROOT / ".github/workflows/release.yml").read_text()
 assert "attestations: write" in release
 release_target = re.search(r"groovemap-music/automation/\.github/workflows/reusable-release\.yml@([^\s]+)", release)
-assert release_target is not None and release_target.group(1) == AUTOMATION_REVISION
+assert release_target is not None and release_target.group(1) == AUTOMATION_RELEASE_REVISION
 for required_input in (
     "repository-name: operations-console",
     "release-command: just release-dry-run",
