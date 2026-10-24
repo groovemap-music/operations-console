@@ -127,7 +127,6 @@ class TestTelemetryRegression:
     def app_client(
         self,
         mock_dashboard_config: DashboardConfig,
-        dashboard_mock_amqp_connection: AsyncMock,
         dashboard_mock_neo4j_driver: MagicMock,
         dashboard_mock_httpx_client: MagicMock,
         dashboard_mock_psycopg_connect: AsyncMock,
@@ -141,7 +140,6 @@ class TestTelemetryRegression:
         """
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_dashboard_config),
-            patch("dashboard.dashboard.AsyncResilientRabbitMQ", return_value=dashboard_mock_amqp_connection),
             patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=dashboard_mock_neo4j_driver),
             patch("dashboard.dashboard.AsyncResilientPostgreSQL", return_value=dashboard_mock_psycopg_connect),
             patch("httpx.AsyncClient") as mock_httpx_class,
@@ -398,7 +396,6 @@ class TestLifespanTelemetryBracket:
     def booted(
         self,
         mock_dashboard_config: DashboardConfig,
-        dashboard_mock_amqp_connection: AsyncMock,
         dashboard_mock_neo4j_driver: MagicMock,
         dashboard_mock_httpx_client: MagicMock,
         dashboard_mock_psycopg_connect: AsyncMock,
@@ -416,7 +413,6 @@ class TestLifespanTelemetryBracket:
 
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_dashboard_config),
-            patch("dashboard.dashboard.AsyncResilientRabbitMQ", return_value=dashboard_mock_amqp_connection),
             patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=dashboard_mock_neo4j_driver),
             patch("dashboard.dashboard.AsyncResilientPostgreSQL", return_value=dashboard_mock_psycopg_connect),
             patch("httpx.AsyncClient", return_value=dashboard_mock_httpx_client),
@@ -458,7 +454,6 @@ class TestWebsocketFramesAreNotTraced:
     def ws_client(
         self,
         mock_dashboard_config: DashboardConfig,
-        dashboard_mock_amqp_connection: AsyncMock,
         dashboard_mock_neo4j_driver: MagicMock,
         dashboard_mock_httpx_client: MagicMock,
         dashboard_mock_psycopg_connect: AsyncMock,
@@ -466,7 +461,6 @@ class TestWebsocketFramesAreNotTraced:
         """Boot the real app with its background poll loop stubbed out."""
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_dashboard_config),
-            patch("dashboard.dashboard.AsyncResilientRabbitMQ", return_value=dashboard_mock_amqp_connection),
             patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=dashboard_mock_neo4j_driver),
             patch("dashboard.dashboard.AsyncResilientPostgreSQL", return_value=dashboard_mock_psycopg_connect),
             patch("httpx.AsyncClient", return_value=dashboard_mock_httpx_client),
@@ -840,7 +834,7 @@ class TestNeo4jGaugeRegistration:
 
     @pytest.mark.asyncio
     async def test_startup_registers_the_gauges_against_the_live_driver(
-        self, mock_dashboard_config: DashboardConfig, dashboard_mock_amqp_connection: AsyncMock, dashboard_mock_psycopg_connect: AsyncMock
+        self, mock_dashboard_config: DashboardConfig, dashboard_mock_psycopg_connect: AsyncMock
     ) -> None:
         """The driver the gauges read is the one the console just built, not a second one."""
         from dashboard.dashboard import DashboardApp
@@ -849,7 +843,6 @@ class TestNeo4jGaugeRegistration:
         console_telemetry.reset_neo4j_gauges()
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_dashboard_config),
-            patch("dashboard.dashboard.AsyncResilientRabbitMQ", return_value=dashboard_mock_amqp_connection),
             patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=driver),
             patch("dashboard.dashboard.AsyncResilientPostgreSQL", return_value=dashboard_mock_psycopg_connect),
             patch("dashboard.dashboard.DashboardApp.collect_metrics_loop", new_callable=AsyncMock),
@@ -862,7 +855,6 @@ class TestNeo4jGaugeRegistration:
                 assert source._driver is driver
             finally:
                 app.update_task = None
-                app.rabbitmq = None
                 app.postgres_conn = None
                 driver.close = AsyncMock()
                 await app.shutdown()

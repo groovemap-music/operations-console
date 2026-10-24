@@ -62,6 +62,40 @@ class TestDashboardUI:
         rate_circle = page.locator("#discogs-rate-circle-graphinator-masters-publish")
         expect(rate_circle).to_be_visible(timeout=10000)
 
+    def test_unavailable_queue_metrics_are_explicit_and_recover(self, page: Page) -> None:
+        """A failed broker scrape shows "Queue metrics unavailable" and N/A dials, then clears."""
+        page.goto("http://localhost:8003", wait_until="domcontentloaded")
+        expect(page.locator("#discogs-rate-circle-graphinator-masters-publish")).to_be_visible(timeout=10000)
+        # Stop the live feed overwriting the payloads this test injects.
+        page.evaluate("() => { window.dashboard.ws.onmessage = null; }")
+        service = {"name": "graphinator", "status": "healthy", "last_seen": None, "current_task": None, "progress": None, "error": None}
+        queue = {
+            "name": "groovemap-discogs-graphinator-masters",
+            "messages": 3,
+            "messages_ready": 3,
+            "messages_unacknowledged": 0,
+            "consumers": 1,
+            "message_rate": 2.0,
+            "ack_rate": 1.0,
+        }
+        banner = page.locator('#pipeline-discogs [data-queues-unavailable="discogs"]')
+        dial = page.locator("#discogs-rate-text-graphinator-masters-publish")
+
+        def push(queues: list, available: bool) -> None:
+            payload = {"pipelines": {"discogs": {"services": [service], "queues": queues, "queues_available": available}}, "databases": []}
+            page.evaluate("(data) => window.dashboard.updateDashboard(data)", payload)
+
+        push([], False)
+        # The test server does not serve tailwind.css, so assert the `hidden` class, not computed visibility.
+        hidden = re.compile(r"(^|\s)hidden(\s|$)")
+        expect(banner.first).not_to_have_class(hidden)
+        expect(banner.first).to_have_text("Queue metrics unavailable")
+        expect(dial).to_have_text("N/A")
+
+        push([queue], True)
+        expect(banner.first).to_have_class(hidden)
+        expect(dial).to_have_text("2.0")
+
     def test_database_cards_display(self, page: Page) -> None:
         """Test that database cards are displayed."""
         dashboard_url = "http://localhost:8003"

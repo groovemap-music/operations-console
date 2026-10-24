@@ -214,7 +214,7 @@ configuration = (ROOT / "docs/configuration.md").read_text()
 for variable in (
     "NEO4J_HOST",
     "POSTGRES_HOST",
-    "RABBITMQ_MANAGEMENT_HOST",
+    "RABBITMQ_PROMETHEUS_URL",
     "DISCOGS_EXCHANGE_PREFIX",
     "MUSICBRAINZ_EXCHANGE_PREFIX",
     "API_HOST",
