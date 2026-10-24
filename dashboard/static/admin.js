@@ -606,6 +606,11 @@ class AdminExtractions extends AdminInteractions {
                 badge.textContent = e.status;
                 tdStatus.appendChild(badge);
 
+                // A run's source is shown as recorded; null (older runs) is never guessed.
+                const tdSource = document.createElement('td');
+                tdSource.className = 'py-2.5 pr-4 mono t-mid';
+                tdSource.textContent = e.source || 'not recorded';
+
                 const tdDuration = document.createElement('td');
                 tdDuration.className = 'py-2.5 pr-4 mono t-mid';
                 tdDuration.textContent = this._formatRunDuration(e.duration_seconds);
@@ -624,7 +629,7 @@ class AdminExtractions extends AdminInteractions {
                 tdError.textContent = e.error_message || '\u2014';
                 if (e.error_message) tdError.title = e.error_message;
 
-                tr.append(tdDate, tdStatus, tdDuration, tdRecords, tdError);
+                tr.append(tdDate, tdSource, tdStatus, tdDuration, tdRecords, tdError);
                 return tr;
             });
 
@@ -675,6 +680,8 @@ class AdminExtractions extends AdminInteractions {
         try {
             const response = await this.authFetch(endpoint, {
                 method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source }),
             });
 
             if (response.ok) {

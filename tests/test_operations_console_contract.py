@@ -68,3 +68,9 @@ class TestPromotedContractOperations:
         for name, operation in ROUTES["operations"].items():
             assert getattr(catalog_admin_contract, f"{name.upper()}_METHOD") == operation["method"]
             assert getattr(catalog_admin_contract, f"{name.upper()}_PATH") == operation["path"]
+
+    def test_trigger_sources_match_the_promoted_request_body(self) -> None:
+        """The proxy validates its route sources against the set the producer requires."""
+        body = ROUTES["operations"]["admin_extraction_trigger"]["request_body"]
+        assert body["required"] == ["source"]
+        assert list(catalog_admin_contract.ADMIN_EXTRACTION_TRIGGER_SOURCES) == body["properties"]["source"]["enum"]

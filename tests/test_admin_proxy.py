@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -276,6 +277,13 @@ class TestGetExtractionProxy:
 
 
 class TestTriggerProxy:
+    def test_source_outside_the_contract_is_refused(self) -> None:
+        """A route cannot be wired to a source catalog-api's contract does not list."""
+        from dashboard import admin_proxy
+
+        with pytest.raises(ValueError, match="Unsupported extraction source"):
+            asyncio.run(admin_proxy._proxy_trigger_for_source(None, "lastfm"))  # type: ignore[arg-type]
+
     @patch("dashboard.admin_proxy.httpx.AsyncClient")
     def test_forwards_trigger(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
         _, mock_instance = _mock_httpx("post", 202, b'{"id":"abc","status":"running"}')
@@ -297,6 +305,32 @@ class TestTriggerProxy:
             headers={"Authorization": "Bearer tok"},
         )
         assert resp.status_code == 202
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_no_body_sends_discogs_source(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        """An older tab posts no body; catalog-api still gets source=discogs."""
+        _, mock_instance = _mock_httpx("post", 202, b'{"id":"abc","status":"running"}')
+        mock_cls_patch.return_value = mock_instance
+
+        proxy_client.post("/admin/api/extractions/trigger", headers={"Authorization": "Bearer tok"})
+        assert json.loads(mock_instance.post.call_args.kwargs["content"]) == {"source": "discogs"}
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_body_source_discogs_is_forwarded(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        _, mock_instance = _mock_httpx("post", 202, b'{"id":"abc","status":"running"}')
+        mock_cls_patch.return_value = mock_instance
+
+        proxy_client.post("/admin/api/extractions/trigger", json={"source": "discogs"}, headers={"Authorization": "Bearer tok"})
+        assert json.loads(mock_instance.post.call_args.kwargs["content"]) == {"source": "discogs"}
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_conflicting_body_source_returns_400(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        _, mock_instance = _mock_httpx("post", 202, b"{}")
+        mock_cls_patch.return_value = mock_instance
+
+        resp = proxy_client.post("/admin/api/extractions/trigger", json={"source": "musicbrainz"}, headers={"Authorization": "Bearer tok"})
+        assert resp.status_code == 400
+        mock_instance.post.assert_not_called()
 
     @patch("dashboard.admin_proxy.httpx.AsyncClient")
     def test_trigger_unreachable(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
@@ -588,6 +622,15 @@ class TestTriggerMusicBrainzProxy:
         assert call_url.endswith("/api/admin/extractions/trigger")
 
     @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_conflicting_body_source_returns_400(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        _, mock_instance = _mock_httpx("post", 202, b"{}")
+        mock_cls_patch.return_value = mock_instance
+
+        resp = proxy_client.post("/admin/api/extractions/trigger-musicbrainz", json={"source": "discogs"}, headers={"Authorization": "Bearer tok"})
+        assert resp.status_code == 400
+        mock_instance.post.assert_not_called()
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
     def test_trigger_musicbrainz_unreachable(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
         _, mock_instance = _mock_httpx_error("post")
         mock_cls_patch.return_value = mock_instance
@@ -705,18 +748,6 @@ class TestMalformedJsonBody:
             content=b"\x80\x81",
             headers={"Content-Type": "application/json"},
         )
-        assert resp.status_code == 400
-        assert "Malformed JSON" in resp.json()["detail"]
-
-    def test_trigger_musicbrainz_sanitised_body_decode_error_returns_400(self, proxy_client: TestClient) -> None:
-        """POST trigger-musicbrainz returns 400 when sanitised body fails json.loads (lines 189-190)."""
-        # Mock _validated_json_body to return bytes that fail json.loads
-        with patch("dashboard.admin_proxy._validated_json_body", new_callable=AsyncMock, return_value=b"\xff\xfe"):
-            resp = proxy_client.post(
-                "/admin/api/extractions/trigger-musicbrainz",
-                content=b"{}",
-                headers={"Content-Type": "application/json"},
-            )
         assert resp.status_code == 400
         assert "Malformed JSON" in resp.json()["detail"]
 

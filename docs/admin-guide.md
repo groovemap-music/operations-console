@@ -204,8 +204,10 @@ and dispatches the trigger to the selected source-owned producer.
 | MusicBrainz | `POST /admin/api/extractions/trigger-musicbrainz` | `musicbrainz-ingestion` | `groovemap-musicbrainz-{artists,labels,release-groups,releases}` |
 
 Both console routes map to the promoted `catalog-api` operation
-`POST /api/admin/extractions/trigger`; the MusicBrainz adapter adds
-`"source":"musicbrainz"` to the validated JSON object. Each ingestion service owns its own
+`POST /api/admin/extractions/trigger`, which requires `{"source":"discogs"|"musicbrainz"}`.
+Each route sets its own source on the validated JSON object (the browser sends it too). A body
+naming a different source gets a 400, and an empty body to the Discogs route (an older browser
+tab) is sent as `source=discogs`. Each ingestion service owns its own
 download, state, normalization, and publication lifecycle. There is no combined ingestion
 runtime or shared producer lock.
 
@@ -218,6 +220,13 @@ Use this when:
 The extraction runs asynchronously. Progress is tracked in the extraction history table.
 
 If an extraction is already running, the trigger returns an error — wait for it to complete first.
+
+The Extractions history table shows each run's source. Runs recorded without a source show
+"not recorded"; the console never guesses one.
+
+**Release order:** this console change ships before `catalog-api` 9066cb7. Once catalog-api
+requires `source`, a console that sends none gets 422 on the Discogs trigger. The new console
+works against both the old and the new catalog-api.
 
 ## DLQ management
 

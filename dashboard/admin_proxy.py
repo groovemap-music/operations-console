@@ -205,33 +205,40 @@ async def proxy_get_extraction(extraction_id: str, request: Request) -> Response
     return await _proxy_request(request, "GET", path)
 
 
-@router.post("/admin/api/extractions/trigger")
-async def proxy_trigger(request: Request) -> Response:
-    """Proxy extraction trigger requests to the API service."""
+async def _proxy_trigger_for_source(request: Request, source: str) -> Response:
+    """Forward a trigger to catalog-api with ``source`` set by the route, never by the caller.
+
+    An empty body (an older browser tab) is accepted and gets the route's source. A body that
+    names a different source is rejected with 400 rather than silently overridden.
+    """
+    if source not in catalog_admin_contract.ADMIN_EXTRACTION_TRIGGER_SOURCES:
+        msg = f"Unsupported extraction source: {source}"
+        raise ValueError(msg)
     try:
         sanitised_body = await _validated_json_body(request)
     except json.JSONDecodeError:
         return JSONResponse(content={"detail": "Malformed JSON in request body"}, status_code=400)
-    return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_EXTRACTION_TRIGGER_PATH, content=sanitised_body)
+    parsed = json.loads(sanitised_body) if sanitised_body else {}
+    if not isinstance(parsed, dict):
+        return JSONResponse(content={"detail": "Request body must be a JSON object"}, status_code=400)
+    requested = parsed.get("source", source)
+    if requested != source:
+        return JSONResponse(content={"detail": f"Body source {requested!r} conflicts with this route's source {source!r}"}, status_code=400)
+    parsed["source"] = source
+    payload = json.dumps(parsed, separators=(",", ":")).encode()
+    return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_EXTRACTION_TRIGGER_PATH, content=payload)
+
+
+@router.post("/admin/api/extractions/trigger")
+async def proxy_trigger(request: Request) -> Response:
+    """Proxy Discogs extraction trigger requests to the API service."""
+    return await _proxy_trigger_for_source(request, "discogs")
 
 
 @router.post("/admin/api/extractions/trigger-musicbrainz")
 async def proxy_trigger_musicbrainz(request: Request) -> Response:
     """Proxy MusicBrainz extraction trigger requests to the API service."""
-    try:
-        sanitised_body = await _validated_json_body(request)
-    except json.JSONDecodeError:
-        return JSONResponse(content={"detail": "Malformed JSON in request body"}, status_code=400)
-    try:
-        parsed = json.loads(sanitised_body) if sanitised_body else {}
-    except json.JSONDecodeError, UnicodeDecodeError:
-        return JSONResponse(content={"detail": "Malformed JSON in request body"}, status_code=400)
-    if not isinstance(parsed, dict):
-        return JSONResponse(content={"detail": "Request body must be a JSON object"}, status_code=400)
-    body_dict: dict = parsed
-    body_dict["source"] = "musicbrainz"
-    payload = json.dumps(body_dict, separators=(",", ":")).encode()
-    return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_EXTRACTION_TRIGGER_PATH, content=payload)
+    return await _proxy_trigger_for_source(request, "musicbrainz")
 
 
 # ---------------------------------------------------------------------------
