@@ -1491,6 +1491,11 @@ class Dashboard {
         const levelCls = { info: 'text-emerald-500', warning: 'text-orange-500', error: 'text-red-500' };
         const levelLbl = { info: '[INFO]',            warning: '[WARN]',          error: '[ERR]'        };
 
+        // A quiet system is news too: say so, rather than collapse the log to nothing.
+        if (this.activityLog.length === 0) {
+            container.replaceChildren(this._el('p', { cls: 't-dim log-empty', text: 'No events yet' }));
+            return;
+        }
         container.replaceChildren(
             ...this.activityLog.map(e => {
                 const row = document.createElement('div');

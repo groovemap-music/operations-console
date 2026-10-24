@@ -145,6 +145,14 @@ describe('System Event Log', () => {
         });
     });
 
+    it('says the log is empty rather than collapsing to nothing', () => {
+        dashboard.applyEventBacklog([]);
+        expect(rows()).toEqual([]);
+        expect(document.querySelector('#activityLog .log-empty').textContent).toBe('No events yet');
+        dashboard.applyEventBacklog([event(1, 'one')]);
+        expect(document.querySelector('#activityLog .log-empty')).toBeNull();
+    });
+
     it('is cleared when the session ends', () => {
         const Dashboard = loadDashboardClass();
         dashboard.applyEventBacklog([event(1, 'one')]);
