@@ -335,6 +335,8 @@ class Dashboard {
         this.maxLogEntries = 100;
         this.lastServerEventId = 0;
         this.auditTimer = null;
+        // The first reading over HTTP, which can land after the socket's first frame.
+        this.initialLoad = Promise.resolve();
 
         // The pipeline layout from /api/topology; the Overview draws nothing until it arrives.
         this.topology = null;
@@ -396,7 +398,7 @@ class Dashboard {
             return;
         }
         this.reconnectDelay = RECONNECT_BASE_MS;
-        this.fetchInitialData();
+        this.initialLoad = this.fetchInitialData();
         this.initializeWebSocket();
         this.startAlertPolling();
         this.startAuditPolling();
