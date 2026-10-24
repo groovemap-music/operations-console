@@ -19,11 +19,15 @@ from fastapi import APIRouter, Query, Request, Response
 from starlette.responses import JSONResponse
 
 from dashboard import catalog_admin_contract
+from dashboard.session_auth import gate as session_gate
 
 
 logger = structlog.get_logger(__name__)
 
 router = APIRouter()
+# Login and logout are mounted without the console's session gate (catalog-api validates both);
+# every route on `router` is mounted behind it.
+public_router = APIRouter()
 
 # Fixed internal API base URL — set once at startup from env vars, never
 # from user input.  This is NOT an SSRF vector because callers cannot
@@ -162,7 +166,7 @@ async def _validated_json_body(request: Request) -> bytes | None:
 # ---------------------------------------------------------------------------
 
 
-@router.post("/admin/api/login")
+@public_router.post("/admin/api/login")
 async def proxy_login(request: Request) -> Response:
     """Proxy login requests to the API service."""
     try:
@@ -172,10 +176,18 @@ async def proxy_login(request: Request) -> Response:
     return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_LOGIN_PATH, content=sanitised_body)
 
 
-@router.post("/admin/api/logout")
+@public_router.post("/admin/api/logout")
 async def proxy_logout(request: Request) -> Response:
-    """Proxy logout requests to the API service."""
-    return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_LOGOUT_PATH)
+    """Proxy logout requests to the API service.
+
+    The console's cached session for this bearer is dropped whatever catalog-api answers, so the
+    next gated request re-validates instead of riding the cache for up to 30 seconds after a
+    revocation.
+    """
+    try:
+        return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_LOGOUT_PATH)
+    finally:
+        session_gate.forget(request.headers.get("authorization"))
 
 
 @router.get("/admin/api/extractions")
@@ -252,41 +264,6 @@ async def proxy_dlq_purge(queue: str, request: Request) -> Response:
         return Response(content=b'{"detail":"Invalid queue name"}', status_code=400, media_type="application/json")
     path = catalog_admin_contract.ADMIN_DLQ_PURGE_PATH.format(queue=queue)
     return await _proxy_request(request, "POST", path)
-
-
-# ---------------------------------------------------------------------------
-# Phase 3 — Queue Health Trends & System Health proxy routes
-# ---------------------------------------------------------------------------
-
-
-@router.get("/admin/api/queues/history")
-async def proxy_queue_history(
-    request: Request,
-    range: str | None = Query(default=None, pattern=r"^[0-9]+[hdwm]$"),
-    granularity: str | None = Query(default=None, pattern=r"^[0-9]+(min|hour|day)$"),
-) -> Response:
-    """Proxy queue history requests to the API service."""
-    params: dict[str, str] = {}
-    if range is not None:
-        params["range"] = range
-    if granularity is not None:
-        params["granularity"] = granularity
-    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_QUEUE_HISTORY_PATH, params=params)
-
-
-@router.get("/admin/api/health/history")
-async def proxy_health_history(
-    request: Request,
-    range: str | None = Query(default=None, pattern=r"^[0-9]+[hdwm]$"),
-    granularity: str | None = Query(default=None, pattern=r"^[0-9]+(min|hour|day)$"),
-) -> Response:
-    """Proxy health history requests to the API service."""
-    params: dict[str, str] = {}
-    if range is not None:
-        params["range"] = range
-    if granularity is not None:
-        params["granularity"] = granularity
-    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_HEALTH_HISTORY_PATH, params=params)
 
 
 # ---------------------------------------------------------------------------

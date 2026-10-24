@@ -41,10 +41,11 @@ let DLQ_ITEMS = buildDlqItems(DLQ_SOURCE_PREFIXES);
 let DLQ_NAMES = DLQ_ITEMS.map(item => item.queue);
 
 // Replace the compiled-in defaults with the server's env-derived prefixes. Best effort:
-// on any failure the defaults stand, which is exactly the pre-existing behavior.
-async function loadQueuePrefixes() {
+// on any failure the defaults stand, which is exactly the pre-existing behavior. The route
+// is session-gated like every console data route, so it needs the bearer.
+async function loadQueuePrefixes(token) {
     try {
-        const response = await fetch('/api/queue-prefixes');
+        const response = await fetch('/api/queue-prefixes', { headers: { Authorization: `Bearer ${token}` } });
         if (!response.ok) return;
         const prefixes = await response.json();
         if (!prefixes || !prefixes.discogs || !prefixes.musicbrainz) return;
@@ -54,6 +55,32 @@ async function loadQueuePrefixes() {
         // Keep the defaults — a missing endpoint must not break the admin panel.
     }
 }
+
+// The console shell re-validates its session this often, and once more just after the
+// session's own expiry, so an expired, revoked, or unverifiable session returns to the login
+// form instead of leaving a stale console on screen.
+const SESSION_CHECK_INTERVAL_MS = 15000;
+
+// Why the login form is showing, keyed by the `reason` the console's session gate returns
+// (plus the two outcomes only the browser can observe).
+const SESSION_END_MESSAGES = {
+    'signed-out': 'You signed out.',
+    'signed-out-unconfirmed': 'You are signed out of this browser, but catalog-api did not confirm the sign-out, so the session may still be valid until it expires.',
+    missing: 'Your session expired or was revoked. Sign in again.',
+    invalid: 'Your session expired or was revoked. Sign in again.',
+    unavailable: 'catalog-api is unreachable, so your session could not be verified. Sign in again once it is back.',
+    'console-unreachable': 'The operations console could not be reached. Sign in again once it is back.',
+};
+
+// Reasons after which the stored bearer is worthless and is discarded. After an outage the
+// bearer may still be live, so it is kept and a reload resumes the session once the
+// dependency is back.
+const SESSION_DISCARD_REASONS = new Set(['signed-out', 'signed-out-unconfirmed', 'missing', 'invalid']);
+
+// One time range, shared by every history view, persisted across reloads.
+const RANGE_STORAGE_KEY = 'console_range';
+const HISTORY_RANGES = ['1h', '6h', '24h', '7d', '30d', '90d'];
+const HISTORY_TABS = ['queue-trends', 'system-health'];
 
 const QUEUE_CHART_COLORS = [
     '#818cf8', '#34d399', '#f59e0b', '#f87171',
@@ -83,7 +110,10 @@ function _emptyRow(colSpan, message) {
 class AdminDashboardState {
     constructor() {
         this.token = localStorage.getItem('admin_token');
-        this.activeTab = 'extractions';
+        this.activeTab = 'overview';
+        this.signedIn = false;
+        this.sessionWatch = null;
+        this.sessionExpiryTimer = null;
         this.queueDepthChart = null;
         this.responseTimeChart = null;
         this.auditLogPage = 1;
@@ -120,7 +150,7 @@ class AdminInteractions {
         this.refreshSubscription = new RefreshSubscription();
         this.bindEvents();
         if (this.token) {
-            this.showPanel();
+            this.resumeSession();
         } else {
             this.showLogin();
         }
@@ -158,6 +188,9 @@ class AdminInteractions {
     // ─── Event binding ───────────────────────────────────────────────────────
 
     bindEvents() {
+        // The live Overview asks for a session check when its ticket or socket is refused.
+        document.addEventListener('console:session-check', () => this.onSessionCheckRequested());
+
         const loginBtn = document.getElementById('login-btn');
         if (loginBtn) {
             loginBtn.addEventListener('click', () => this.login());
@@ -224,12 +257,12 @@ class AdminInteractions {
 
         const qtRefreshBtn = document.getElementById('qt-refresh-btn');
         if (qtRefreshBtn) {
-            qtRefreshBtn.addEventListener('click', () => this.fetchQueueHistory(this._getRange('queue-trends')));
+            qtRefreshBtn.addEventListener('click', () => this.fetchQueueHistory(this._getRange()));
         }
 
         const shRefreshBtn = document.getElementById('sh-refresh-btn');
         if (shRefreshBtn) {
-            shRefreshBtn.addEventListener('click', () => this.fetchHealthHistory(this._getRange('system-health')));
+            shRefreshBtn.addEventListener('click', () => this.fetchHealthHistory(this._getRange()));
         }
 
         const alRefreshBtn = document.getElementById('al-refresh-btn');
@@ -244,28 +277,14 @@ class AdminInteractions {
         const alNextBtn = document.getElementById('al-next-btn');
         if (alNextBtn) alNextBtn.addEventListener('click', () => { this._auditLogPage++; this.fetchAuditLog(); });
 
+        // One time range for every history view; the buttons live in the shared range bar.
+        this._syncRangeButtons();
         document.querySelectorAll('.range-btn').forEach(btn => {
             btn.addEventListener('click', () => {
-                const range = btn.dataset.range;
-                const tabRange = btn.dataset.tabRange;
-                document.querySelectorAll(`.range-btn[data-tab-range="${tabRange}"]`).forEach(b => {
-                    b.classList.toggle('active', b === btn);
-                });
-                localStorage.setItem(`admin_range_${tabRange}`, range);
-                if (tabRange === 'queue-trends') {
-                    this.fetchQueueHistory(range);
-                } else if (tabRange === 'system-health') {
-                    this.fetchHealthHistory(range);
-                }
+                localStorage.setItem(RANGE_STORAGE_KEY, btn.dataset.range);
+                this._syncRangeButtons();
+                this._refreshHistory();
             });
-        });
-
-        ['queue-trends', 'system-health'].forEach(tab => {
-            const saved = localStorage.getItem(`admin_range_${tab}`);
-            if (saved) {
-                const btns = document.querySelectorAll(`.range-btn[data-tab-range="${tab}"]`);
-                btns.forEach(b => b.classList.toggle('active', b.dataset.range === saved));
-            }
         });
 
         document.querySelectorAll('.ea-view-btn').forEach(btn => {
@@ -329,21 +348,22 @@ class AdminInteractions {
             btn.classList.toggle('active', btn.dataset.tab === tabName);
         });
 
-        const panels = ['extractions', 'dlq', 'users', 'storage', 'queue-trends', 'system-health', 'audit-log', 'extraction-analysis'];
+        const panels = ['overview', 'extractions', 'dlq', 'users', 'storage', 'queue-trends', 'system-health', 'audit-log', 'extraction-analysis'];
         panels.forEach(name => {
             const el = document.getElementById(`tab-${name}`);
             if (el) el.style.display = name === tabName ? 'block' : 'none';
         });
+
+        const rangeBar = document.getElementById('console-range-bar');
+        if (rangeBar) rangeBar.style.display = HISTORY_TABS.includes(tabName) ? 'flex' : 'none';
 
         if (tabName === 'users') {
             this.fetchUserStats();
             this.fetchSyncActivity();
         } else if (tabName === 'storage') {
             this.fetchStorage();
-        } else if (tabName === 'queue-trends') {
-            this.fetchQueueHistory(this._getRange('queue-trends'));
-        } else if (tabName === 'system-health') {
-            this.fetchHealthHistory(this._getRange('system-health'));
+        } else if (HISTORY_TABS.includes(tabName)) {
+            this._refreshHistory();
         } else if (tabName === 'audit-log') {
             this.fetchAuditLog();
         } else if (tabName === 'extraction-analysis') {
@@ -353,27 +373,123 @@ class AdminInteractions {
 
     // ─── View switching ──────────────────────────────────────────────────────
 
-    showLogin() {
-        document.getElementById('admin-view').style.display = 'none';
-        document.getElementById('login-view').style.display = 'flex';
+    showLogin(reason = null) {
+        const wasSignedIn = this.signedIn;
+        this.signedIn = false;
+        this.stopSessionWatch();
         this.stopAutoRefresh();
+        const consoleView = document.getElementById('console-view');
+        const loginView = document.getElementById('login-view');
+        if (consoleView) consoleView.style.display = 'none';
+        if (loginView) loginView.style.display = 'flex';
+
+        const reasonEl = document.getElementById('login-reason');
+        if (reasonEl) {
+            const message = reason ? (SESSION_END_MESSAGES[reason] || SESSION_END_MESSAGES.invalid) : '';
+            reasonEl.textContent = message;
+            reasonEl.dataset.reason = reason || '';
+            reasonEl.style.display = message ? 'block' : 'none';
+        }
+        if (wasSignedIn) {
+            document.dispatchEvent(new CustomEvent('console:signed-out'));
+        }
     }
 
-    showPanel() {
+    showPanel(session) {
+        this.signedIn = true;
         document.getElementById('login-view').style.display = 'none';
-        document.getElementById('admin-view').style.display = 'block';
+        document.getElementById('console-view').style.display = 'block';
+        this.switchTab('overview');
         // Refresh the prefixes first so the rendered DLQ names match the backend's
         // env-derived _VALID_DLQ_NAMES; re-render once they land.
-        loadQueuePrefixes().then(() => this.renderDlqList());
+        loadQueuePrefixes(this.token).then(() => this.renderDlqList());
         this.renderDlqList();
         this.loadExtractions();
         this.startAutoRefresh();
+        this.startSessionWatch(session);
 
-        const email = localStorage.getItem('admin_email');
+        const email = session?.email || localStorage.getItem('admin_email');
         const emailEl = document.getElementById('admin-email');
         if (emailEl && email) {
             emailEl.textContent = email;
         }
+        document.dispatchEvent(new CustomEvent('console:authenticated', { detail: { token: this.token } }));
+    }
+
+    // ─── Session ─────────────────────────────────────────────────────────────
+
+    // Ask the console whether the stored bearer is still a live admin session. The console
+    // answers from catalog-api (cached for at most 30 seconds); a 401 means expired or
+    // revoked, a 503 means catalog-api could not answer.
+    async checkSession() {
+        if (!this.token) return { ok: false, reason: 'missing' };
+        try {
+            const response = await fetch('/api/session', {
+                headers: { Authorization: `Bearer ${this.token}` },
+                cache: 'no-store',
+            });
+            if (response.ok) return { ok: true, session: await response.json() };
+            const body = await response.json().catch(() => ({}));
+            return { ok: false, reason: body.reason || (response.status === 503 ? 'unavailable' : 'invalid') };
+        } catch {
+            return { ok: false, reason: 'console-unreachable' };
+        }
+    }
+
+    async resumeSession() {
+        const token = this.token;
+        const result = await this.checkSession();
+        if (token !== this.token) return;
+        if (result.ok) {
+            this.showPanel(result.session);
+        } else {
+            this.endSession(result.reason);
+        }
+    }
+
+    async verifySession() {
+        const token = this.token;
+        const result = await this.checkSession();
+        if (token !== this.token || !this.signedIn) return result;
+        if (!result.ok) this.endSession(result.reason);
+        return result;
+    }
+
+    async onSessionCheckRequested() {
+        if (!this.signedIn) return;
+        const result = await this.verifySession();
+        if (result.ok && this.signedIn) {
+            document.dispatchEvent(new CustomEvent('console:authenticated', { detail: { token: this.token } }));
+        }
+    }
+
+    endSession(reason) {
+        if (SESSION_DISCARD_REASONS.has(reason)) {
+            this.token = null;
+            localStorage.removeItem('admin_token');
+            localStorage.removeItem('admin_email');
+        }
+        this.showLogin(reason);
+    }
+
+    startSessionWatch(session) {
+        this.stopSessionWatch();
+        this.sessionWatch = setInterval(() => this.verifySession(), SESSION_CHECK_INTERVAL_MS);
+        const expiresAt = Date.parse(session?.expires_at ?? '');
+        if (Number.isFinite(expiresAt)) {
+            // One second past expiry, so the check lands after catalog-api stops honouring it.
+            const delay = Math.max(expiresAt - Date.now(), 0) + 1000;
+            if (delay <= 2147483647) {
+                this.sessionExpiryTimer = setTimeout(() => this.verifySession(), delay);
+            }
+        }
+    }
+
+    stopSessionWatch() {
+        if (this.sessionWatch) clearInterval(this.sessionWatch);
+        if (this.sessionExpiryTimer) clearTimeout(this.sessionExpiryTimer);
+        this.sessionWatch = null;
+        this.sessionExpiryTimer = null;
     }
 
     // ─── Auth ────────────────────────────────────────────────────────────────
@@ -405,7 +521,8 @@ class AdminInteractions {
                 this.token = data.access_token;
                 localStorage.setItem('admin_token', data.access_token);
                 localStorage.setItem('admin_email', email);
-                this.showPanel();
+                document.getElementById('login-password').value = '';
+                await this.resumeSession();
             } else {
                 const err = await response.json().catch(() => ({}));
                 errorEl.textContent = err.detail || 'Invalid credentials';
@@ -419,16 +536,22 @@ class AdminInteractions {
         }
     }
 
+    // Only a 2xx (revoked) or a 401 (already dead) proves the session can no longer be used;
+    // anything else, including no answer, is reported as unconfirmed. The bearer is discarded
+    // locally either way.
     async logout() {
+        let status = null;
         try {
-            await this.authFetch('/admin/api/logout', { method: 'POST' });
+            const response = await fetch('/admin/api/logout', {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${this.token}` },
+            });
+            status = response.status;
         } catch {
-            // Ignore errors on logout
+            status = null;
         }
-        this.token = null;
-        localStorage.removeItem('admin_token');
-        localStorage.removeItem('admin_email');
-        this.showLogin();
+        const confirmed = status !== null && ((status >= 200 && status < 300) || status === 401);
+        this.endSession(confirmed ? 'signed-out' : 'signed-out-unconfirmed');
     }
 
     async authFetch(url, options = {}) {
@@ -438,9 +561,7 @@ class AdminInteractions {
         }
         const response = await fetch(url, { ...options, headers });
         if (response.status === 401) {
-            this.token = null;
-            localStorage.removeItem('admin_token');
-            this.showLogin();
+            this.endSession('invalid');
             throw new Error('Session expired');
         }
         return response;
@@ -470,6 +591,9 @@ class AdminExtractions extends AdminInteractions {
             const rows = extractions.map(e => {
                 const tr = document.createElement('tr');
                 tr.className = 'border-b b-row';
+                // The Overview's Run progress view links here, to the run's own row.
+                tr.id = `extraction-run-${e.id}`;
+                tr.tabIndex = -1;
 
                 const tdDate = document.createElement('td');
                 tdDate.className = 'py-2.5 pr-4 mono t-mid';
@@ -484,16 +608,21 @@ class AdminExtractions extends AdminInteractions {
 
                 const tdDuration = document.createElement('td');
                 tdDuration.className = 'py-2.5 pr-4 mono t-mid';
-                tdDuration.textContent = e.duration || '\u2014';
+                tdDuration.textContent = this._formatRunDuration(e.duration_seconds);
 
                 const tdRecords = document.createElement('td');
                 tdRecords.className = 'py-2.5 pr-4 mono t-mid text-right';
-                tdRecords.textContent = e.records != null ? Number(e.records).toLocaleString() : '\u2014';
+                const records = this._runRecordTotal(e.record_counts);
+                tdRecords.textContent = records !== null ? records.toLocaleString() : '\u2014';
+                if (e.record_counts) {
+                    tdRecords.title = Object.entries(e.record_counts).filter(([k]) => k !== 'total')
+                        .map(([k, v]) => `${k}: ${Number(v).toLocaleString()}`).join(', ');
+                }
 
                 const tdError = document.createElement('td');
                 tdError.className = 'py-2.5 mono t-muted text-xs truncate max-w-[200px]';
-                tdError.textContent = e.error || '\u2014';
-                if (e.error) tdError.title = e.error;
+                tdError.textContent = e.error_message || '\u2014';
+                if (e.error_message) tdError.title = e.error_message;
 
                 tr.append(tdDate, tdStatus, tdDuration, tdRecords, tdError);
                 return tr;
@@ -512,6 +641,23 @@ class AdminExtractions extends AdminInteractions {
         } catch {
             // Silently fail — will retry on next auto-refresh
         }
+    }
+
+    // catalog-api's duration_seconds as "3h12m" (null while the run has not finished).
+    _formatRunDuration(seconds) {
+        if (seconds === null || seconds === undefined) return '\u2014';
+        if (seconds < 60) return `${Math.max(0, Math.round(seconds))}s`;
+        if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+        const h = Math.floor(seconds / 3600);
+        const m = Math.round((seconds - h * 3600) / 60);
+        return m ? `${h}h${String(m).padStart(2, '0')}m` : `${h}h`;
+    }
+
+    // The extractor's final per-entity counts carry their own total; older records may not.
+    _runRecordTotal(counts) {
+        if (!counts || typeof counts !== 'object') return null;
+        if (counts.total != null) return Number(counts.total);
+        return Object.values(counts).reduce((sum, n) => sum + (Number(n) || 0), 0);
     }
 
     async triggerExtraction(source = 'discogs') {
@@ -730,7 +876,7 @@ class AdminServices extends AdminQueues {
     }
 
     _renderNeo4j(neo4j) {
-        const badge = document.getElementById('neo4j-status-badge');
+        const badge = document.getElementById('storage-neo4j-status-badge');
         if (badge) {
             const ok = neo4j.status === 'ok';
             badge.className = `text-[10px] px-2 py-0.5 rounded uppercase font-bold ${ok ? 'badge-ok' : 'badge-error'}`;
@@ -968,10 +1114,8 @@ class AdminFeedback extends AdminServices {
                 this.fetchSyncActivity();
             } else if (this.activeTab === 'storage') {
                 this.fetchStorage();
-            } else if (this.activeTab === 'queue-trends') {
-                this.fetchQueueHistory(this._getRange('queue-trends'));
-            } else if (this.activeTab === 'system-health') {
-                this.fetchHealthHistory(this._getRange('system-health'));
+            } else if (HISTORY_TABS.includes(this.activeTab)) {
+                this._refreshHistory();
             } else if (this.activeTab === 'audit-log') {
                 this.fetchAuditLog();
             }
@@ -993,15 +1137,18 @@ class AdminQueueHistory extends AdminFeedback {
         if (errorEl) errorEl.style.display = 'none';
 
         try {
-            const response = await this.authFetch(`/admin/api/queues/history?range=${encodeURIComponent(range)}`);
+            const response = await this.authFetch(`/api/history/queues?range=${encodeURIComponent(range)}`);
             if (!response.ok) {
                 const err = await response.json().catch(() => ({}));
+                if (response.status === 503) {
+                    this._showHistoryUnavailable('queue', errorEl, errorMsgEl);
+                    return;
+                }
                 this._showInlineError(errorEl, errorMsgEl, err.detail || `Error ${response.status}`);
                 return;
             }
 
-            const data = await response.json();
-            const normalized = this._normalizeQueueData(data);
+            const normalized = await response.json();
             this.renderQueueSummaryTiles(normalized);
             this.renderQueueDepthChart(normalized);
             this.renderDlqGrid(normalized);
@@ -1044,8 +1191,8 @@ class AdminQueueHistory extends AdminFeedback {
         const tiles = [
             { label: 'Total Queue Depth', value: totalDepth.toLocaleString(), spark: depthSparkPoints, color: '#818cf8' },
             { label: 'DLQ Messages', value: dlqTotal.toLocaleString(), spark: dlqSparkPoints, color: '#f87171' },
-            { label: 'Avg Publish Rate', value: `${avgPublish.toFixed(1)}/s`, spark: null, color: null },
-            { label: 'Avg Ack Rate', value: `${avgAck.toFixed(1)}/s`, spark: null, color: null },
+            { label: 'Avg Publish Rate', value: avgPublish == null ? 'No rate data' : `${avgPublish.toFixed(1)}/s`, spark: null, color: null },
+            { label: 'Avg Ack Rate', value: avgAck == null ? 'No rate data' : `${avgAck.toFixed(1)}/s`, spark: null, color: null },
             { label: 'Active Consumers', value: totalConsumers.toLocaleString(), spark: null, color: null },
         ];
 
@@ -1205,15 +1352,18 @@ class AdminServiceHealth extends AdminQueueHistory {
         if (errorEl) errorEl.style.display = 'none';
 
         try {
-            const response = await this.authFetch(`/admin/api/health/history?range=${encodeURIComponent(range)}`);
+            const response = await this.authFetch(`/api/history/health?range=${encodeURIComponent(range)}`);
             if (!response.ok) {
                 const err = await response.json().catch(() => ({}));
+                if (response.status === 503) {
+                    this._showHistoryUnavailable('health', errorEl, errorMsgEl);
+                    return;
+                }
                 this._showInlineError(errorEl, errorMsgEl, err.detail || `Error ${response.status}`);
                 return;
             }
 
-            const data = await response.json();
-            const normalized = this._normalizeHealthData(data);
+            const normalized = await response.json();
             this.renderServiceCards(normalized);
             this.renderResponseTimeChart(normalized);
             this.renderEndpointsTable(normalized);
@@ -1369,7 +1519,7 @@ class AdminServiceHealth extends AdminQueueHistory {
             const tdPath = document.createElement('td');
             tdPath.className = 'py-2 px-4 mono text-xs';
             tdPath.style.color = '#818cf8';
-            tdPath.textContent = ep.endpoint || '\u2014';
+            tdPath.textContent = ep.endpoint ? (ep.service_name ? `${ep.service_name} ${ep.endpoint}` : ep.endpoint) : '\u2014';
 
             const tdReqs = document.createElement('td');
             tdReqs.className = 'py-2 px-4 mono t-mid text-right';
@@ -1423,81 +1573,33 @@ class AdminServiceHealth extends AdminQueueHistory {
         if (errorEl) errorEl.style.display = 'flex';
     }
 
-    _getRange(tabName) {
-        return localStorage.getItem(`admin_range_${tabName}`) || '24h';
+    _getRange() {
+        const saved = localStorage.getItem(RANGE_STORAGE_KEY);
+        return HISTORY_RANGES.includes(saved) ? saved : '24h';
     }
 
-    _normalizeHealthData(data) {
-        // API returns {services: {name: {history: [{ts, status, response_time_ms}]}}}
-        // Frontend expects {services: [{service_name, status, uptime_pct, response_time_ms}],
-        //                   response_time_series: [{timestamp, p50, p95, p99}], endpoints: []}
-        if (Array.isArray(data.services)) return data;
-
-        const servicesObj = data.services || {};
-        const services = Object.entries(servicesObj).map(([name, svc]) => {
-            const history = svc.history || [];
-            const healthyCount = history.filter(h => h.status === 'healthy').length;
-            const uptime_pct = history.length > 0 ? (healthyCount / history.length) * 100 : 0;
-            const latest = history.length > 0 ? history[history.length - 1] : {};
-            const avgRt = history.length > 0
-                ? history.reduce((s, h) => s + (h.response_time_ms || 0), 0) / history.length
-                : 0;
-            return {
-                service_name: name,
-                status: latest.status || 'unknown',
-                uptime_pct,
-                response_time_ms: avgRt,
-            };
-        });
-
-        // Build response_time_series from all services' history
-        const allTimestamps = new Map();
-        for (const [, svc] of Object.entries(servicesObj)) {
-            for (const h of (svc.history || [])) {
-                const ts = h.ts;
-                if (!allTimestamps.has(ts)) allTimestamps.set(ts, []);
-                allTimestamps.get(ts).push(h.response_time_ms || 0);
-            }
-        }
-        const response_time_series = [...allTimestamps.entries()]
-            .sort(([a], [b]) => a.localeCompare(b))
-            .map(([ts, times]) => {
-                const sorted = [...times].sort((a, b) => a - b);
-                const p = (pct) => sorted[Math.min(Math.floor(sorted.length * pct), sorted.length - 1)] || 0;
-                return { timestamp: ts, p50: p(0.5), p95: p(0.95), p99: p(0.99) };
-            });
-
-        return { ...data, services, response_time_series, endpoints: data.endpoints || [] };
+    _syncRangeButtons() {
+        const range = this._getRange();
+        document.querySelectorAll('.range-btn').forEach(b => b.classList.toggle('active', b.dataset.range === range));
     }
 
-    _normalizeQueueData(data) {
-        // API returns {queues: {name: {history: [{ts, ready, unacked, total, publish_rate, deliver_rate}]}}}
-        // Frontend expects {queues: [{queue_name, data_points: [{timestamp, messages_ready, ...}]}],
-        //                   dlq_summary: [{queue_name, data_points: [...]}]}
-        if (Array.isArray(data.queues)) return data;
+    _refreshHistory() {
+        if (this.activeTab === 'queue-trends') this.fetchQueueHistory(this._getRange());
+        else if (this.activeTab === 'system-health') this.fetchHealthHistory(this._getRange());
+    }
 
-        const queuesObj = data.queues || {};
-        const queues = [];
-        const dlq_summary = [];
-
-        for (const [name, qData] of Object.entries(queuesObj)) {
-            const data_points = (qData.history || []).map(h => ({
-                timestamp: h.ts,
-                messages_ready: h.ready || 0,
-                messages_unacknowledged: h.unacked || 0,
-                consumers: h.consumers || 0,
-                publish_rate: h.publish_rate || 0,
-                ack_rate: h.deliver_rate || 0,
-            }));
-            const entry = { queue_name: name, data_points };
-            if (name.endsWith('.dlq')) {
-                dlq_summary.push(entry);
-            } else {
-                queues.push(entry);
-            }
+    // VictoriaMetrics is down: say so explicitly and drop stale panels. The live Overview does not depend on it.
+    _showHistoryUnavailable(kind, errorEl, errorMsgEl) {
+        this._showInlineError(errorEl, errorMsgEl, 'History unavailable: the metrics store is not answering. Live data on Overview is unaffected.');
+        if (kind === 'queue') {
+            this.renderQueueSummaryTiles({});
+            this.renderQueueDepthChart({});
+            this.renderDlqGrid({});
+        } else {
+            this.renderServiceCards({});
+            this.renderResponseTimeChart({});
+            this.renderEndpointsTable({});
         }
-
-        return { ...data, queues, dlq_summary };
     }
 
     _aggregateSparkline(queues, field) {
@@ -1520,17 +1622,18 @@ class AdminServiceHealth extends AdminQueueHistory {
     }
 
     _avgLatest(queues, field) {
-        if (!queues || queues.length === 0) return 0;
+        // null when no queue has a reading, so an unscraped rate shows as "no data" rather than 0/s
         let sum = 0;
         let count = 0;
-        for (const q of queues) {
+        for (const q of queues || []) {
             const pts = q.data_points || [];
-            if (pts.length > 0) {
-                sum += pts[pts.length - 1][field] || 0;
+            const latest = pts.length > 0 ? pts[pts.length - 1][field] : null;
+            if (latest != null) {
+                sum += latest;
                 count++;
             }
         }
-        return count > 0 ? sum / count : 0;
+        return count > 0 ? sum / count : null;
     }
 
     _createSparklineSVGElement(points, color, width = 55, height = 20) {

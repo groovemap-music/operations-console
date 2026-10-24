@@ -56,6 +56,14 @@ class TestPromotedContractOperations:
             "path": "/api/admin/media/unmapped",
         }
 
+    def test_session_operation_is_promoted(self) -> None:
+        """The console's session gate validates every bearer against this route."""
+        assert ROUTES["operations"]["admin_session"] == {
+            "method": "GET",
+            "path": "/api/admin/auth/session",
+        }
+        assert catalog_admin_contract.ADMIN_SESSION_PATH == "/api/admin/auth/session"
+
     def test_binding_exposes_every_promoted_operation(self) -> None:
         for name, operation in ROUTES["operations"].items():
             assert getattr(catalog_admin_contract, f"{name.upper()}_METHOD") == operation["method"]

@@ -1,70 +1,59 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import vm from 'node:vm';
+import { describe, it, expect, beforeEach } from 'vitest';
+import { DATASTORES, discogs, makeDashboard, queue as queueOf } from './overview-helpers.js';
 
 /**
  * A failed broker scrape (`queues_available: false`) must render an explicit "Queue metrics
- * unavailable" state in the queue chart and the rate dials, and clear it on recovery, never an
- * idle-looking empty pipeline.
+ * unavailable" state in the matrix: the banner, and every cell marked unavailable rather than
+ * empty or idle. It clears on recovery.
  */
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DASHBOARD_JS_PATH = resolve(__dirname, '..', 'static', 'dashboard.js');
-
-function loadDashboardClass() {
-    const code = readFileSync(DASHBOARD_JS_PATH, 'utf-8');
-    const withoutAutoInit = code.replace(/document\.addEventListener\(\s*['"]DOMContentLoaded['"][\s\S]*$/, '');
-    const wrapped = `(function() {\n${withoutAutoInit}\nglobalThis.__Dashboard = Dashboard;\n})();`;
-    vm.runInThisContext(wrapped, { filename: DASHBOARD_JS_PATH });
-    return globalThis.__Dashboard;
-}
-
-function setupDOM() {
-    document.body.innerHTML = `
-        <span data-queues-unavailable="discogs" class="hidden">Queue metrics unavailable</span>
-        <span data-queues-unavailable="discogs" class="hidden">Queue metrics unavailable</span>
-        <div class="flex flex-col">
-            <svg><circle id="discogs-rate-circle-graphinator-artists-publish"></circle></svg>
-            <span id="discogs-rate-text-graphinator-artists-publish">0</span>
-        </div>
-        <span id="discogs-graphinator-artists-count">—</span>`;
-}
-
-const queue = { name: 'groovemap-discogs-graphinator-artists', messages: 12, messages_ready: 12, messages_unacknowledged: 0, consumers: 1, message_rate: 4.5, ack_rate: 3 };
+const queue = queueOf('groovemap-discogs-graphinator-artists', { message_rate: 4.5, ack_rate: 3 });
 
 describe('Dashboard queue metrics unavailable state', () => {
     let dashboard;
 
     beforeEach(() => {
-        setupDOM();
-        const Dashboard = loadDashboardClass();
-        dashboard = Object.create(Dashboard.prototype);
-        Object.assign(dashboard, { CIRCUMFERENCE: 176, gaugeStats: {}, currentMaps: {}, queuesUnavailable: {}, activityLog: [], maxLogEntries: 50 });
-        for (const method of ['updateServices', 'updateDatabases', 'updateLastUpdated', 'updateOverallStatus', 'renderActivityLog']) {
-            dashboard[method] = vi.fn();
-        }
+        dashboard = makeDashboard();
+        dashboard.renderTopology({ pipelines: [discogs()], datastores: DATASTORES });
     });
 
     const banners = () => [...document.querySelectorAll('[data-queues-unavailable="discogs"]')];
-    const dial = () => document.getElementById('discogs-rate-text-graphinator-artists-publish');
+    const cells = () => [...document.querySelectorAll('[data-matrix="discogs"] .mx-cell')];
+    const artists = () => document.getElementById('discogs-graphinator-artists-cell');
+    const update = (queues, available) => dashboard.updateDashboard({ pipelines: { discogs: { services: [], queues, queues_available: available } } });
 
-    it('shows the banners and N/A dials instead of an empty pipeline, then clears on recovery', () => {
-        dashboard.updateDashboard({ pipelines: { discogs: { services: [], queues: [queue], queues_available: true } } });
+    it('shows the banner and unavailable cells instead of an empty pipeline, then clears on recovery', () => {
+        update([queue], true);
+        expect(banners().length).toBe(1);
         expect(banners().every((el) => el.classList.contains('hidden'))).toBe(true);
-        expect(dial().textContent).not.toBe('N/A');
+        expect(artists().querySelector('.mx-n').textContent).toBe('12');
 
-        dashboard.updateDashboard({ pipelines: { discogs: { services: [], queues: [], queues_available: false } } });
+        update([], false);
         expect(banners().every((el) => !el.classList.contains('hidden'))).toBe(true);
-        expect(dial().textContent).toBe('N/A');
+        expect(banners()[0].textContent).toBe('Queue metrics unavailable');
+        expect(cells().length).toBe(8);
+        for (const cell of cells()) {
+            expect(cell.classList.contains('mx-unavailable')).toBe(true);
+            expect(cell.dataset).toMatchObject({ state: 'unknown', kind: 'unavailable' });
+            expect(cell.querySelector('.mx-meta').textContent).toBe('unavailable');
+            expect(cell.getAttribute('aria-label')).toContain('queue metrics unavailable');
+        }
 
-        dashboard.updateDashboard({ pipelines: { discogs: { services: [], queues: [queue], queues_available: true } } });
+        update([queue], true);
         expect(banners().every((el) => el.classList.contains('hidden'))).toBe(true);
-        expect(dial().textContent).toBe('4.5');
+        expect(artists().classList.contains('mx-unavailable')).toBe(false);
+        expect(artists().querySelector('.mx-n').textContent).toBe('12');
+    });
+
+    it('starts the history afresh after an outage, so a stall is never assumed across it', () => {
+        update([queue], true);
+        expect(dashboard.history.has(queue.name)).toBe(true);
+        update([], false);
+        expect(dashboard.history.has(queue.name)).toBe(false);
     });
 
     it('treats a payload without queues_available as available', () => {
         dashboard.updateDashboard({ pipelines: { discogs: { services: [], queues: [queue] } } });
         expect(banners().every((el) => el.classList.contains('hidden'))).toBe(true);
+        expect(artists().classList.contains('mx-unavailable')).toBe(false);
     });
 });

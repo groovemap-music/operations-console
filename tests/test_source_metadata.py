@@ -31,12 +31,13 @@ def test_openapi_advertises_license_and_corresponding_source() -> None:
 
 
 def test_visible_pages_link_to_source_and_legal_notices() -> None:
-    for filename in ("index.html", "admin.html"):
+    for filename in ("index.html",):
         markup = (ROOT / "dashboard" / "static" / filename).read_text()
         assert 'id="source-legal-link"' in markup
         assert 'href="__GROOVEMAP_SOURCE_URL__"' in markup
         assert "Source and legal notices (AGPL-3.0-only)" in markup
 
+    # /admin and /admin.html redirect to the shell; the client follows them.
     client = TestClient(app)
     for path in ("/", "/index.html", "/admin", "/admin.html"):
         response = client.get(path)

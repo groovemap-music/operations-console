@@ -204,8 +204,6 @@ admin_guide = (ROOT / "docs/admin-guide.md").read_text()
 for route in (
     "/admin/api/extractions/trigger",
     "/admin/api/extractions/trigger-musicbrainz",
-    "/admin/api/queues/history",
-    "/admin/api/health/history",
     "/admin/api/extraction-analysis/{version}/media-mapping-coverage",
 ):
     assert route in admin_guide

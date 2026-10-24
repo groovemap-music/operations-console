@@ -1,0 +1,86 @@
+/* Spike prototypes only. Surfaces and text follow dashboard/static/index.html; brand hues follow
+   dashboard/static/brand/tokens.css. Status hues are chosen per theme for contrast (see evaluate.py). */
+:root,
+[data-theme="dark"] {
+    --bg: #060a12;          /* --groovemap-void */
+    --surface: #0f1a2e;     /* index.html --card-bg */
+    --inner: #162540;       /* index.html --inner-bg */
+    --border: #1e3050;      /* --groovemap-border */
+    --text-high: #f0f4f8;   /* --groovemap-text */
+    --text-mid: #b0bec5;
+    --text-dim: #8a9bb3;
+    --accent: #00bcd4;      /* --groovemap-cyan */
+    --accent-2: #b388ff;    /* --groovemap-purple-light */
+    --edge: #2f6f8f;
+    --ok: #00bcd4;
+    --warn: #ffab00;
+    --crit: #ff5c8a;
+    --crit-bg: rgba(255, 92, 138, 0.16);
+    --warn-bg: rgba(255, 171, 0, 0.12);
+    /* Lag ramp: lightness rises ~15 L* per bin so bins stay apart in every colour-vision simulation. */
+    --ramp-0: #0d2431;
+    --ramp-1: #004a67;
+    --ramp-2: #4361a6;
+    --ramp-3: #8c8de6;
+    --ramp-3-text: #0d1b2a;
+    color-scheme: dark;
+}
+[data-theme="light"] {
+    --bg: #f0f4f8;          /* --groovemap-light-background */
+    --surface: #ffffff;
+    --inner: #e6edf5;
+    --border: #c3d0de;
+    --text-high: #0d1b2a;   /* --groovemap-light-text */
+    --text-mid: #2c3e55;
+    --text-dim: #4a5e78;    /* --groovemap-muted-text */
+    --accent: #00798a;
+    --accent-2: #5b2fd6;
+    --edge: #5f97aa;
+    --ok: #00798a;
+    --warn: #6d4600;
+    --crit: #c2185b;
+    --crit-bg: rgba(194, 24, 91, 0.10);
+    --warn-bg: rgba(109, 70, 0, 0.10);
+    --ramp-0: #f0f8fb;
+    --ramp-1: #a6dae7;
+    --ramp-2: #98ade3;
+    --ramp-3: #8384d3;
+    --ramp-3-text: #0d1b2a;
+    color-scheme: light;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+    background: var(--bg);
+    color: var(--text-high);
+    font-family: Inter, "Helvetica Neue", Arial, system-ui, sans-serif;
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+}
+.mono { font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; }
+.dim { color: var(--text-dim); }
+.mid { color: var(--text-mid); }
+header.chrome {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--surface);
+}
+header.chrome img { width: 28px; height: 28px; border-radius: 50%; }
+header.chrome .brand { font-family: "Space Grotesk", Inter, system-ui, sans-serif; font-weight: 700; letter-spacing: -0.02em; }
+header.chrome nav { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; }
+header.chrome nav a { color: var(--text-mid); text-decoration: none; }
+header.chrome nav a[aria-current="true"] { color: var(--accent); font-weight: 600; text-decoration: underline; }
+.synthetic {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--warn); border: 1px solid var(--warn); border-radius: 4px; padding: 1px 6px;
+}
+main { padding: 16px; max-width: 1440px; margin: 0 auto; }
+h2.pipeline {
+    font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--text-dim); margin: 18px 0 8px;
+}
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; }
+.state-crit { color: var(--crit); font-weight: 700; }
+.state-warn { color: var(--warn); font-weight: 700; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--text-mid); margin: 8px 0 4px; }
+.legend .sw { display: inline-block; width: 14px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; border: 1px solid var(--border); }
+.scroll-x { overflow-x: auto; }

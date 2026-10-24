@@ -21,7 +21,7 @@ def test_runtime_and_image_use_repository_identity() -> None:
 
 
 def test_browser_pages_use_groovemap_identity() -> None:
-    for page in ("index.html", "admin.html"):
+    for page in ("index.html",):
         markup = (ROOT / "dashboard/static" / page).read_text()
         assert "GrooveMap" in markup
         assert "discogs" + "ography" not in markup.lower()

@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -474,10 +474,14 @@ class TestWebsocketFramesAreNotTraced:
     def test_no_span_is_opened_per_websocket_frame(self, ws_client: TestClient, spans: SpanCollector) -> None:
         """A metrics push out and twenty frames in leave the console's span scope empty."""
         import dashboard.dashboard as module
+        from dashboard.session_auth import AdminSession, gate
 
         module.dashboard.latest_metrics = SystemMetrics(pipelines={}, databases=[], timestamp=datetime.now(UTC))
+        session = AdminSession(admin_id="admin-1", email="admin@example.com", expires_at=datetime.now(UTC) + timedelta(hours=1))
+        ticket, _ = gate.tickets.issue(session, "bearer")
 
-        with ws_client.websocket_connect("/ws") as websocket:
+        # The socket re-validates its bearer on open; this test is about spans, not sessions.
+        with patch.object(gate, "validate_token", AsyncMock(return_value=session)), ws_client.websocket_connect(f"/ws?ticket={ticket}") as websocket:
             assert websocket.receive_json()["type"] == "metrics_update"
             for _ in range(20):
                 websocket.send_text("ping")

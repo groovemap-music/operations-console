@@ -34,7 +34,7 @@ function setupAdminDOM() {
 
     const ids = [
         'login-view',
-        'admin-view',
+        'console-view',
         'toast',
         'ea-media-mapping-unavailable',
         'ea-media-mapping-cards',

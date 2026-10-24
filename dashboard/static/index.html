@@ -5,6 +5,9 @@
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
     <title>GrooveMap Operations Console</title>
     <link href="/tailwind.css" rel="stylesheet"/>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8" integrity="sha384-T/4KgSWuZEPozpPz7rnnp/5lDSnpY1VPJCojf1S81uTHS1E38qgLfMgVsAeRCWc4" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3.5.0/build/global/luxon.min.js" integrity="sha384-CU0J6nu6GO5gWB5IqOOhPQsG0LKyjpotF5Gw502R+0zbkzKHjDWc6FKSZsNTJfLX" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js" integrity="sha384-7cWzHabR6ZyfMWzZgVssYaOQRTccHUWZ0F09AanlF3RAJ/JNyFnIma2JTYIVKEUP" crossorigin="anonymous"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"/>
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
     <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg">
@@ -37,7 +40,6 @@
             --accent-red: #ff5252;
             --card-shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
             --scrollbar-thumb: #2a3d58;
-            --gauge-track: #1e3050;
             --log-msg: #b0bec5;
             --row-border: rgba(255,255,255,0.05);
         }
@@ -64,1015 +66,1395 @@
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: var(--bg-deep); }
         ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 10px; }
+
+        .badge-completed {
+            background: rgba(16,185,129,0.1); color: #10B981; border: 1px solid rgba(16,185,129,0.2);
+        }
+        .badge-waiting {
+            background: rgba(59,130,246,0.1); color: #3B82F6; border: 1px solid rgba(59,130,246,0.2);
+        }
+        .badge-failed {
+            background: rgba(239,68,68,0.1); color: #EF4444; border: 1px solid rgba(239,68,68,0.2);
+        }
+        .badge-running, .badge-pending {
+            background: rgba(234,179,8,0.1); color: #EAB308; border: 1px solid rgba(234,179,8,0.2);
+        }
+        .badge-idle {
+            background: rgba(107,114,128,0.1); color: #6B7280; border: 1px solid rgba(107,114,128,0.2);
+        }
+        .badge-ok {
+            background: rgba(16,185,129,0.1); color: #10B981; border: 1px solid rgba(16,185,129,0.2);
+        }
+        .badge-error {
+            background: rgba(239,68,68,0.1); color: #EF4444; border: 1px solid rgba(239,68,68,0.2);
+        }
+        .btn-purple {
+            background: var(--purple-accent);
+            color: #fff;
+            border: none;
+            cursor: pointer;
+            transition: opacity 0.15s;
+        }
+        .btn-purple:hover { opacity: 0.85; }
+        .btn-purple:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        /* Tab navigation */
+        .tab-btn {
+            padding: 0.5rem 1rem;
+            font-size: 0.75rem;
+            font-weight: 600;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+            color: var(--text-dim);
+            background: transparent;
+            border: none;
+            display: flex;
+            align-items: center;
+            gap: 0.375rem;
+            flex-shrink: 0;
+            white-space: nowrap;
+        }
+        .tab-btn:hover { background: var(--inner-bg); color: var(--text-high); }
+        .tab-btn.active {
+            background: var(--purple-accent);
+            color: #fff;
+        }
+
+        /* Extraction Analysis sub-view toggle buttons */
+        .ea-view-btn { color: var(--text-dim); background: transparent; border: 1px solid var(--border-color); cursor: pointer; display: inline-flex; align-items: center; gap: 0.25rem; min-width: 6rem; justify-content: center; }
+        .ea-view-btn:hover { color: var(--text-high); }
+        .ea-view-btn.active { background: var(--purple-accent); color: #fff; border-color: var(--purple-accent); }
+
+        /* Collapsible section */
+        .collapsible-header {
+            cursor: pointer;
+            user-select: none;
+        }
+        .collapsible-header:hover { opacity: 0.8; }
+        .collapsible-body { overflow: hidden; }
+        .collapsible-body.collapsed { display: none; }
+
+        /* Range selector buttons */
+        .range-btn {
+            color: var(--text-dim);
+            background: transparent;
+            border: 1px solid var(--border-color);
+            cursor: pointer;
+        }
+        .range-btn:hover { background: var(--inner-bg); color: var(--text-high); }
+        .range-btn.active {
+            background: var(--purple-accent);
+            color: #fff;
+            border-color: var(--purple-accent);
+        }
+
+        /* Summary stat cards */
+        .stat-card {
+            background: var(--inner-bg);
+            border: 1px solid var(--inner-border);
+            border-radius: 10px;
+            padding: 1rem;
+            flex: 1;
+            min-width: 0;
+        }
+
+        /* Select/dropdown styling for dark mode */
+        select {
+            background-color: var(--card-bg);
+            color: var(--text-high);
+            min-width: 12rem;
+        }
+        select option {
+            background-color: var(--card-bg);
+            color: var(--text-high);
+            padding: 0.25rem 0.5rem;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .animate-spin { animation: spin 1s linear infinite; }
+
+        /* ─── Overview matrix (spike gm-operations-console-2rf) ───────────────────────
+           Every colour pair the matrix draws is checked for WCAG contrast in
+           dashboard/__tests__/matrix-contrast.test.js. The console renders dark; the light set
+           is checked too, ready for a light theme. Lag ramp: lightness rises ~15 L* per bin so
+           bins stay apart under every colour-vision simulation. */
+        :root, [data-theme="dark"] {
+            --mx-surface: #0f1a2e;
+            --mx-border: #1e3050;
+            --mx-text-high: #f0f4f8;
+            --mx-text-mid: #b0bec5;
+            --mx-text-dim: #8a9bb3;
+            --mx-accent: #00bcd4;
+            --mx-warn: #ffab00;
+            --mx-crit: #ff5c8a;
+            --mx-crit-bg: rgba(255, 92, 138, 0.16);
+            --mx-ramp-0: #0d2431;
+            --mx-ramp-1: #004a67;
+            --mx-ramp-2: #4361a6;
+            --mx-ramp-3: #8c8de6;
+            --mx-ramp-3-text: #0d1b2a;
+            --mx-edge: #2f6f8f;
+            --mx-backdrop: rgba(6, 10, 18, 0.7);
+        }
+        [data-theme="light"] {
+            --mx-surface: #ffffff;
+            --mx-border: #c3d0de;
+            --mx-text-high: #0d1b2a;
+            --mx-text-mid: #2c3e55;
+            --mx-text-dim: #4a5e78;
+            --mx-accent: #00798a;
+            --mx-warn: #6d4600;
+            --mx-crit: #c2185b;
+            --mx-crit-bg: rgba(194, 24, 91, 0.10);
+            --mx-ramp-0: #f0f8fb;
+            --mx-ramp-1: #a6dae7;
+            --mx-ramp-2: #98ade3;
+            --mx-ramp-3: #8384d3;
+            --mx-ramp-3-text: #0d1b2a;
+            --mx-edge: #5f97aa;
+            --mx-backdrop: rgba(13, 27, 42, 0.4);
+        }
+        .attention-bar {
+            background: var(--mx-surface); border: 1px solid var(--mx-crit); border-radius: 12px; padding: 8px 12px;
+            color: var(--mx-text-high); font-size: 13px;
+        }
+        .attention-bar[hidden], .attention-bar [hidden] { display: none; }
+        .attention-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; }
+        .attention-toggle { font: inherit; font-size: 12px; font-weight: 700; color: var(--mx-accent); background: none; border: 0; cursor: pointer; padding: 2px 4px; }
+        .attention-note { margin: 4px 0 0; font-size: 12px; color: var(--mx-warn); }
+        .attention-note::before { content: "▲ "; }
+        /* Capped so the tabs stay reachable below even a long list. */
+        .attention-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; max-height: 30vh; overflow-y: auto; }
+        .attention-link {
+            display: block; width: 100%; text-align: left; font: inherit; color: inherit; background: none; border: 0;
+            border-radius: 6px; padding: 4px 6px; cursor: pointer; text-decoration: none; overflow-wrap: anywhere;
+        }
+        .attention-link:hover { background: var(--mx-crit-bg); }
+        .attention-link:focus-visible { outline: 2px solid var(--mx-accent); outline-offset: 1px; }
+        .mx-legend {
+            display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--mx-text-mid);
+            background: var(--mx-surface); border: 1px solid var(--mx-border); border-radius: 12px; padding: 8px 12px;
+        }
+        .mx-legend-item { white-space: nowrap; }
+        .mx-swatch { display: inline-block; width: 14px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; border: 1px solid var(--mx-text-dim); }
+        .mx-crit-text { color: var(--mx-crit); }
+        .mx-warn-text { color: var(--mx-warn); }
+        .mx-pipeline { background: var(--mx-surface); border: 1px solid var(--mx-border); border-radius: 12px; padding: 12px; }
+        .mx-pipeline-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-bottom: 8px; }
+        .mx-pipeline-head h2 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; color: var(--mx-text-dim); }
+        .mx-producer { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; }
+        .mx-producer-label, .mx-high { color: var(--mx-text-high); }
+        .mx-producer-label { font-weight: 600; }
+        .mx-dim { color: var(--mx-text-dim); }
+        .mx-unavailable-banner {
+            font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+            color: var(--mx-warn); border: 1.5px solid var(--mx-warn); border-radius: 4px; padding: 1px 6px;
+        }
+        .mx-unavailable-banner::before { content: "▲ "; }
+        .mx-grid { display: grid; gap: 4px; grid-template-columns: minmax(72px, 150px) repeat(var(--mx-cols), minmax(0, 1fr)); }
+        .mx-colhead {
+            font-size: 12px; color: var(--mx-text-mid); padding: 4px 6px; align-self: end; min-width: 0;
+            display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px;
+        }
+        .mx-consumer { color: var(--mx-text-high); font-weight: 600; }
+        .mx-rowhead { font-size: 13px; padding: 6px; align-self: center; min-width: 0; color: var(--mx-text-high); }
+        .mx-extract { display: block; font-size: 11px; color: var(--mx-text-dim); }
+        .mx-extract-active { color: var(--mx-accent); }
+        /* A cell's parts flow in one wrapping line: one row per entity on a wide screen, and a
+           few short lines in a narrow column. */
+        .mx-cell {
+            font: inherit; text-align: left; cursor: pointer; position: relative; min-width: 0; min-height: 48px;
+            display: flex; flex-wrap: wrap; align-items: baseline; align-content: center; gap: 2px 10px;
+            border-radius: 6px; padding: 6px 8px; border: 1px solid var(--mx-border);
+            color: var(--mx-text-high); background: var(--mx-surface);
+        }
+        .mx-cell:hover { border-color: var(--mx-text-dim); }
+        .mx-cell:focus-visible { outline: 2px solid var(--mx-accent); outline-offset: 2px; }
+        .mx-cname { display: none; flex-basis: 100%; font-size: 12px; font-weight: 600; }
+        .mx-flag { font-size: 11px; font-weight: 700; }
+        .mx-flag:empty, .mx-dlq:empty { display: none; }
+        .mx-n { font-size: 18px; font-weight: 600; }
+        .mx-meta { font-size: 11px; color: var(--mx-text-mid); }
+        .mx-dlq { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 9px; padding: 0 6px; border: 1.5px solid; background: var(--mx-surface); }
+        .mx-dlq-warn { color: var(--mx-warn); border-color: var(--mx-warn); }
+        .mx-dlq-crit { color: var(--mx-surface); border-color: var(--mx-crit); background: var(--mx-crit); }
+        .mx-lag-0 { background: var(--mx-ramp-0); }
+        .mx-lag-1 { background: var(--mx-ramp-1); }
+        .mx-lag-2 { background: var(--mx-ramp-2); }
+        .mx-lag-3 { background: var(--mx-ramp-3); }
+        .mx-cell.mx-lag-2 .mx-meta { color: var(--mx-text-high); }
+        .mx-cell.mx-lag-3, .mx-cell.mx-lag-3 .mx-meta { color: var(--mx-ramp-3-text); }
+        .mx-cell.mx-crit {
+            border: 3px solid var(--mx-crit); padding: 4px 6px;
+            background: repeating-linear-gradient(135deg, var(--mx-crit-bg) 0 6px, transparent 6px 12px), var(--mx-surface);
+        }
+        .mx-cell.mx-crit .mx-flag { color: var(--mx-crit); }
+        .mx-cell.mx-unavailable { border-style: dashed; border-color: var(--mx-text-dim); }
+        /* Stacked: consumer heads become a key above the rows, and every cell names its consumer. */
+        .mx-grid.mx-stacked { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .mx-stacked .mx-corner { display: none; }
+        .mx-stacked .mx-colhead { border: 1px solid var(--mx-border); border-radius: 6px; align-self: stretch; }
+        .mx-stacked .mx-rowhead { grid-column: 1 / -1; padding-bottom: 0; }
+        .mx-stacked .mx-cname { display: block; }
+        .mx-stacked .mx-extract { display: inline; margin-left: 8px; }
+        @media (max-width: 479px) {
+            .mx-pipeline { padding: 8px; }
+            .mx-grid { gap: 3px; grid-template-columns: minmax(60px, 80px) repeat(var(--mx-cols), minmax(0, 1fr)); }
+            .mx-rowhead { padding: 4px 2px; }
+            .mx-grid.mx-stacked { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .mx-cell { padding: 4px 5px; }
+            .mx-cell.mx-crit { padding: 2px 3px; }
+            .mx-n { font-size: 15px; }
+        }
+        .mx-drawer {
+            position: fixed; inset: 0 0 0 auto; margin: 0; width: min(420px, 100vw); height: 100vh; max-height: 100vh; max-width: 100vw;
+            border: 0; border-left: 1px solid var(--mx-border); padding: 16px 20px; overflow-y: auto;
+            background: var(--mx-surface); color: var(--mx-text-high);
+        }
+        .mx-drawer::backdrop { background: var(--mx-backdrop); }
+        .mx-drawer-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+        .mx-drawer-head h2 { font-size: 16px; font-weight: 600; margin: 0; }
+        #queue-drawer-subtitle { font-size: 12px; color: var(--mx-text-mid); margin: 2px 0 0; }
+        .mx-links { display: inline-flex; flex-wrap: wrap; gap: 4px 12px; font-size: 12px; }
+        .mx-links[hidden] { display: none; }
+        .mx-drawer .mx-links { display: flex; margin: 0 0 12px; }
+        .mx-link { color: var(--mx-accent); font-weight: 600; text-decoration: underline; }
+        .mx-link::after { content: " ↗"; text-decoration: none; display: inline-block; }
+        .mx-link:focus-visible { outline: 2px solid var(--mx-accent); outline-offset: 2px; }
+        .attention-links { display: flex; padding: 0 6px 2px 24px; }
+        .attention-links[hidden] { display: none; }
+        .mx-drawer-state { font-size: 12px; font-weight: 700; margin: 12px 0; color: var(--mx-text-mid); }
+        .mx-drawer-state[data-state="crit"] { color: var(--mx-crit); }
+        .mx-drawer-state[data-state="warn"] { color: var(--mx-warn); }
+        .mx-drawer dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; font-size: 12px; margin: 0; }
+        .mx-drawer dt { color: var(--mx-text-mid); }
+        .mx-drawer dd { margin: 0; color: var(--mx-text-high); overflow-wrap: anywhere; }
+        .mx-drawer-close {
+            font: inherit; font-size: 12px; background: transparent; color: var(--mx-text-mid); cursor: pointer;
+            border: 1px solid var(--mx-text-dim); border-radius: 6px; padding: 2px 8px;
+        }
+        .mx-drawer-close:focus-visible { outline: 2px solid var(--mx-accent); outline-offset: 2px; }
+        /* Run progress: the headline above each matrix, the view toggle, and the secondary view. */
+        .mx-headline { margin: 0 0 8px; font-size: 13px; color: var(--mx-text-mid); }
+        .mx-headline[hidden], #pipelines[hidden], #run-progress[hidden] { display: none; }
+        .mx-headline-text { color: var(--mx-text-high); font-size: 15px; font-weight: 600; }
+        .mx-headline[data-state="crit"] { border-left: 3px solid var(--mx-crit); padding-left: 8px; }
+        .ov-views { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--mx-border); border-radius: 8px; }
+        .ov-view-btn { font: inherit; font-size: 12px; font-weight: 600; color: var(--mx-text-mid); background: none; border: 0; border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+        .ov-view-btn[aria-pressed="true"] { color: var(--mx-text-high); background: var(--mx-surface); box-shadow: inset 0 0 0 1px var(--mx-accent); }
+        .ov-view-btn:focus-visible, .rp-run-link:focus-visible { outline: 2px solid var(--mx-accent); outline-offset: 2px; }
+        .rp-pipeline { background: var(--mx-surface); border: 1px solid var(--mx-border); border-radius: 12px; padding: 12px; color: var(--mx-text-high); }
+        .rp-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; font-size: 12px; }
+        .rp-head h2 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; color: var(--mx-text-dim); }
+        .rp-run-link { font: inherit; font-size: 12px; font-weight: 600; color: var(--mx-accent); background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
+        .rp-summary { margin: 6px 0; font-size: 13px; color: var(--mx-text-mid); }
+        .rp-unavailable { margin: 6px 0; font-size: 12px; color: var(--mx-text-mid); }
+        .rp-burnup { display: block; max-width: 100%; height: auto; margin: 8px 0 4px; }
+        .rp-burnup text { fill: var(--mx-text-dim); font-size: 11px; }
+        .rp-axis { stroke: var(--mx-border); }
+        .rp-now { stroke-dasharray: 2 3; }
+        .rp-line { fill: none; stroke-width: 2; }
+        .rp-projection { fill: none; stroke-width: 1.5; stroke-dasharray: 4 4; }
+        .rp-series-0 { stroke: var(--mx-accent); background: var(--mx-accent); }
+        .rp-series-1 { stroke: var(--mx-text-high); background: var(--mx-text-high); }
+        .rp-series-2 { stroke: var(--mx-ramp-3); background: var(--mx-ramp-3); }
+        .rp-series-3 { stroke: var(--mx-text-dim); background: var(--mx-text-dim); }
+        .rp-swatch { display: inline-block; width: 14px; height: 3px; vertical-align: 3px; margin-right: 4px; }
+        .rp-entity { border-top: 1px solid var(--mx-border); padding: 8px 0 6px; font-size: 13px; }
+        .rp-row { display: grid; grid-template-columns: minmax(90px, 150px) minmax(80px, 1fr) 44px minmax(0, 220px); gap: 4px 10px; align-items: center; padding: 3px 4px; }
+        .rp-row.rp-crit { outline: 2px solid var(--mx-crit); border-radius: 4px; background: var(--mx-crit-bg); }
+        .rp-name { font-weight: 600; min-width: 0; }
+        .rp-bar { position: relative; height: 12px; border-radius: 6px; background: var(--mx-ramp-0); border: 1px solid var(--mx-border); overflow: hidden; }
+        .rp-read { position: absolute; inset: 0 auto 0 0; background: var(--mx-ramp-2); opacity: 0.5; }
+        .rp-loaded { position: absolute; inset: 0 auto 0 0; background: var(--mx-accent); }
+        .rp-crit .rp-loaded { background: repeating-linear-gradient(135deg, var(--mx-crit) 0 4px, transparent 4px 8px); }
+        .rp-eta { font-size: 12px; color: var(--mx-text-mid); display: flex; flex-wrap: wrap; gap: 2px 6px; align-items: center; }
+        .rp-gap { grid-column: 2 / -1; font-size: 12px; }
+        @media (max-width: 640px) {
+            .rp-row { grid-template-columns: minmax(0, 1fr) auto; }
+            .rp-row .rp-bar { grid-column: 1 / -1; grid-row: 2; }
+            .rp-row .rp-eta { grid-column: 1 / -1; }
+            .rp-gap { grid-column: 1 / -1; }
+        }
+        tr[data-highlight] { outline: 2px solid var(--mx-accent); outline-offset: -2px; }
+        /* Topology drill-down (spike gm-operations-console-2rf, flow.html): one pipeline's flow, opened
+           from its matrix head. Desktop only: below 1024 px (TopologyFlow.MIN_WIDTH) there is no control. */
+        .mx-topology-btn {
+            display: none; margin-left: auto; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+            color: var(--mx-accent); background: none; border: 1px solid var(--mx-border); border-radius: 6px; padding: 2px 10px;
+        }
+        .mx-topology-btn:hover { border-color: var(--mx-accent); }
+        .mx-topology-btn:focus-visible { outline: 2px solid var(--mx-accent); outline-offset: 2px; }
+        @media (min-width: 1024px) {
+            .mx-topology-btn { display: inline-block; }
+        }
+        .tp-dialog {
+            width: min(1000px, calc(100vw - 32px)); max-width: none; max-height: calc(100vh - 32px); margin: auto;
+            border: 1px solid var(--mx-border); border-radius: 12px; padding: 16px; overflow: auto;
+            background: var(--mx-surface); color: var(--mx-text-high);
+        }
+        .tp-dialog::backdrop { background: var(--mx-backdrop); }
+        .tp-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0 12px; font-size: 12px; color: var(--mx-text-mid); }
+        .tp-svg { display: block; max-width: 100%; height: auto; }
+        .tp-svg text { fill: var(--mx-text-high); font-size: 12px; }
+        .tp-svg .tp-sub { fill: var(--mx-text-mid); font-size: 11px; }
+        .tp-svg .tp-col { fill: var(--mx-text-dim); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; }
+        .tp-svg .tp-crit-text { fill: var(--mx-crit); font-weight: 700; }
+        .tp-svg .tp-warn-text { fill: var(--mx-warn); font-weight: 700; }
+        .tp-box { fill: var(--mx-surface); stroke: var(--mx-text-dim); stroke-width: 1; }
+        .tp-node.tp-warn .tp-box { stroke: var(--mx-warn); stroke-width: 2; }
+        .tp-node.tp-crit .tp-box { fill: var(--mx-crit-bg); stroke: var(--mx-crit); stroke-width: 3; }
+        .tp-node.tp-unknown .tp-box { stroke-dasharray: 4 3; }
+        .tp-queue { cursor: pointer; outline: none; }
+        .tp-queue:hover .tp-box { stroke: var(--mx-accent); }
+        .tp-queue:focus-visible .tp-box { stroke: var(--mx-accent); stroke-width: 3; }
+        .tp-dlq:not([data-state="crit"]):not([data-state="warn"]) { display: none; }
+        .tp-pill { fill: var(--mx-surface); stroke-width: 1.5; }
+        .tp-dlq[data-state="warn"] .tp-pill { stroke: var(--mx-warn); }
+        .tp-dlq[data-state="warn"] .tp-pill-text { fill: var(--mx-warn); font-size: 11px; font-weight: 700; }
+        .tp-dlq[data-state="crit"] .tp-pill { stroke: var(--mx-crit); fill: var(--mx-crit); }
+        .tp-dlq[data-state="crit"] .tp-pill-text { fill: var(--mx-surface); font-size: 11px; font-weight: 700; }
+        .tp-edge { fill: none; stroke: var(--mx-edge); }
+        .tp-edge-idle { stroke-dasharray: 3 4; }
+        .tp-edge-unknown { stroke-dasharray: 1 5; stroke-linecap: round; }
     </style>
 </head>
-<body class="p-8" style="background:#060a12;">
-<div class="max-w-[1440px] mx-auto space-y-8">
+<body class="p-4 sm:p-8" style="background:#060a12;">
+<div class="max-w-[1440px] mx-auto">
 
     <!-- ================================================================
-         HEADER
+         LOGIN FORM
          ================================================================ -->
-    <header class="flex items-center justify-between">
-        <div class="flex items-center space-x-5">
-
-            <!-- ============================================================
-                 APP LOGO — easy to replace.
-
-                 To swap in a custom logo, change the contents of #app-logo:
-
-                   <img src="/static/my-logo.png" alt="Logo" class="w-10 h-10">
-
-                 or any other element. The surrounding <div id="app-logo">
-                 wrapper is intentionally unstyled so your element controls
-                 its own size and shape.
-                 ============================================================ -->
-            <div id="app-logo" aria-label="GrooveMap logo">
-                <img src="/brand/icon-dark.svg" alt="GrooveMap" style="width:40px;height:40px;border-radius:50%;">
-            </div>
-            <!-- END LOGO -->
-
-            <div>
-                <h1 class="text-xl font-semibold tracking-tight">
-                    <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.1rem;letter-spacing:-0.03em;" class="t-high">GrooveMap</span>
-                    <span style="font-family:'Space Grotesk',sans-serif;font-size:0.65rem;letter-spacing:0.02em;" class="t-muted ml-1">map the music</span>
-                </h1>
-                <div class="flex items-center space-x-2 mt-0.5">
-                    <span id="operational-status-dot" class="w-3 h-3 rounded-full bg-yellow-500 animate-pulse"></span>
-                    <span id="operational-status-text" class="text-[10px] text-yellow-500 font-bold uppercase tracking-widest">Connecting</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="flex items-center space-x-4">
-            <a href="/admin" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors" style="text-decoration:none">Admin</a>
-            <div class="flex items-center space-x-4 py-1.5 px-4 rounded-full dashboard-card" style="border-radius:9999px">
-                <span class="text-[10px] font-bold uppercase tracking-wider t-dim">DLQ Toggle</span>
-                <label class="relative inline-flex items-center cursor-pointer">
-                    <input id="dlq-toggle" class="sr-only peer" type="checkbox" value=""/>
-                    <div class="w-8 h-4 bg-zinc-400 dark:bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-500"></div>
-                </label>
-            </div>
-        </div>
-    </header>
-
-    <!-- ================================================================
-         DISCOGS PIPELINE
-         ================================================================ -->
-    <section id="pipeline-discogs" class="space-y-8 hidden">
-        <div class="flex items-center gap-3">
-            <h2 class="text-sm font-bold uppercase tracking-[0.15em] t-dim">Discogs Pipeline</h2>
-            <div class="flex-1 border-t b-theme"></div>
-        </div>
-
-        <!-- SERVICE CARDS (3-column grid) -->
-        <div class="grid grid-cols-3 gap-6">
-
-            <!-- Extractor (Discogs) -->
-            <div id="service-extractor-discogs" class="dashboard-card p-6">
-                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
-                    <h3 class="text-sm font-semibold flex items-center gap-2">
-                        <span class="material-symbols-outlined text-sm t-dim">output</span> Extractor
-                    </h3>
-                    <span id="discogs-extractor-discogs-status-badge" class="text-[10px] bg-yellow-500/10 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/20 uppercase font-bold">Unknown</span>
-                </div>
-                <div class="space-y-3">
-                    <div class="flex justify-between text-[10px] t-muted uppercase font-bold tracking-wider">
-                        <span>Queues</span><span>State</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Masters</span>
-                        <span id="discogs-extractor-discogs-masters-state" class="t-muted">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Releases</span>
-                        <span id="discogs-extractor-discogs-releases-state" class="t-muted">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Artists</span>
-                        <span id="discogs-extractor-discogs-artists-state" class="t-muted">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1">
-                        <span>Labels</span>
-                        <span id="discogs-extractor-discogs-labels-state" class="t-muted">—</span>
-                    </div>
-                    <div class="flex justify-between text-[10px] t-muted uppercase font-bold tracking-wider pt-3 mt-1 border-t b-theme">
-                        <span>Total Records</span>
-                        <span id="discogs-extractor-discogs-total-records" class="t-high normal-case font-mono">—</span>
-                    </div>
-                </div>
+    <div id="login-view" class="flex items-center justify-center min-h-[80vh]" style="display:none">
+        <div class="dashboard-card p-8 w-full max-w-md space-y-6">
+            <div class="text-center space-y-2">
+                <span class="material-symbols-outlined text-4xl" style="color:var(--purple-accent)">admin_panel_settings</span>
+                <h2 class="text-xl font-semibold">GrooveMap Operations</h2>
+                <p class="text-xs t-muted">Sign in with your catalog-api admin account</p>
             </div>
 
-            <!-- Graphinator -->
-            <div id="service-graphinator" class="dashboard-card p-6">
-                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
-                    <h3 class="text-sm font-semibold flex items-center gap-2">
-                        <span class="material-symbols-outlined text-sm" style="color:var(--purple-accent)">hub</span> Graphinator
-                    </h3>
-                    <span id="discogs-graphinator-status-badge" class="text-[10px] bg-yellow-500/10 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/20 uppercase font-bold">Unknown</span>
-                </div>
-                <div class="space-y-3">
-                    <div class="flex justify-between text-[10px] t-muted uppercase font-bold tracking-wider">
-                        <span>Queues</span><span>Messages</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Masters</span>
-                        <span id="discogs-graphinator-masters-count" class="t-high">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Releases</span>
-                        <span id="discogs-graphinator-releases-count" class="t-high">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Artists</span>
-                        <span id="discogs-graphinator-artists-count" class="t-high">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1">
-                        <span>Labels</span>
-                        <span id="discogs-graphinator-labels-count" class="t-high">—</span>
-                    </div>
-                </div>
-            </div>
+            <div id="login-reason" role="status" class="text-xs text-amber-500 text-center" style="display:none"></div>
+            <div id="login-error" class="text-xs text-red-500 text-center" style="display:none"></div>
 
-            <!-- Tableinator -->
-            <div id="service-tableinator" class="dashboard-card p-6">
-                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
-                    <h3 class="text-sm font-semibold flex items-center gap-2">
-                        <span class="material-symbols-outlined text-sm" style="color:var(--blue-accent)">grid_view</span> Tableinator
-                    </h3>
-                    <span id="discogs-tableinator-status-badge" class="text-[10px] bg-yellow-500/10 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/20 uppercase font-bold">Unknown</span>
-                </div>
-                <div class="space-y-3">
-                    <div class="flex justify-between text-[10px] t-muted uppercase font-bold tracking-wider">
-                        <span>Queues</span><span>Messages</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Masters</span>
-                        <span id="discogs-tableinator-masters-count" class="t-high">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Releases</span>
-                        <span id="discogs-tableinator-releases-count" class="t-high">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Artists</span>
-                        <span id="discogs-tableinator-artists-count" class="t-high">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1">
-                        <span>Labels</span>
-                        <span id="discogs-tableinator-labels-count" class="t-high">—</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- QUEUE SIZE METRICS (SVG bar chart) -->
-        <div class="dashboard-card p-8">
-            <div class="flex items-center justify-between mb-10">
+            <div class="space-y-4">
                 <div>
-                    <h2 class="text-lg font-bold">Queue Size Metrics</h2>
-                    <p class="text-[10px] t-muted uppercase tracking-[0.2em] font-mono mt-1">Message Count by Queue Type</p>
-                    <span data-queues-unavailable="discogs" role="status" class="hidden text-[10px] font-bold uppercase tracking-widest" style="color:var(--amber-accent,#f59e0b)">Queue metrics unavailable</span>
+                    <label for="login-email" class="block text-[10px] font-bold uppercase tracking-wider t-dim mb-1">Email</label>
+                    <input id="login-email" type="email" autocomplete="email"
+                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                           placeholder="admin@example.com"/>
                 </div>
-                <div class="flex items-center space-x-8">
-                    <div class="flex items-center space-x-2">
-                        <div class="w-3 h-3 rounded-sm" style="background:var(--purple-accent)"></div>
-                        <span id="discogs-chart-legend-graphinator" class="text-[10px] font-bold t-dim uppercase tracking-widest">Graphinator</span>
-                    </div>
-                    <div class="flex items-center space-x-2">
-                        <div class="w-3 h-3 rounded-sm" style="background:var(--blue-accent)"></div>
-                        <span id="discogs-chart-legend-tableinator" class="text-[10px] font-bold t-dim uppercase tracking-widest">Tableinator</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="h-64 flex items-end justify-between px-12 relative">
-                <!-- Y-axis grid lines -->
-                <div class="absolute left-0 top-0 bottom-0 w-full flex flex-col justify-between pointer-events-none text-[9px] font-mono t-muted">
-                    <div class="border-t b-theme w-full pt-1" id="discogs-bar-yaxis-4">—</div>
-                    <div class="border-t b-theme w-full pt-1" id="discogs-bar-yaxis-3">—</div>
-                    <div class="border-t b-theme w-full pt-1" id="discogs-bar-yaxis-2">—</div>
-                    <div class="border-t b-theme w-full pt-1" id="discogs-bar-yaxis-1">—</div>
-                    <div class="border-t b-theme w-full"></div>
-                </div>
-
-                <!-- Bar groups -->
-                <div class="flex-1 flex justify-around items-end z-10 h-full">
-                    <div class="flex flex-col items-center gap-4 h-full">
-                        <div class="flex items-end gap-2 flex-1">
-                            <div id="discogs-bar-masters-messages" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--purple-accent);height:0%"></div>
-                            <div id="discogs-bar-masters-ready" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--blue-accent);height:0%"></div>
-                        </div>
-                        <span class="text-[10px] font-bold t-dim uppercase tracking-widest">Masters</span>
-                    </div>
-                    <div class="flex flex-col items-center gap-4 h-full">
-                        <div class="flex items-end gap-2 flex-1">
-                            <div id="discogs-bar-releases-messages" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--purple-accent);height:0%"></div>
-                            <div id="discogs-bar-releases-ready" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--blue-accent);height:0%"></div>
-                        </div>
-                        <span class="text-[10px] font-bold t-dim uppercase tracking-widest">Releases</span>
-                    </div>
-                    <div class="flex flex-col items-center gap-4 h-full">
-                        <div class="flex items-end gap-2 flex-1">
-                            <div id="discogs-bar-artists-messages" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--purple-accent);height:0%"></div>
-                            <div id="discogs-bar-artists-ready" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--blue-accent);height:0%"></div>
-                        </div>
-                        <span class="text-[10px] font-bold t-dim uppercase tracking-widest">Artists</span>
-                    </div>
-                    <div class="flex flex-col items-center gap-4 h-full">
-                        <div class="flex items-end gap-2 flex-1">
-                            <div id="discogs-bar-labels-messages" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--purple-accent);height:0%"></div>
-                            <div id="discogs-bar-labels-ready" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--blue-accent);height:0%"></div>
-                        </div>
-                        <span class="text-[10px] font-bold t-dim uppercase tracking-widest">Labels</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- PROCESSING RATES (circular SVG gauges) -->
-        <div class="grid grid-cols-2 gap-6">
-
-            <!-- Publish Rates panel -->
-            <div class="dashboard-card p-8">
-                <div class="flex items-center justify-between mb-6">
-                    <h2 class="text-xs font-bold t-dim uppercase tracking-[0.2em]">Publish Rates (msg/s)</h2>
-                    <span data-queues-unavailable="discogs" role="status" class="hidden text-[10px] font-bold uppercase tracking-widest" style="color:var(--amber-accent,#f59e0b)">Queue metrics unavailable</span>
-                    <div class="flex items-center space-x-6">
-                        <div class="flex items-center space-x-2">
-                            <div class="w-2.5 h-2.5 rounded-full" style="background:var(--purple-accent)"></div>
-                            <span class="text-[9px] font-bold t-muted uppercase">Graphinator</span>
-                        </div>
-                        <div class="flex items-center space-x-2">
-                            <div class="w-2.5 h-2.5 rounded-full" style="background:var(--blue-accent)"></div>
-                            <span class="text-[9px] font-bold t-muted uppercase">Tableinator</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Graphinator publish row (purple) -->
-                <div class="flex items-center gap-4 mb-6">
-                    <span class="text-[9px] font-bold uppercase tracking-wider w-14 shrink-0" style="color:var(--purple-accent)">Graph.</span>
-                    <div class="grid grid-cols-4 gap-4 flex-1">
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-graphinator-masters-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-graphinator-masters-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Masters</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-graphinator-releases-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-graphinator-releases-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Releases</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-graphinator-artists-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-graphinator-artists-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Artists</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-graphinator-labels-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-graphinator-labels-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Labels</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Tableinator publish row (blue) -->
-                <div class="flex items-center gap-4">
-                    <span class="text-[9px] font-bold uppercase tracking-wider w-14 shrink-0" style="color:var(--blue-accent)">Table.</span>
-                    <div class="grid grid-cols-4 gap-4 flex-1">
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-tableinator-masters-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-tableinator-masters-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Masters</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-tableinator-releases-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-tableinator-releases-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Releases</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-tableinator-artists-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-tableinator-artists-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Artists</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-tableinator-labels-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-tableinator-labels-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Labels</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Ack Rates panel -->
-            <div class="dashboard-card p-8">
-                <div class="flex items-center justify-between mb-6">
-                    <h2 class="text-xs font-bold t-dim uppercase tracking-[0.2em]">Ack Rates (msg/s)</h2>
-                    <span data-queues-unavailable="discogs" role="status" class="hidden text-[10px] font-bold uppercase tracking-widest" style="color:var(--amber-accent,#f59e0b)">Queue metrics unavailable</span>
-                    <div class="flex items-center space-x-6">
-                        <div class="flex items-center space-x-2">
-                            <div class="w-2.5 h-2.5 rounded-full" style="background:var(--purple-accent)"></div>
-                            <span class="text-[9px] font-bold t-muted uppercase">Graphinator</span>
-                        </div>
-                        <div class="flex items-center space-x-2">
-                            <div class="w-2.5 h-2.5 rounded-full" style="background:var(--blue-accent)"></div>
-                            <span class="text-[9px] font-bold t-muted uppercase">Tableinator</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Graphinator ack row (purple) -->
-                <div class="flex items-center gap-4 mb-6">
-                    <span class="text-[9px] font-bold uppercase tracking-wider w-14 shrink-0" style="color:var(--purple-accent)">Graph.</span>
-                    <div class="grid grid-cols-4 gap-4 flex-1">
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-graphinator-masters-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-graphinator-masters-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Masters</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-graphinator-releases-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-graphinator-releases-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Releases</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-graphinator-artists-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-graphinator-artists-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Artists</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-graphinator-labels-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-graphinator-labels-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Labels</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Tableinator ack row (blue) -->
-                <div class="flex items-center gap-4">
-                    <span class="text-[9px] font-bold uppercase tracking-wider w-14 shrink-0" style="color:var(--blue-accent)">Table.</span>
-                    <div class="grid grid-cols-4 gap-4 flex-1">
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-tableinator-masters-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-tableinator-masters-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Masters</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-tableinator-releases-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-tableinator-releases-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Releases</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-tableinator-artists-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-tableinator-artists-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Artists</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="discogs-rate-circle-tableinator-labels-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="discogs-rate-text-tableinator-labels-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Labels</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-        </div>
-    </section>
-
-    <!-- ================================================================
-         MUSICBRAINZ PIPELINE
-         ================================================================ -->
-    <section id="pipeline-musicbrainz" class="space-y-8 hidden">
-        <div class="flex items-center gap-3">
-            <h2 class="text-sm font-bold uppercase tracking-[0.15em] t-dim">MusicBrainz Pipeline</h2>
-            <div class="flex-1 border-t b-theme"></div>
-        </div>
-
-        <!-- SERVICE CARDS (3-column grid) -->
-        <div class="grid grid-cols-3 gap-6">
-
-            <!-- Extractor (MusicBrainz) -->
-            <div id="service-extractor-musicbrainz" class="dashboard-card p-6">
-                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
-                    <h3 class="text-sm font-semibold flex items-center gap-2">
-                        <span class="material-symbols-outlined text-sm t-dim">output</span> Extractor
-                    </h3>
-                    <span id="musicbrainz-extractor-musicbrainz-status-badge" class="text-[10px] bg-yellow-500/10 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/20 uppercase font-bold">Unknown</span>
-                </div>
-                <div class="space-y-3">
-                    <div class="flex justify-between text-[10px] t-muted uppercase font-bold tracking-wider">
-                        <span>Queues</span><span>State</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Release Groups</span>
-                        <span id="musicbrainz-extractor-musicbrainz-release-groups-state" class="t-muted">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Releases</span>
-                        <span id="musicbrainz-extractor-musicbrainz-releases-state" class="t-muted">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Artists</span>
-                        <span id="musicbrainz-extractor-musicbrainz-artists-state" class="t-muted">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1">
-                        <span>Labels</span>
-                        <span id="musicbrainz-extractor-musicbrainz-labels-state" class="t-muted">—</span>
-                    </div>
-                    <div class="flex justify-between text-[10px] t-muted uppercase font-bold tracking-wider pt-3 mt-1 border-t b-theme">
-                        <span>Total Records</span>
-                        <span id="musicbrainz-extractor-musicbrainz-total-records" class="t-high normal-case font-mono">—</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Brainzgraphinator -->
-            <div id="service-brainzgraphinator" class="dashboard-card p-6">
-                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
-                    <h3 class="text-sm font-semibold flex items-center gap-2">
-                        <span class="material-symbols-outlined text-sm" style="color:var(--purple-accent)">hub</span> Brainzgraphinator
-                    </h3>
-                    <span id="musicbrainz-brainzgraphinator-status-badge" class="text-[10px] bg-yellow-500/10 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/20 uppercase font-bold">Unknown</span>
-                </div>
-                <div class="space-y-3">
-                    <div class="flex justify-between text-[10px] t-muted uppercase font-bold tracking-wider">
-                        <span>Queues</span><span>Messages</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Release Groups</span>
-                        <span id="musicbrainz-brainzgraphinator-release-groups-count" class="t-high">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Releases</span>
-                        <span id="musicbrainz-brainzgraphinator-releases-count" class="t-high">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Artists</span>
-                        <span id="musicbrainz-brainzgraphinator-artists-count" class="t-high">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1">
-                        <span>Labels</span>
-                        <span id="musicbrainz-brainzgraphinator-labels-count" class="t-high">—</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Brainztableinator -->
-            <div id="service-brainztableinator" class="dashboard-card p-6">
-                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
-                    <h3 class="text-sm font-semibold flex items-center gap-2">
-                        <span class="material-symbols-outlined text-sm" style="color:var(--blue-accent)">grid_view</span> Brainztableinator
-                    </h3>
-                    <span id="musicbrainz-brainztableinator-status-badge" class="text-[10px] bg-yellow-500/10 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/20 uppercase font-bold">Unknown</span>
-                </div>
-                <div class="space-y-3">
-                    <div class="flex justify-between text-[10px] t-muted uppercase font-bold tracking-wider">
-                        <span>Queues</span><span>Messages</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Release Groups</span>
-                        <span id="musicbrainz-brainztableinator-release-groups-count" class="t-high">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Releases</span>
-                        <span id="musicbrainz-brainztableinator-releases-count" class="t-high">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1 border-b b-row">
-                        <span>Artists</span>
-                        <span id="musicbrainz-brainztableinator-artists-count" class="t-high">—</span>
-                    </div>
-                    <div class="flex justify-between text-xs mono py-1">
-                        <span>Labels</span>
-                        <span id="musicbrainz-brainztableinator-labels-count" class="t-high">—</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- QUEUE SIZE METRICS (SVG bar chart — 3 columns for MB) -->
-        <div class="dashboard-card p-8">
-            <div class="flex items-center justify-between mb-10">
                 <div>
-                    <h2 class="text-lg font-bold">Queue Size Metrics</h2>
-                    <p class="text-[10px] t-muted uppercase tracking-[0.2em] font-mono mt-1">Message Count by Queue Type</p>
-                    <span data-queues-unavailable="musicbrainz" role="status" class="hidden text-[10px] font-bold uppercase tracking-widest" style="color:var(--amber-accent,#f59e0b)">Queue metrics unavailable</span>
+                    <label for="login-password" class="block text-[10px] font-bold uppercase tracking-wider t-dim mb-1">Password</label>
+                    <input id="login-password" type="password" autocomplete="current-password"
+                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                           placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;"/>
                 </div>
-                <div class="flex items-center space-x-8">
-                    <div class="flex items-center space-x-2">
-                        <div class="w-3 h-3 rounded-sm" style="background:var(--purple-accent)"></div>
-                        <span id="musicbrainz-chart-legend-brainzgraphinator" class="text-[10px] font-bold t-dim uppercase tracking-widest">Brainzgraphinator</span>
-                    </div>
-                    <div class="flex items-center space-x-2">
-                        <div class="w-3 h-3 rounded-sm" style="background:var(--blue-accent)"></div>
-                        <span id="musicbrainz-chart-legend-brainztableinator" class="text-[10px] font-bold t-dim uppercase tracking-widest">Brainztableinator</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="h-64 flex items-end justify-between px-12 relative">
-                <!-- Y-axis grid lines -->
-                <div class="absolute left-0 top-0 bottom-0 w-full flex flex-col justify-between pointer-events-none text-[9px] font-mono t-muted">
-                    <div class="border-t b-theme w-full pt-1" id="musicbrainz-bar-yaxis-4">—</div>
-                    <div class="border-t b-theme w-full pt-1" id="musicbrainz-bar-yaxis-3">—</div>
-                    <div class="border-t b-theme w-full pt-1" id="musicbrainz-bar-yaxis-2">—</div>
-                    <div class="border-t b-theme w-full pt-1" id="musicbrainz-bar-yaxis-1">—</div>
-                    <div class="border-t b-theme w-full"></div>
-                </div>
-
-                <!-- Bar groups (4 columns) -->
-                <div class="flex-1 flex justify-around items-end z-10 h-full">
-                    <div class="flex flex-col items-center gap-4 h-full">
-                        <div class="flex items-end gap-2 flex-1">
-                            <div id="musicbrainz-bar-release-groups-messages" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--purple-accent);height:0%"></div>
-                            <div id="musicbrainz-bar-release-groups-ready" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--blue-accent);height:0%"></div>
-                        </div>
-                        <span class="text-[10px] font-bold t-dim uppercase tracking-widest">Rel. Groups</span>
-                    </div>
-                    <div class="flex flex-col items-center gap-4 h-full">
-                        <div class="flex items-end gap-2 flex-1">
-                            <div id="musicbrainz-bar-releases-messages" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--purple-accent);height:0%"></div>
-                            <div id="musicbrainz-bar-releases-ready" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--blue-accent);height:0%"></div>
-                        </div>
-                        <span class="text-[10px] font-bold t-dim uppercase tracking-widest">Releases</span>
-                    </div>
-                    <div class="flex flex-col items-center gap-4 h-full">
-                        <div class="flex items-end gap-2 flex-1">
-                            <div id="musicbrainz-bar-artists-messages" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--purple-accent);height:0%"></div>
-                            <div id="musicbrainz-bar-artists-ready" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--blue-accent);height:0%"></div>
-                        </div>
-                        <span class="text-[10px] font-bold t-dim uppercase tracking-widest">Artists</span>
-                    </div>
-                    <div class="flex flex-col items-center gap-4 h-full">
-                        <div class="flex items-end gap-2 flex-1">
-                            <div id="musicbrainz-bar-labels-messages" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--purple-accent);height:0%"></div>
-                            <div id="musicbrainz-bar-labels-ready" class="w-10 rounded-t-sm transition-all duration-500" style="background:var(--blue-accent);height:0%"></div>
-                        </div>
-                        <span class="text-[10px] font-bold t-dim uppercase tracking-widest">Labels</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- PROCESSING RATES (circular SVG gauges — 3 columns) -->
-        <div class="grid grid-cols-2 gap-6">
-
-            <!-- Publish Rates panel -->
-            <div class="dashboard-card p-8">
-                <div class="flex items-center justify-between mb-6">
-                    <h2 class="text-xs font-bold t-dim uppercase tracking-[0.2em]">Publish Rates (msg/s)</h2>
-                    <span data-queues-unavailable="musicbrainz" role="status" class="hidden text-[10px] font-bold uppercase tracking-widest" style="color:var(--amber-accent,#f59e0b)">Queue metrics unavailable</span>
-                    <div class="flex items-center space-x-6">
-                        <div class="flex items-center space-x-2">
-                            <div class="w-2.5 h-2.5 rounded-full" style="background:var(--purple-accent)"></div>
-                            <span class="text-[9px] font-bold t-muted uppercase">Brainzgraph.</span>
-                        </div>
-                        <div class="flex items-center space-x-2">
-                            <div class="w-2.5 h-2.5 rounded-full" style="background:var(--blue-accent)"></div>
-                            <span class="text-[9px] font-bold t-muted uppercase">Brainztable.</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Brainzgraphinator publish row (purple) -->
-                <div class="flex items-center gap-4 mb-6">
-                    <span class="text-[9px] font-bold uppercase tracking-wider w-14 shrink-0" style="color:var(--purple-accent)">Graph.</span>
-                    <div class="grid grid-cols-4 gap-4 flex-1">
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainzgraphinator-release-groups-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainzgraphinator-release-groups-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Rel. Groups</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainzgraphinator-releases-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainzgraphinator-releases-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Releases</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainzgraphinator-artists-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainzgraphinator-artists-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Artists</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainzgraphinator-labels-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainzgraphinator-labels-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Labels</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Brainztableinator publish row (blue) -->
-                <div class="flex items-center gap-4">
-                    <span class="text-[9px] font-bold uppercase tracking-wider w-14 shrink-0" style="color:var(--blue-accent)">Table.</span>
-                    <div class="grid grid-cols-4 gap-4 flex-1">
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainztableinator-release-groups-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainztableinator-release-groups-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Rel. Groups</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainztableinator-releases-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainztableinator-releases-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Releases</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainztableinator-artists-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainztableinator-artists-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Artists</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainztableinator-labels-publish" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainztableinator-labels-publish" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Labels</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Ack Rates panel -->
-            <div class="dashboard-card p-8">
-                <div class="flex items-center justify-between mb-6">
-                    <h2 class="text-xs font-bold t-dim uppercase tracking-[0.2em]">Ack Rates (msg/s)</h2>
-                    <span data-queues-unavailable="musicbrainz" role="status" class="hidden text-[10px] font-bold uppercase tracking-widest" style="color:var(--amber-accent,#f59e0b)">Queue metrics unavailable</span>
-                    <div class="flex items-center space-x-6">
-                        <div class="flex items-center space-x-2">
-                            <div class="w-2.5 h-2.5 rounded-full" style="background:var(--purple-accent)"></div>
-                            <span class="text-[9px] font-bold t-muted uppercase">Brainzgraph.</span>
-                        </div>
-                        <div class="flex items-center space-x-2">
-                            <div class="w-2.5 h-2.5 rounded-full" style="background:var(--blue-accent)"></div>
-                            <span class="text-[9px] font-bold t-muted uppercase">Brainztable.</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Brainzgraphinator ack row (purple) -->
-                <div class="flex items-center gap-4 mb-6">
-                    <span class="text-[9px] font-bold uppercase tracking-wider w-14 shrink-0" style="color:var(--purple-accent)">Graph.</span>
-                    <div class="grid grid-cols-4 gap-4 flex-1">
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainzgraphinator-release-groups-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainzgraphinator-release-groups-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Rel. Groups</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainzgraphinator-releases-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainzgraphinator-releases-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Releases</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainzgraphinator-artists-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainzgraphinator-artists-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Artists</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainzgraphinator-labels-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--purple-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainzgraphinator-labels-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Labels</span>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Brainztableinator ack row (blue) -->
-                <div class="flex items-center gap-4">
-                    <span class="text-[9px] font-bold uppercase tracking-wider w-14 shrink-0" style="color:var(--blue-accent)">Table.</span>
-                    <div class="grid grid-cols-4 gap-4 flex-1">
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainztableinator-release-groups-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainztableinator-release-groups-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Rel. Groups</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainztableinator-releases-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainztableinator-releases-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Releases</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainztableinator-artists-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainztableinator-artists-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Artists</span>
-                        </div>
-                        <div class="flex flex-col items-center space-y-2">
-                            <div class="relative w-16 h-16">
-                                <svg class="w-full h-full -rotate-90">
-                                    <circle cx="32" cy="32" fill="transparent" r="28" stroke="var(--gauge-track)" stroke-width="4"></circle>
-                                    <circle id="musicbrainz-rate-circle-brainztableinator-labels-ack" cx="32" cy="32" fill="transparent" r="28" stroke="var(--blue-accent)" stroke-dasharray="176" stroke-dashoffset="176" stroke-linecap="round" stroke-width="4" style="transition:stroke-dashoffset 0.5s ease"></circle>
-                                </svg>
-                                <div class="absolute inset-0 flex items-center justify-center text-[10px] font-bold mono">
-                                    <span id="musicbrainz-rate-text-brainztableinator-labels-ack" class="t-muted">0</span>
-                                </div>
-                            </div>
-                            <span class="text-[9px] t-muted font-bold uppercase">Labels</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-        </div>
-    </section>
-
-    <!-- ================================================================
-         DATABASE STATISTICS
-         ================================================================ -->
-    <div class="flex items-center gap-3">
-        <h2 class="text-sm font-bold uppercase tracking-[0.15em] t-dim">Database Statistics</h2>
-        <div class="flex-1 border-t b-theme"></div>
-    </div>
-
-    <div class="grid grid-cols-2 gap-6 items-stretch">
-
-        <!-- Database cards stacked vertically -->
-        <div class="grid grid-rows-2 gap-6">
-
-            <!-- Neo4j -->
-            <div id="db-neo4j" class="dashboard-card p-6 flex flex-col justify-between">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-3">
-                        <span class="material-symbols-outlined text-orange-400">hub</span>
-                        <span class="text-sm font-bold database-name">Neo4j</span>
-                    </div>
-                    <span id="neo4j-status-badge" class="text-[10px] t-muted font-bold uppercase">Unknown</span>
-                </div>
-                <div class="grid grid-cols-2 gap-4 mt-6">
-                    <div class="p-4 rounded-lg bg-inner border">
-                        <p class="text-[9px] t-muted uppercase font-bold tracking-wider">Total Nodes</p>
-                        <p id="neo4j-nodes" class="text-xl font-mono t-high mt-1">—</p>
-                    </div>
-                    <div class="p-4 rounded-lg bg-inner border">
-                        <p class="text-[9px] t-muted uppercase font-bold tracking-wider">Relationships</p>
-                        <p id="neo4j-relationships" class="text-xl font-mono t-high mt-1">—</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- PostgreSQL -->
-            <div id="db-postgresql" class="dashboard-card p-6 flex flex-col justify-between">
-                <div class="flex items-center justify-between">
-                    <div class="flex items-center space-x-3">
-                        <span class="material-symbols-outlined text-blue-400">database</span>
-                        <span class="text-sm font-bold database-name">PostgreSQL</span>
-                    </div>
-                    <span id="postgresql-status-badge" class="text-[10px] t-muted font-bold uppercase">Unknown</span>
-                </div>
-                <div class="grid grid-cols-2 gap-4 mt-6">
-                    <div class="p-4 rounded-lg bg-inner border">
-                        <p class="text-[9px] t-muted uppercase font-bold tracking-wider">Connections</p>
-                        <p id="postgresql-connections" class="text-xl font-mono t-high mt-1">—</p>
-                    </div>
-                    <div class="p-4 rounded-lg bg-inner border">
-                        <p class="text-[9px] t-muted uppercase font-bold tracking-wider">DB Size</p>
-                        <p id="postgresql-size" class="text-xl font-mono t-high mt-1">—</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- System Event Log -->
-        <div class="dashboard-card flex flex-col overflow-hidden" style="border-left: 1px solid var(--border-color)">
-            <div class="px-6 py-4 border-b b-theme flex items-center justify-between">
-                <h2 class="text-sm font-bold flex items-center gap-2">
-                    <span class="material-symbols-outlined text-sm t-dim">list_alt</span> System Event Log
-                </h2>
-                <!-- WebSocket connection indicator -->
-                <div class="connection-status flex items-center space-x-2">
-                    <span class="status-indicator w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></span>
-                    <span class="status-text text-[10px] t-dim font-bold uppercase tracking-widest">Connecting</span>
-                </div>
-            </div>
-            <div id="activityLog" class="flex-1 overflow-y-auto p-6 space-y-4 mono text-[11px] leading-relaxed" style="max-height:340px">
-                <div class="flex items-start space-x-4 log-entry">
-                    <span class="t-muted shrink-0">—</span>
-                    <span class="t-muted font-bold shrink-0">[INFO]</span>
-                    <span class="t-dim">Waiting for data...</span>
-                </div>
+                <button id="login-btn"
+                        class="btn-purple w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2">
+                    <span class="material-symbols-outlined text-sm">login</span> Sign In
+                </button>
             </div>
         </div>
     </div>
 
-    <!-- Footer -->
-    <footer class="text-center py-4 text-[10px] t-muted font-mono">
-        Last updated: <span id="lastUpdated">—</span>
-        <span aria-hidden="true"> · </span>
-        <a id="source-legal-link" href="__GROOVEMAP_SOURCE_URL__" rel="license noreferrer" target="_blank">Source and legal notices (AGPL-3.0-only)</a>
-    </footer>
+    <!-- ================================================================
+         CONSOLE SHELL (shown only once catalog-api confirms the session)
+         ================================================================ -->
+    <div id="console-view" class="space-y-8" style="display:none">
 
-</div>
-<script src="dashboard.js"></script>
+        <header class="flex flex-wrap items-center justify-between gap-4">
+            <div class="flex items-center space-x-5">
+
+                <!-- ============================================================
+                     APP LOGO — easy to replace.
+
+                     To swap in a custom logo, change the contents of #app-logo:
+
+                       <img src="/static/my-logo.png" alt="Logo" class="w-10 h-10">
+
+                     or any other element. The surrounding <div id="app-logo">
+                     wrapper is intentionally unstyled so your element controls
+                     its own size and shape.
+                     ============================================================ -->
+                <div id="app-logo" aria-label="GrooveMap logo">
+                    <img src="/brand/icon-dark.svg" alt="GrooveMap" style="width:40px;height:40px;border-radius:50%;">
+                </div>
+                <!-- END LOGO -->
+
+                <div>
+                    <h1 class="text-xl font-semibold tracking-tight">
+                        <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.1rem;letter-spacing:-0.03em;" class="t-high">GrooveMap</span>
+                        <span style="font-family:'Space Grotesk',sans-serif;font-size:0.65rem;letter-spacing:0.02em;" class="t-muted ml-1">map the music</span>
+                    </h1>
+                    <div class="flex items-center space-x-2 mt-0.5">
+                        <span id="operational-status-dot" class="w-3 h-3 rounded-full bg-yellow-500 animate-pulse"></span>
+                        <span id="operational-status-text" class="text-[10px] text-yellow-500 font-bold uppercase tracking-widest">Connecting</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-4">
+                <span id="admin-email" class="text-xs mono t-dim"></span>
+                <button id="logout-btn" class="text-xs font-bold uppercase tracking-wider text-red-400 hover:text-red-300 transition-colors flex items-center gap-1">
+                    <span class="material-symbols-outlined text-sm">logout</span> Logout
+                </button>
+            </div>
+        </header>
+
+        <!-- Attention bar: every critical and warning item, at the top of every tab. Hidden (quiet and
+             empty) when nothing is wrong; filled by dashboard.js from the live feed and /api/alerts. -->
+        <section id="attention-bar" class="attention-bar" aria-label="Needs attention" hidden>
+            <div class="attention-head">
+                <strong id="attention-summary" role="status"></strong>
+                <button id="attention-toggle" type="button" class="attention-toggle" aria-controls="attention-list" aria-expanded="true" hidden>Hide</button>
+            </div>
+            <p id="attention-note" class="attention-note" hidden></p>
+            <ul id="attention-list" class="attention-list"></ul>
+        </section>
+
+        <nav class="flex items-center gap-2 mb-6 dashboard-card p-2 overflow-x-auto whitespace-nowrap">
+            <button class="tab-btn active" data-tab="overview" id="tab-btn-overview">
+                <span class="material-symbols-outlined text-sm">monitoring</span> Overview
+            </button>
+            <button class="tab-btn" data-tab="extractions" id="tab-btn-extractions">
+                <span class="material-symbols-outlined text-sm">rocket_launch</span> Extractions
+            </button>
+            <button class="tab-btn" data-tab="dlq" id="tab-btn-dlq">
+                <span class="material-symbols-outlined text-sm">delete_sweep</span> DLQ Management
+            </button>
+            <button class="tab-btn" data-tab="users" id="tab-btn-users">
+                <span class="material-symbols-outlined text-sm">group</span> User Activity
+            </button>
+            <button class="tab-btn" data-tab="storage" id="tab-btn-storage">
+                <span class="material-symbols-outlined text-sm">database</span> Storage
+            </button>
+            <button class="tab-btn" data-tab="queue-trends" id="tab-btn-queue-trends">
+                <span class="material-symbols-outlined text-sm">show_chart</span> Queue Trends
+            </button>
+            <button class="tab-btn" data-tab="system-health" id="tab-btn-system-health">
+                <span class="material-symbols-outlined text-sm">monitor_heart</span> System Health
+            </button>
+            <button class="tab-btn" data-tab="audit-log" id="tab-btn-audit-log">
+                <span class="material-symbols-outlined text-sm">history</span> Audit Log
+            </button>
+            <button class="tab-btn" data-tab="extraction-analysis" id="tab-btn-extraction-analysis">
+                <span class="material-symbols-outlined text-sm">analytics</span> Extraction Analysis
+            </button>
+        </nav>
+
+        <!-- One time range for every history view (Queue Trends, System Health), served from VictoriaMetrics -->
+        <div id="console-range-bar" class="flex items-center gap-2 mb-6" style="display:none">
+            <span class="text-[10px] font-bold uppercase tracking-wider t-muted mr-2">Range</span>
+            <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="1h">1h</button>
+            <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="6h">6h</button>
+            <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors active" data-range="24h">24h</button>
+            <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="7d">7d</button>
+            <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="30d">30d</button>
+            <button class="range-btn text-[10px] px-2.5 py-1 rounded font-bold uppercase tracking-wider transition-colors" data-range="90d">90d</button>
+        </div>
+
+        <!-- ============================================================
+             TAB: OVERVIEW (live pipeline, queue, and datastore view)
+             ============================================================ -->
+        <div id="tab-overview" class="space-y-8">
+
+            <!-- The matrix is the primary view; Run progress is the secondary one. -->
+            <div class="space-y-3">
+                <div class="ov-views" role="group" aria-label="Overview view">
+                    <button type="button" class="ov-view-btn" data-overview-view="matrix" aria-pressed="true">Matrix</button>
+                    <button type="button" class="ov-view-btn" data-overview-view="progress" aria-pressed="false">Run progress</button>
+                </div>
+
+                <!-- Each pipeline is an entity x consumer matrix, drawn by dashboard.js from /api/topology
+                     and filled from live metrics, with the run's ETA headline above it. -->
+                <div id="pipelines" class="space-y-4"></div>
+
+                <!-- Per pipeline: the extraction run's burn-up and per entity x consumer bars, drawn by dashboard.js. -->
+                <div id="run-progress" class="space-y-4" hidden></div>
+            </div>
+
+            <!-- Queue detail drawer: opened from a matrix cell, filled by dashboard.js. -->
+            <dialog id="queue-drawer" class="mx-drawer" aria-labelledby="queue-drawer-title">
+                <div class="mx-drawer-head">
+                    <div>
+                        <h2 id="queue-drawer-title">Queue</h2>
+                        <p id="queue-drawer-subtitle"></p>
+                    </div>
+                    <button id="queue-drawer-close" type="button" class="mx-drawer-close" aria-label="Close queue details">Close</button>
+                </div>
+                <p id="queue-drawer-state" class="mx-drawer-state" role="status"></p>
+                <nav id="queue-drawer-links" class="mx-links" aria-label="Grafana links" hidden></nav>
+                <dl id="queue-drawer-numbers"></dl>
+            </dialog>
+
+            <!-- Topology drill-down: one pipeline's flow, opened from its matrix head on desktop widths
+                 and drawn by dashboard.js from /api/topology and the live metrics. -->
+            <dialog id="topology-dialog" class="tp-dialog" aria-labelledby="topology-title">
+                <div class="mx-drawer-head">
+                    <h2 id="topology-title">Pipeline topology</h2>
+                    <button id="topology-close" type="button" class="mx-drawer-close" aria-label="Close the pipeline topology">Close</button>
+                </div>
+                <div class="tp-legend">
+                    <span>Edge width = messages/s (√ scale) · dashed = 0/s · dotted = rate unknown</span>
+                    <span><b class="mx-crit-text">◆</b> critical</span>
+                    <span><b class="mx-warn-text">▲</b> warning</span>
+                    <span>Select a queue for its details</span>
+                </div>
+                <div id="topology-flow"></div>
+            </dialog>
+
+            <!-- ================================================================
+                 DATABASE STATISTICS
+                 ================================================================ -->
+            <div class="flex items-center gap-3">
+                <h2 class="text-sm font-bold uppercase tracking-[0.15em] t-dim">Database Statistics</h2>
+                <div class="flex-1 border-t b-theme"></div>
+            </div>
+
+            <div class="grid grid-cols-2 gap-6 items-stretch">
+
+                <!-- Database cards stacked vertically -->
+                <div class="grid grid-rows-2 gap-6">
+
+                    <!-- Neo4j -->
+                    <div id="db-neo4j" class="dashboard-card p-6 flex flex-col justify-between">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-3">
+                                <span class="material-symbols-outlined text-orange-400">hub</span>
+                                <span class="text-sm font-bold database-name">Neo4j</span>
+                            </div>
+                            <span id="neo4j-status-badge" class="text-[10px] t-muted font-bold uppercase">Unknown</span>
+                        </div>
+                        <nav class="mx-links mt-3" data-datastore-links="neo4j" aria-label="Neo4j links" hidden></nav>
+                        <div class="grid grid-cols-2 gap-4 mt-6">
+                            <div class="p-4 rounded-lg bg-inner border">
+                                <p class="text-[9px] t-muted uppercase font-bold tracking-wider">Total Nodes</p>
+                                <p id="neo4j-nodes" class="text-xl font-mono t-high mt-1">—</p>
+                            </div>
+                            <div class="p-4 rounded-lg bg-inner border">
+                                <p class="text-[9px] t-muted uppercase font-bold tracking-wider">Relationships</p>
+                                <p id="neo4j-relationships" class="text-xl font-mono t-high mt-1">—</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- PostgreSQL -->
+                    <div id="db-postgresql" class="dashboard-card p-6 flex flex-col justify-between">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center space-x-3">
+                                <span class="material-symbols-outlined text-blue-400">database</span>
+                                <span class="text-sm font-bold database-name">PostgreSQL</span>
+                            </div>
+                            <span id="postgresql-status-badge" class="text-[10px] t-muted font-bold uppercase">Unknown</span>
+                        </div>
+                        <nav class="mx-links mt-3" data-datastore-links="postgresql" aria-label="PostgreSQL links" hidden></nav>
+                        <div class="grid grid-cols-2 gap-4 mt-6">
+                            <div class="p-4 rounded-lg bg-inner border">
+                                <p class="text-[9px] t-muted uppercase font-bold tracking-wider">Connections</p>
+                                <p id="postgresql-connections" class="text-xl font-mono t-high mt-1">—</p>
+                            </div>
+                            <div class="p-4 rounded-lg bg-inner border">
+                                <p class="text-[9px] t-muted uppercase font-bold tracking-wider">DB Size</p>
+                                <p id="postgresql-size" class="text-xl font-mono t-high mt-1">—</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- System Event Log -->
+                <div class="dashboard-card flex flex-col overflow-hidden" style="border-left: 1px solid var(--border-color)">
+                    <div class="px-6 py-4 border-b b-theme flex items-center justify-between">
+                        <h2 class="text-sm font-bold flex items-center gap-2">
+                            <span class="material-symbols-outlined text-sm t-dim">list_alt</span> System Event Log
+                        </h2>
+                        <!-- WebSocket connection indicator -->
+                        <div class="connection-status flex items-center space-x-2">
+                            <span class="status-indicator w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></span>
+                            <span class="status-text text-[10px] t-dim font-bold uppercase tracking-widest">Connecting</span>
+                        </div>
+                    </div>
+                    <div id="activityLog" class="flex-1 overflow-y-auto p-6 space-y-4 mono text-[11px] leading-relaxed" style="max-height:340px">
+                        <div class="flex items-start space-x-4 log-entry">
+                            <span class="t-muted shrink-0">—</span>
+                            <span class="t-muted font-bold shrink-0">[INFO]</span>
+                            <span class="t-dim">Waiting for data...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <p class="text-center text-[10px] t-muted font-mono">Last updated: <span id="lastUpdated">—</span></p>
+
+        </div><!-- /tab-overview -->
+
+        <!-- ============================================================
+             TAB: EXTRACTIONS
+             ============================================================ -->
+        <div id="tab-extractions" class="space-y-6" style="display:none">
+
+            <!-- Extraction Control -->
+            <section class="dashboard-card p-6">
+                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
+                    <h3 class="text-sm font-semibold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-sm t-dim">rocket_launch</span> Extraction Control
+                    </h3>
+                    <span id="extraction-status" class="text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-idle">Idle</span>
+                </div>
+                <div class="flex items-center gap-4">
+                    <button id="trigger-discogs-btn"
+                            class="btn-purple px-6 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-sm">play_arrow</span> Trigger Discogs
+                    </button>
+                    <button id="trigger-musicbrainz-btn"
+                            class="btn-purple px-6 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-sm">play_arrow</span> Trigger MusicBrainz
+                    </button>
+                    <span id="trigger-spinner" class="material-symbols-outlined text-lg animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                </div>
+            </section>
+
+            <!-- Extraction History -->
+            <section class="dashboard-card p-6">
+                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
+                    <h3 class="text-sm font-semibold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-sm t-dim">history</span> Extraction History
+                    </h3>
+                </div>
+                <div id="extraction-history">
+                    <table class="w-full text-xs">
+                        <thead>
+                            <tr class="text-[10px] t-muted uppercase font-bold tracking-wider border-b b-theme">
+                                <th class="text-left py-2 pr-4">Date</th>
+                                <th class="text-left py-2 pr-4">Status</th>
+                                <th class="text-left py-2 pr-4">Duration</th>
+                                <th class="text-right py-2 pr-4">Records</th>
+                                <th class="text-left py-2">Error</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-body"></tbody>
+                    </table>
+                    <p id="history-empty" class="text-xs t-muted text-center py-6" style="display:none">No extraction history available</p>
+                </div>
+            </section>
+
+        </div><!-- /tab-extractions -->
+
+        <!-- ============================================================
+             TAB: DLQ MANAGEMENT
+             ============================================================ -->
+        <div id="tab-dlq" class="space-y-6" style="display:none">
+
+            <section class="dashboard-card p-6">
+                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
+                    <h3 class="text-sm font-semibold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-sm t-dim">delete_sweep</span> Dead Letter Queue Management
+                    </h3>
+                </div>
+                <div id="dlq-list"></div>
+            </section>
+
+        </div><!-- /tab-dlq -->
+
+        <!-- ============================================================
+             TAB: USER ACTIVITY
+             ============================================================ -->
+        <div id="tab-users" class="space-y-6" style="display:none">
+
+            <section class="dashboard-card p-6">
+                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
+                    <h3 class="text-sm font-semibold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-sm t-dim">group</span> User Activity
+                    </h3>
+                    <div class="flex items-center gap-3">
+                        <span id="users-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                        <span id="users-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                            <span class="material-symbols-outlined text-xs">warning</span> <span id="users-error-msg"></span>
+                        </span>
+                        <button id="users-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors flex items-center gap-1">
+                            <span class="material-symbols-outlined text-sm">refresh</span> Refresh
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Summary stat cards -->
+                <div class="mb-6">
+                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-3">Overview</p>
+                    <div class="flex gap-4" id="user-summary-cards">
+                        <div class="stat-card">
+                            <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1">Total Users</p>
+                            <p class="text-2xl font-semibold mono t-high" id="stat-total-users">—</p>
+                        </div>
+                        <div class="stat-card">
+                            <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1">Active (7d)</p>
+                            <p class="text-2xl font-semibold mono t-high" id="stat-active-7d">—</p>
+                        </div>
+                        <div class="stat-card">
+                            <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1">Active (30d)</p>
+                            <p class="text-2xl font-semibold mono t-high" id="stat-active-30d">—</p>
+                        </div>
+                        <div class="stat-card">
+                            <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1">OAuth Rate</p>
+                            <p class="text-2xl font-semibold mono t-high" id="stat-oauth-rate">—</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Sync activity cards -->
+                <div class="mb-6">
+                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-3">Sync Activity</p>
+                    <div class="flex gap-4" id="sync-activity-cards">
+                        <div class="stat-card">
+                            <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1">Syncs / Day (7d)</p>
+                            <p class="text-2xl font-semibold mono t-high" id="stat-syncs-per-day-7d">—</p>
+                            <p class="text-xs t-muted mt-1" id="stat-syncs-per-day-30d-label"></p>
+                        </div>
+                        <div class="stat-card">
+                            <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1">Avg Items Synced (7d)</p>
+                            <p class="text-2xl font-semibold mono t-high" id="stat-avg-items-7d">—</p>
+                            <p class="text-xs t-muted mt-1" id="stat-avg-items-30d-label"></p>
+                        </div>
+                        <div class="stat-card">
+                            <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1">Failure Rate (7d)</p>
+                            <p class="text-2xl font-semibold mono t-high" id="stat-failure-rate-7d">—</p>
+                            <p class="text-xs t-muted mt-1" id="stat-failure-rate-30d-label"></p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Daily registrations table -->
+                <div>
+                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-3">Daily Registrations (last 30 days)</p>
+                    <div class="bg-inner rounded-lg border b-theme overflow-auto" style="max-height:320px">
+                        <table class="w-full text-xs">
+                            <thead class="sticky top-0" style="background:var(--inner-bg)">
+                                <tr class="text-[10px] t-muted uppercase font-bold tracking-wider border-b b-theme">
+                                    <th class="text-left py-2 px-4">Date</th>
+                                    <th class="text-right py-2 px-4">New Users</th>
+                                    <th class="text-right py-2 px-4">OAuth Users</th>
+                                </tr>
+                            </thead>
+                            <tbody id="registrations-body">
+                                <tr><td colspan="3" class="py-4 text-center t-muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </section>
+
+        </div><!-- /tab-users -->
+
+        <!-- ============================================================
+             TAB: STORAGE UTILIZATION
+             ============================================================ -->
+        <div id="tab-storage" class="space-y-6" style="display:none">
+
+            <section class="dashboard-card p-6">
+                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
+                    <h3 class="text-sm font-semibold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-sm t-dim">database</span> Storage Utilization
+                    </h3>
+                    <div class="flex items-center gap-3">
+                        <span id="storage-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                        <span id="storage-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                            <span class="material-symbols-outlined text-xs">warning</span> <span id="storage-error-msg"></span>
+                        </span>
+                        <button id="storage-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors flex items-center gap-1">
+                            <span class="material-symbols-outlined text-sm">refresh</span> Refresh
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Neo4j collapsible -->
+                <div class="mb-6 border b-theme rounded-lg overflow-hidden">
+                    <div class="collapsible-header flex items-center justify-between px-4 py-3 bg-inner" data-target="storage-neo4j-body">
+                        <div class="flex items-center gap-3">
+                            <span class="material-symbols-outlined text-sm t-dim">graph_3</span>
+                            <span class="text-sm font-semibold">Neo4j</span>
+                            <span id="storage-neo4j-status-badge" class="text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-idle">—</span>
+                        </div>
+                        <span class="material-symbols-outlined text-sm t-dim collapsible-chevron">expand_more</span>
+                    </div>
+                    <div class="collapsible-body" id="storage-neo4j-body">
+                        <div class="p-4 space-y-4">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <!-- Node counts -->
+                                <div>
+                                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-2">Node Counts by Label</p>
+                                    <table class="text-xs" style="min-width:280px">
+                                        <thead>
+                                            <tr class="text-[10px] t-muted uppercase font-bold tracking-wider border-b b-theme">
+                                                <th class="text-left py-1.5 pr-8">Label</th>
+                                                <th class="text-right py-1.5 w-28">Count</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="neo4j-nodes-body">
+                                            <tr><td colspan="2" class="py-3 text-center t-muted">Loading...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <!-- Relationship counts -->
+                                <div>
+                                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-2">Relationship Counts by Type</p>
+                                    <table class="text-xs" style="min-width:280px">
+                                        <thead>
+                                            <tr class="text-[10px] t-muted uppercase font-bold tracking-wider border-b b-theme">
+                                                <th class="text-left py-1.5 pr-8">Type</th>
+                                                <th class="text-right py-1.5 w-28">Count</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="neo4j-rels-body">
+                                            <tr><td colspan="2" class="py-3 text-center t-muted">Loading...</td></tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <!-- Store sizes -->
+                            <div id="neo4j-store-sizes"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PostgreSQL collapsible -->
+                <div class="mb-6 border b-theme rounded-lg overflow-hidden">
+                    <div class="collapsible-header flex items-center justify-between px-4 py-3 bg-inner" data-target="storage-postgres-body">
+                        <div class="flex items-center gap-3">
+                            <span class="material-symbols-outlined text-sm t-dim">table_chart</span>
+                            <span class="text-sm font-semibold">PostgreSQL</span>
+                            <span id="postgres-status-badge" class="text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-idle">—</span>
+                        </div>
+                        <span class="material-symbols-outlined text-sm t-dim collapsible-chevron">expand_more</span>
+                    </div>
+                    <div class="collapsible-body" id="storage-postgres-body">
+                        <div class="p-4">
+                            <div id="postgres-db-size" class="text-xs t-mid mb-3"></div>
+                            <table class="w-full text-xs">
+                                <thead>
+                                    <tr class="text-[10px] t-muted uppercase font-bold tracking-wider border-b b-theme">
+                                        <th class="text-left py-1.5 pr-4">Table</th>
+                                        <th class="text-right py-1.5 pr-4">Rows</th>
+                                        <th class="text-right py-1.5 pr-4">Data Size</th>
+                                        <th class="text-right py-1.5">Index Size</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="postgres-tables-body">
+                                    <tr><td colspan="4" class="py-3 text-center t-muted">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Valkey collapsible -->
+                <div class="border b-theme rounded-lg overflow-hidden">
+                    <div class="collapsible-header flex items-center justify-between px-4 py-3 bg-inner" data-target="storage-valkey-body">
+                        <div class="flex items-center gap-3">
+                            <span class="material-symbols-outlined text-sm t-dim">memory</span>
+                            <span class="text-sm font-semibold">Valkey</span>
+                            <span id="valkey-status-badge" class="text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-idle">—</span>
+                        </div>
+                        <span class="material-symbols-outlined text-sm t-dim collapsible-chevron">expand_more</span>
+                    </div>
+                    <div class="collapsible-body" id="storage-valkey-body">
+                        <div class="p-4 space-y-4">
+                            <!-- Memory summary cards -->
+                            <div class="flex gap-4" id="valkey-memory-cards">
+                                <div class="stat-card">
+                                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1">Memory Used</p>
+                                    <p class="text-xl font-semibold mono t-high" id="valkey-mem-used">—</p>
+                                </div>
+                                <div class="stat-card">
+                                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1">Memory Peak</p>
+                                    <p class="text-xl font-semibold mono t-high" id="valkey-mem-peak">—</p>
+                                </div>
+                                <div class="stat-card">
+                                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1">Total Keys</p>
+                                    <p class="text-xl font-semibold mono t-high" id="valkey-total-keys">—</p>
+                                </div>
+                            </div>
+                            <!-- Keys by prefix -->
+                            <div>
+                                <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-2">Keys by Prefix</p>
+                                <table class="w-full text-xs">
+                                    <thead>
+                                        <tr class="text-[10px] t-muted uppercase font-bold tracking-wider border-b b-theme">
+                                            <th class="text-left py-1.5 pr-4">Prefix</th>
+                                            <th class="text-right py-1.5">Count</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="valkey-keys-body">
+                                        <tr><td colspan="2" class="py-3 text-center t-muted">Loading...</td></tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </section>
+
+        </div><!-- /tab-storage -->
+
+        <!-- ============================================================
+             TAB: QUEUE TRENDS
+             ============================================================ -->
+        <div id="tab-queue-trends" class="space-y-6" style="display:none">
+
+            <section class="dashboard-card p-6">
+                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
+                    <h3 class="text-sm font-semibold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-sm t-dim">show_chart</span> Queue Trends
+                    </h3>
+                    <div class="flex items-center gap-3">
+                        <span class="text-[10px] t-muted">Auto-refresh 60s</span>
+                        <span id="qt-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                        <span id="qt-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                            <span class="material-symbols-outlined text-xs">warning</span> <span id="qt-error-msg"></span>
+                        </span>
+                        <button id="qt-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors flex items-center gap-1">
+                            <span class="material-symbols-outlined text-sm">refresh</span> Refresh
+                        </button>
+                    </div>
+                </div>
+
+
+                <!-- Summary tiles -->
+                <div class="mb-6">
+                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-3">Overview</p>
+                    <div class="grid grid-cols-5 gap-4" id="queue-summary-tiles"></div>
+                </div>
+
+                <!-- Queue Depth Chart -->
+                <div class="mb-6">
+                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-3">Queue Depth Over Time</p>
+                    <div class="bg-inner rounded-lg border b-theme p-4 overflow-hidden">
+                        <div id="queue-chart-legend" class="flex flex-wrap gap-x-3 gap-y-1 mb-3 text-[10px] t-muted max-h-20 overflow-y-auto"></div>
+                        <canvas id="queue-depth-chart" height="280"></canvas>
+                    </div>
+                </div>
+
+                <!-- DLQ Section -->
+                <div>
+                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-3">Dead Letter Queues</p>
+                    <div class="grid grid-cols-2 gap-4" id="dlq-grid"></div>
+                </div>
+
+            </section>
+
+        </div><!-- /tab-queue-trends -->
+
+        <!-- ============================================================
+             TAB: SYSTEM HEALTH
+             ============================================================ -->
+        <div id="tab-system-health" class="space-y-6" style="display:none">
+
+            <section class="dashboard-card p-6">
+                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
+                    <h3 class="text-sm font-semibold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-sm t-dim">monitor_heart</span> System Health
+                    </h3>
+                    <div class="flex items-center gap-3">
+                        <span class="text-[10px] t-muted">Auto-refresh 60s</span>
+                        <span id="sh-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                        <span id="sh-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                            <span class="material-symbols-outlined text-xs">warning</span> <span id="sh-error-msg"></span>
+                        </span>
+                        <button id="sh-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors flex items-center gap-1">
+                            <span class="material-symbols-outlined text-sm">refresh</span> Refresh
+                        </button>
+                    </div>
+                </div>
+
+
+                <!-- Service status cards -->
+                <div class="mb-6">
+                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-3">Service Status</p>
+                    <div class="grid grid-cols-5 gap-4" id="service-status-cards"></div>
+                </div>
+
+                <!-- Response Time Chart -->
+                <div class="mb-6">
+                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-3">Response Times</p>
+                    <div class="bg-inner rounded-lg border b-theme p-4">
+                        <div class="flex gap-4 mb-3 text-[10px]">
+                            <span class="flex items-center gap-1"><span style="display:inline-block;width:12px;height:3px;background:#34d399;border-radius:2px"></span> <span class="t-muted">p50</span></span>
+                            <span class="flex items-center gap-1"><span style="display:inline-block;width:12px;height:3px;background:#f59e0b;border-radius:2px"></span> <span class="t-muted">p95</span></span>
+                            <span class="flex items-center gap-1"><span style="display:inline-block;width:12px;height:3px;background:#f87171;border-radius:2px;border-top:1px dashed #f87171"></span> <span class="t-muted">p99</span></span>
+                        </div>
+                        <canvas id="response-time-chart" height="280"></canvas>
+                    </div>
+                </div>
+
+                <!-- Endpoints table -->
+                <div>
+                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-3">Endpoint Performance</p>
+                    <div class="bg-inner rounded-lg border b-theme overflow-auto" style="max-height:400px">
+                        <table class="w-full text-xs">
+                            <thead class="sticky top-0" style="background:var(--inner-bg)">
+                                <tr class="text-[10px] t-muted uppercase font-bold tracking-wider border-b b-theme">
+                                    <th class="text-left py-2 px-4">Endpoint</th>
+                                    <th class="text-right py-2 px-4">Requests</th>
+                                    <th class="text-right py-2 px-4">p50</th>
+                                    <th class="text-right py-2 px-4">p95</th>
+                                    <th class="text-right py-2 px-4">p99</th>
+                                    <th class="text-right py-2 px-4">Error %</th>
+                                </tr>
+                            </thead>
+                            <tbody id="endpoints-tbody">
+                                <tr><td colspan="6" class="py-4 text-center t-muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </section>
+
+        </div><!-- /tab-system-health -->
+
+        <!-- Audit Log Tab -->
+        <div id="tab-audit-log" class="space-y-6" style="display:none">
+            <section class="dashboard-card p-6">
+                <div class="flex items-center justify-between mb-6 border-b b-theme pb-4">
+                    <h3 class="text-sm font-semibold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-sm t-dim">history</span> Admin Audit Log
+                    </h3>
+                    <div class="flex items-center gap-3">
+                        <select id="al-action-filter" class="text-xs border b-theme rounded px-2 py-1">
+                            <option value="">All Actions</option>
+                            <option value="admin.login">Login</option>
+                            <option value="admin.logout">Logout</option>
+                            <option value="extraction.trigger">Extraction Trigger</option>
+                            <option value="dlq.purge">DLQ Purge</option>
+                        </select>
+                        <span class="text-[10px] t-muted">Auto-refresh 60s</span>
+                        <span id="al-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                        <span id="al-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                            <span class="material-symbols-outlined text-xs">warning</span>
+                            <span id="al-error-msg"></span>
+                        </span>
+                        <button id="al-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors flex items-center gap-1">
+                            <span class="material-symbols-outlined text-sm">refresh</span> Refresh
+                        </button>
+                    </div>
+                </div>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-xs">
+                        <thead>
+                            <tr class="border-b b-theme">
+                                <th class="text-left py-2 px-3 t-muted font-medium">Timestamp</th>
+                                <th class="text-left py-2 px-3 t-muted font-medium">Admin</th>
+                                <th class="text-left py-2 px-3 t-muted font-medium">Action</th>
+                                <th class="text-left py-2 px-3 t-muted font-medium">Target</th>
+                                <th class="text-left py-2 px-3 t-muted font-medium">Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="al-table-body">
+                            <tr><td colspan="5" class="text-center py-8 t-muted">Loading...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div id="al-pagination" class="flex items-center justify-between mt-4 pt-4 border-t b-theme" style="display:none">
+                    <span id="al-page-info" class="text-xs t-muted"></span>
+                    <div class="flex gap-2">
+                        <button id="al-prev-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded" disabled>Previous</button>
+                        <button id="al-next-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded" disabled>Next</button>
+                    </div>
+                </div>
+            </section>
+        </div>
+
+        <!-- ============================================================
+             TAB: EXTRACTION ANALYSIS
+             ============================================================ -->
+        <div id="tab-extraction-analysis" class="space-y-6" style="display:none">
+
+            <!-- Sub-view toggle + version selector -->
+            <section class="dashboard-card p-4">
+                <div class="flex flex-wrap items-center gap-3">
+                    <!-- Sub-view buttons -->
+                    <div class="flex gap-2">
+                        <button class="ea-view-btn active px-4 py-2 rounded text-sm font-semibold" data-ea-view="report" id="ea-btn-report">
+                            <span class="material-symbols-outlined text-sm align-middle">summarize</span> Report
+                        </button>
+                        <button class="ea-view-btn px-4 py-2 rounded text-sm font-semibold" data-ea-view="compare" id="ea-btn-compare">
+                            <span class="material-symbols-outlined text-sm align-middle">compare_arrows</span> Compare
+                        </button>
+                        <button class="ea-view-btn px-4 py-2 rounded text-sm font-semibold" data-ea-view="prompt" id="ea-btn-prompt">
+                            <span class="material-symbols-outlined text-sm align-middle">smart_toy</span> Prompt
+                        </button>
+                    </div>
+
+                    <!-- Version selector (report) -->
+                    <div id="ea-report-controls" class="flex items-center gap-2 ml-auto">
+                        <label class="text-[10px] font-bold uppercase tracking-wider t-dim" for="ea-version-select">Version</label>
+                        <select id="ea-version-select" class="text-xs border b-theme rounded px-2 py-1 t-high">
+                            <option value="">— select —</option>
+                        </select>
+                        <span id="ea-source-badge" class="text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-idle" style="display:none">source</span>
+                        <span id="ea-loading-spinner" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                        <button id="ea-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim flex items-center gap-1">
+                            <span class="material-symbols-outlined text-sm">refresh</span> Refresh
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── Sub-view: Single Version Report ─────────────────── -->
+            <div id="ea-view-report">
+
+                <!-- Pipeline status cards -->
+                <section class="dashboard-card p-6 space-y-4">
+                    <h3 class="text-sm font-semibold flex items-center gap-2 border-b b-theme pb-4">
+                        <span class="material-symbols-outlined text-sm t-dim">account_tree</span> Pipeline Status
+                    </h3>
+                    <div id="ea-pipeline-cards" class="flex flex-wrap gap-3">
+                        <p class="text-xs t-muted">Select a version to load the report.</p>
+                    </div>
+                </section>
+
+                <!-- Skipped records cards (per entity type) -->
+                <section id="ea-skipped-section" class="dashboard-card p-6 space-y-4" style="display:none">
+                    <h3 class="text-sm font-semibold flex items-center gap-2 border-b b-theme pb-3">
+                        <span class="material-symbols-outlined text-sm t-dim">block</span> Skipped Records
+                    </h3>
+                    <div id="ea-skipped-cards" class="flex flex-wrap gap-3"></div>
+                    <div id="ea-skipped-detail" class="space-y-2" style="display:none"></div>
+                </section>
+
+                <!-- Violation summary cards (per entity type) -->
+                <section class="dashboard-card p-6 space-y-4">
+                    <h3 class="text-sm font-semibold flex items-center gap-2 border-b b-theme pb-4">
+                        <span class="material-symbols-outlined text-sm t-dim">warning</span> Violations by Entity
+                    </h3>
+                    <div id="ea-entity-cards" class="flex flex-wrap gap-3">
+                        <p class="text-xs t-muted">No data yet.</p>
+                    </div>
+                </section>
+
+                <!-- Media mapping coverage (unmapped provider media names, both providers) -->
+                <section class="dashboard-card p-6 space-y-4">
+                    <h3 class="text-sm font-semibold flex items-center gap-2 border-b b-theme pb-4">
+                        <span class="material-symbols-outlined text-sm t-dim">album</span> Media Mapping Coverage
+                    </h3>
+                    <p id="ea-media-mapping-unavailable" class="text-xs t-muted" style="display:none"></p>
+                    <div id="ea-media-mapping-body" style="display:none">
+                        <div id="ea-media-mapping-cards" class="flex flex-wrap gap-3"></div>
+                        <div class="overflow-x-auto mt-4">
+                            <table class="w-full text-xs">
+                                <thead>
+                                    <tr class="text-[10px] t-muted uppercase font-bold tracking-wider border-b b-theme">
+                                        <th class="text-left py-2 px-2">Kind</th>
+                                        <th class="text-left py-2 px-2">Unmapped name</th>
+                                        <th class="text-right py-2 px-2">Releases</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="ea-media-mapping-tbody">
+                                    <tr><td colspan="3" class="py-6 text-center t-muted">No data.</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <p id="ea-media-mapping-truncated-note" class="text-[10px] t-muted mt-2" style="display:none"></p>
+                    </div>
+                </section>
+
+                <!-- Rule breakdown table -->
+                <section class="dashboard-card p-6 space-y-4">
+                    <div class="flex items-center justify-between border-b b-theme pb-4">
+                        <h3 class="text-sm font-semibold flex items-center gap-2">
+                            <span class="material-symbols-outlined text-sm t-dim">rule</span> Rule Breakdown
+                        </h3>
+                        <label class="flex items-center gap-1.5 text-xs t-dim cursor-pointer">
+                            <input type="checkbox" id="ea-select-all" class="rounded" />
+                            Select all for prompt
+                        </label>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                            <thead>
+                                <tr class="text-[10px] t-muted uppercase font-bold tracking-wider border-b b-theme">
+                                    <th class="text-left py-2 px-2 w-6"></th>
+                                    <th class="text-left py-2 px-2">Rule</th>
+                                    <th class="text-left py-2 px-2">Entity Type</th>
+                                    <th class="text-left py-2 px-2">Severity</th>
+                                    <th class="text-right py-2 px-2">Violations</th>
+                                    <th class="text-right py-2 px-2">Parsing Errors</th>
+                                    <th class="text-right py-2 px-2">Sample</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ea-rule-tbody">
+                                <tr><td colspan="7" class="py-6 text-center t-muted">No data.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <!-- Violations detail table (shown when View is clicked) -->
+                <section id="ea-violations-detail" class="dashboard-card p-6 space-y-4" style="display:none">
+                    <div class="flex items-center justify-between border-b b-theme pb-4">
+                        <h3 class="text-sm font-semibold flex items-center gap-2">
+                            <span class="material-symbols-outlined text-sm t-dim">list_alt</span>
+                            Violations — <span id="ea-vd-rule" class="mono t-dim text-xs"></span>
+                            <span id="ea-vd-entity" class="text-xs t-muted"></span>
+                        </h3>
+                        <div class="flex items-center gap-3">
+                            <label class="text-[10px] t-dim font-bold uppercase tracking-wider">
+                                Page size
+                                <select id="ea-vd-page-size" class="ml-1 text-xs border b-theme rounded px-2 py-0.5 t-high">
+                                    <option value="50">50</option>
+                                    <option value="100">100</option>
+                                    <option value="200">200</option>
+                                </select>
+                            </label>
+                            <button id="ea-vd-close" class="t-dim hover:t-high transition-colors text-xs font-bold uppercase tracking-wider flex items-center gap-1">
+                                <span class="material-symbols-outlined text-sm">close</span> Close
+                            </button>
+                        </div>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-xs">
+                            <thead>
+                                <tr class="text-[10px] t-muted uppercase font-bold tracking-wider border-b b-theme">
+                                    <th class="text-left py-2 px-2">Record ID</th>
+                                    <th class="text-left py-2 px-2">Rule</th>
+                                    <th class="text-left py-2 px-2">Severity</th>
+                                    <th class="text-left py-2 px-2">Field</th>
+                                    <th class="text-left py-2 px-2">Value</th>
+                                    <th class="text-right py-2 px-2">Detail</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ea-vd-tbody">
+                                <tr><td colspan="6" class="py-6 text-center t-muted">Loading...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <!-- Pagination -->
+                    <div class="flex items-center justify-between">
+                        <span id="ea-vd-info" class="text-xs t-muted"></span>
+                        <div class="flex items-center gap-2">
+                            <button id="ea-vd-prev" class="text-xs px-3 py-1 rounded border b-theme t-dim hover:t-high disabled:opacity-40" disabled>Prev</button>
+                            <span id="ea-vd-page-label" class="text-xs mono t-dim"></span>
+                            <button id="ea-vd-next" class="text-xs px-3 py-1 rounded border b-theme t-dim hover:t-high disabled:opacity-40" disabled>Next</button>
+                        </div>
+                    </div>
+                </section>
+
+            </div><!-- /ea-view-report -->
+
+            <!-- ── Sub-view: Version Comparison ────────────────────── -->
+            <div id="ea-view-compare" style="display:none">
+                <section class="dashboard-card p-6 space-y-4">
+                    <h3 class="text-sm font-semibold flex items-center gap-2 border-b b-theme pb-4">
+                        <span class="material-symbols-outlined text-sm t-dim">compare_arrows</span> Version Comparison
+                    </h3>
+                    <div class="flex flex-wrap items-end gap-4">
+                        <div class="space-y-1">
+                            <label class="text-[10px] font-bold uppercase tracking-wider t-dim" for="ea-cmp-version-a">Version A (baseline)</label>
+                            <select id="ea-cmp-version-a" class="text-xs border b-theme rounded px-2 py-1 t-high">
+                                <option value="">— select —</option>
+                            </select>
+                        </div>
+                        <div class="space-y-1">
+                            <label class="text-[10px] font-bold uppercase tracking-wider t-dim" for="ea-cmp-version-b">Version B (target)</label>
+                            <select id="ea-cmp-version-b" class="text-xs border b-theme rounded px-2 py-1 t-high">
+                                <option value="">— select —</option>
+                            </select>
+                        </div>
+                        <button id="ea-compare-btn" class="btn-purple px-4 py-1.5 rounded text-xs font-semibold flex items-center gap-1">
+                            <span class="material-symbols-outlined text-sm">compare_arrows</span> Compare
+                        </button>
+                    </div>
+                    <p id="ea-cmp-summary" class="text-xs t-dim" style="display:none"></p>
+                    <div class="overflow-x-auto" id="ea-cmp-table-wrap" style="display:none">
+                        <table class="w-full text-xs">
+                            <thead>
+                                <tr class="text-[10px] t-muted uppercase font-bold tracking-wider border-b b-theme">
+                                    <th class="text-left py-2 px-2">Rule</th>
+                                    <th class="text-left py-2 px-2">Entity Type</th>
+                                    <th class="text-right py-2 px-2">Version A</th>
+                                    <th class="text-right py-2 px-2">Version B</th>
+                                    <th class="text-right py-2 px-2">Delta</th>
+                                </tr>
+                            </thead>
+                            <tbody id="ea-cmp-tbody"></tbody>
+                        </table>
+                    </div>
+                </section>
+            </div><!-- /ea-view-compare -->
+
+            <!-- ── Sub-view: Prompt Generator ──────────────────────── -->
+            <div id="ea-view-prompt" style="display:none">
+                <section class="dashboard-card p-6 space-y-4">
+                    <div class="flex items-center justify-between border-b b-theme pb-4">
+                        <h3 class="text-sm font-semibold flex items-center gap-2">
+                            <span class="material-symbols-outlined text-sm t-dim">smart_toy</span> AI Prompt Generator
+                        </h3>
+                        <div class="flex items-center gap-3">
+                            <span id="ea-prompt-count" class="text-xs t-dim">0 rules selected</span>
+                            <button id="ea-generate-btn" class="btn-purple px-4 py-1.5 rounded text-xs font-semibold flex items-center gap-1">
+                                <span class="material-symbols-outlined text-sm">auto_awesome</span> Generate
+                            </button>
+                            <button id="ea-ai-generate-btn" class="px-4 py-1.5 rounded text-xs font-semibold flex items-center gap-1" style="background:#10B981;color:#fff;border:none;cursor:pointer;transition:opacity 0.15s" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
+                                <span class="material-symbols-outlined text-sm">psychology</span> Analyze with AI
+                                <span id="ea-ai-spinner" class="material-symbols-outlined text-sm animate-spin" style="display:none">progress_activity</span>
+                            </button>
+                            <button id="ea-copy-btn" class="text-xs font-bold uppercase tracking-wider t-dim flex items-center gap-1 border b-theme rounded px-3 py-1.5">
+                                <span class="material-symbols-outlined text-sm">content_copy</span> Copy
+                            </button>
+                        </div>
+                    </div>
+                    <p class="text-xs t-muted">Select rules in the Report tab. <strong>Generate</strong> builds a template prompt. <strong>Analyze with AI</strong> sends data to Claude for a targeted debugging analysis.</p>
+                    <textarea id="ea-prompt-textarea" class="w-full mono text-xs bg-inner border b-theme rounded p-3 t-high"
+                              rows="20" readonly placeholder="Generated prompt will appear here..."></textarea>
+                </section>
+            </div><!-- /ea-view-prompt -->
+
+        </div><!-- /tab-extraction-analysis -->
+
+        <!-- ============================================================
+             RECORD DETAIL MODAL
+             ============================================================ -->
+        <div id="ea-modal" class="fixed inset-0 z-50 flex items-center justify-center p-6" style="display:none; background:rgba(0,0,0,0.5)">
+            <div class="dashboard-card p-6 w-full max-w-5xl max-h-[90vh] flex flex-col gap-4 overflow-hidden">
+                <div class="flex items-center justify-between border-b b-theme pb-4 flex-shrink-0">
+                    <h3 class="text-sm font-semibold flex items-center gap-2">
+                        <span class="material-symbols-outlined text-sm t-dim">data_object</span>
+                        Record Detail — <span id="ea-modal-record-id" class="mono t-dim text-xs"></span>
+                    </h3>
+                    <button id="ea-modal-close" class="t-dim hover:t-high transition-colors">
+                        <span class="material-symbols-outlined">close</span>
+                    </button>
+                </div>
+                <!-- Violations (always visible, compact) -->
+                <div class="flex-shrink-0 space-y-2 border-b b-theme pb-4">
+                    <p class="text-[10px] font-bold uppercase tracking-wider t-muted">Violations</p>
+                    <ul id="ea-modal-violations" class="space-y-1 text-xs max-h-32 overflow-y-auto"></ul>
+                </div>
+                <!-- XML / JSON panes (fill remaining space equally) -->
+                <div class="flex-1 grid grid-cols-2 gap-4 min-h-0">
+                    <div class="flex flex-col min-w-0 min-h-0">
+                        <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1 flex-shrink-0">Raw XML</p>
+                        <pre id="ea-modal-xml" class="mono text-xs bg-inner border b-theme rounded p-3 overflow-auto t-mid flex-1 min-h-0" style="white-space:pre-wrap;word-break:break-all"></pre>
+                    </div>
+                    <div class="flex flex-col min-w-0 min-h-0">
+                        <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-1 flex-shrink-0">Parsed JSON</p>
+                        <pre id="ea-modal-json" class="mono text-xs bg-inner border b-theme rounded p-3 overflow-auto t-mid flex-1 min-h-0" style="white-space:pre-wrap;word-break:break-all"></pre>
+                    </div>
+                </div>
+            </div>
+        </div><!-- /ea-modal -->
+
+    </div><!-- /console-view -->
+
+</div><!-- /max-w container -->
+
+<footer class="text-center py-4 text-[10px] t-muted font-mono">
+    <a id="source-legal-link" href="__GROOVEMAP_SOURCE_URL__" rel="license noreferrer" target="_blank">Source and legal notices (AGPL-3.0-only)</a>
+</footer>
+
+<!-- Toast notification -->
+<div id="toast" class="fixed bottom-6 right-6 px-5 py-3 rounded-lg text-sm font-semibold shadow-lg transition-all duration-300 opacity-0 translate-y-2" style="display:none; z-index:9999"></div>
+
+<script src="/dashboard.js"></script>
+<script src="/admin.js"></script>
 </body>
 </html>

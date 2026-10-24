@@ -10,7 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from dashboard.admin_proxy import _auth_headers, _validate_path_segment, _validated_json_body, configure, router
+from dashboard.admin_proxy import _auth_headers, _validate_path_segment, _validated_json_body, configure, public_router, router
 
 
 def _mock_httpx(method: str = "post", status: int = 200, content: bytes = b"{}") -> tuple[AsyncMock, AsyncMock]:
@@ -42,6 +42,7 @@ def _mock_httpx_error(method: str = "post") -> tuple[AsyncMock, AsyncMock]:
 @pytest.fixture
 def proxy_app() -> FastAPI:
     app = FastAPI()
+    app.include_router(public_router)
     app.include_router(router)
     configure("localhost", 8004)
     return app
@@ -378,25 +379,6 @@ class TestDlqPurgeInvalidQueueValidation:
         assert resp.status_code == 400
 
 
-class TestQueueHistoryInvalidGranularity:
-    def test_rejects_invalid_granularity_pattern(self, proxy_client: TestClient) -> None:
-        """proxy_queue_history returns 422 for granularity not matching pattern (line 287 branch)."""
-        resp = proxy_client.get("/admin/api/queues/history?granularity=bad")
-        assert resp.status_code == 422
-
-    @patch("dashboard.admin_proxy.httpx.AsyncClient")
-    def test_forwards_granularity_param(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
-        """proxy_queue_history forwards granularity param when provided (line 287)."""
-        _, mock_instance = _mock_httpx("get", 200, b'{"queues":{}}')
-        mock_cls_patch.return_value = mock_instance
-
-        resp = proxy_client.get("/admin/api/queues/history?granularity=1hour")
-        assert resp.status_code == 200
-        call_kwargs = mock_instance.get.call_args
-        params = call_kwargs[1].get("params", {})
-        assert params.get("granularity") == "1hour"
-
-
 # ---------------------------------------------------------------------------
 # Phase 2 — User Activity & Storage proxy routes
 # ---------------------------------------------------------------------------
@@ -487,94 +469,6 @@ class TestStorageProxy:
         resp = proxy_client.get("/admin/api/storage")
         assert resp.status_code == 502
         assert "unavailable" in resp.json()["detail"]
-
-
-# ---------------------------------------------------------------------------
-# Phase 3 — Queue Health Trends & System Health proxy routes
-# ---------------------------------------------------------------------------
-
-
-class TestQueueHistoryProxy:
-    @patch("dashboard.admin_proxy.httpx.AsyncClient")
-    def test_forwards_with_query_params(self, mock_client_cls: AsyncMock, proxy_client: TestClient) -> None:
-        mock_response = MagicMock()
-        mock_response.content = b'{"range":"7d","granularity":"1hour","queues":{},"dlq_summary":{}}'
-        mock_response.status_code = 200
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
-
-        resp = proxy_client.get(
-            "/admin/api/queues/history?range=7d",
-            headers={"Authorization": "Bearer test-token"},
-        )
-        assert resp.status_code == 200
-        call_url = mock_client.get.call_args[0][0]
-        assert "/api/admin/queues/history" in call_url
-
-    @patch("dashboard.admin_proxy.httpx.AsyncClient")
-    def test_api_unavailable(self, mock_client_cls: AsyncMock, proxy_client: TestClient) -> None:
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=httpx_mod.ConnectError("refused"))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
-        resp = proxy_client.get("/admin/api/queues/history")
-        assert resp.status_code == 502
-
-
-class TestHealthHistoryProxy:
-    @patch("dashboard.admin_proxy.httpx.AsyncClient")
-    def test_forwards_request(self, mock_client_cls: AsyncMock, proxy_client: TestClient) -> None:
-        mock_response = MagicMock()
-        mock_response.content = b'{"range":"24h","granularity":"15min","services":{},"api_endpoints":{}}'
-        mock_response.status_code = 200
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
-        resp = proxy_client.get(
-            "/admin/api/health/history",
-            headers={"Authorization": "Bearer test-token"},
-        )
-        assert resp.status_code == 200
-
-    @patch("dashboard.admin_proxy.httpx.AsyncClient")
-    def test_forwards_with_range_and_granularity(self, mock_client_cls: AsyncMock, proxy_client: TestClient) -> None:
-        """Test that range and granularity params are forwarded."""
-        mock_response = MagicMock()
-        mock_response.content = b'{"range":"7d","granularity":"1hour","services":{},"api_endpoints":{}}'
-        mock_response.status_code = 200
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
-
-        resp = proxy_client.get(
-            "/admin/api/health/history?range=7d&granularity=1hour",
-            headers={"Authorization": "Bearer test-token"},
-        )
-        assert resp.status_code == 200
-        call_args = mock_client.get.call_args
-        params = call_args[1].get("params", {})
-        assert params.get("range") == "7d"
-        assert params.get("granularity") == "1hour"
-
-    @patch("dashboard.admin_proxy.httpx.AsyncClient")
-    def test_api_unavailable(self, mock_client_cls: AsyncMock, proxy_client: TestClient) -> None:
-        """Test error handling when API is unreachable."""
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=httpx_mod.ConnectError("refused"))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client_cls.return_value = mock_client
-
-        resp = proxy_client.get("/admin/api/health/history")
-        assert resp.status_code == 502
 
 
 # ---------------------------------------------------------------------------

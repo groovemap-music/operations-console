@@ -1,9 +1,9 @@
 """Unit tests for the DashboardApp class."""
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import httpx
@@ -11,6 +11,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dashboard.dashboard import PIPELINE_CONFIGS, DashboardApp, DatabaseInfo, PipelineMetrics, QueueInfo, ServiceStatus, SystemMetrics
+
+
+if TYPE_CHECKING:
+    from tests.fake_catalog_api import FakeCatalogApi
 
 
 _RECORDED_METRICS = Path(__file__).parent / "fixtures" / "rabbitmq_4_4_metrics_detailed.txt"
@@ -347,6 +351,8 @@ class TestDashboardAppMetrics:
             with (
                 patch.object(app, "collect_all_metrics", side_effect=mock_collect),
                 patch.object(app, "broadcast_metrics", new_callable=AsyncMock),
+                patch.object(app, "broadcast_events", new_callable=AsyncMock),
+                patch.object(app, "events", Mock()),
                 patch("asyncio.sleep", new_callable=AsyncMock),
                 patch("dashboard.dashboard.logger") as mock_logger,
             ):
@@ -702,8 +708,8 @@ class TestDashboardAppDataCollection:
                 messages_ready=6,
                 messages_unacknowledged=0,
                 consumers=0,
-                message_rate=0.0,  # first sample has no baseline
-                ack_rate=0.0,
+                message_rate=None,  # first sample has no baseline
+                ack_rate=None,
             )
         ]
         url = client.get.call_args.args[0]
@@ -739,7 +745,7 @@ class TestDashboardAppDataCollection:
             with patch("httpx.AsyncClient", return_value=self._scrape(second)):
                 after = await app.get_queue_info("groovemap")
 
-        assert (before[0].message_rate, before[0].ack_rate) == (0.0, 0.0)
+        assert (before[0].message_rate, before[0].ack_rate) == (None, None)
         assert (after[0].message_rate, after[0].ack_rate) == (25.0, 15.0)
 
     @pytest.mark.asyncio
@@ -754,7 +760,25 @@ class TestDashboardAppDataCollection:
                     queue = (await app.get_queue_info("groovemap"))[0]
                 rates.append((queue.message_rate, queue.ack_rate))
 
-        assert rates == [(0.0, 0.0), (0.0, 0.0), (10.0, 5.0)]
+        assert rates == [(None, None), (None, None), (10.0, 5.0)]
+
+    @pytest.mark.asyncio
+    async def test_unknown_rates_serialize_as_null_after_restart_and_reset_then_recover(self) -> None:
+        """A console restart and a counter reset both reach the payload as null, never 0, then a number returns."""
+        from dashboard.dashboard import PipelineMetrics
+
+        bodies = [_queue_body(published=500, acked=400), _queue_body(published=5, acked=2), _queue_body(published=25, acked=12)]
+        payloads = []
+
+        # A fresh app is a console restart: its first poll has no baseline.
+        app = self._queue_app()
+        with patch("dashboard.dashboard.time.monotonic", side_effect=[0.0, 2.0, 4.0]):
+            for body in bodies:
+                with patch("httpx.AsyncClient", return_value=self._scrape(body)):
+                    queues = await app.get_queue_info("groovemap")
+                payloads.append(PipelineMetrics(services=[], queues=queues or []).model_dump(mode="json")["queues"][0])
+
+        assert [(p["message_rate"], p["ack_rate"]) for p in payloads] == [(None, None), (None, None), (10.0, 5.0)]
 
     @pytest.mark.asyncio
     async def test_get_queue_info_queue_that_disappears_is_rebaselined(self) -> None:
@@ -768,7 +792,7 @@ class TestDashboardAppDataCollection:
                     results.append(await app.get_queue_info("groovemap"))
 
         assert results[1] == []
-        assert results[2][0].message_rate == 0.0, "a queue that missed a poll has no baseline, not a 100/s spike"
+        assert results[2][0].message_rate is None, "a queue that missed a poll has no baseline, not a 100/s spike"
 
     @pytest.mark.asyncio
     async def test_get_queue_info_counters_appear_after_first_event(self) -> None:
@@ -1374,35 +1398,29 @@ class TestFastAPIEndpoints:
                 assert len(data) == 1
                 assert data[0]["name"] == "PostgreSQL"
 
-    def test_serve_admin_file_not_found(self) -> None:
-        """Test /admin endpoint returns 404 when admin.html does not exist."""
-        from fastapi import FastAPI
 
-        from dashboard.dashboard import serve_admin
+def _ws_ticket(catalog: FakeCatalogApi) -> str:
+    """Issue a WebSocket ticket for a bearer the fake catalog-api honours."""
+    from dashboard.session_auth import AdminSession, gate
 
-        test_app = FastAPI()
-        test_app.get("/admin")(serve_admin)
-
-        with patch("dashboard.dashboard.Path.read_text", side_effect=FileNotFoundError), TestClient(test_app) as client:
-            response = client.get("/admin")
-            assert response.status_code == 404
-            assert "Admin page not found" in response.text
+    session = AdminSession(admin_id="admin-1", email="admin@example.com", expires_at=datetime.now(UTC) + timedelta(hours=1))
+    ticket, _ = gate.tickets.issue(session, catalog.mint())
+    return ticket
 
 
 class TestWebSocketEndpoint:
     """Test WebSocket connection handling."""
 
     @pytest.mark.asyncio
-    async def test_websocket_connection_and_disconnect(self) -> None:
+    async def test_websocket_connection_and_disconnect(self, fake_catalog: FakeCatalogApi) -> None:
         """Test WebSocket connection lifecycle."""
-        from fastapi import FastAPI
-
-        from dashboard.dashboard import websocket_endpoint
+        from dashboard.dashboard import ConsoleApp, websocket_endpoint
 
         # Mock dashboard instance
         mock_dashboard_instance = Mock()
         mock_dashboard_instance.websocket_connections = set()
         mock_dashboard_instance._ws_lock = None  # Will be lazily initialized as asyncio.Lock
+        mock_dashboard_instance.events.backlog.return_value = []
         mock_dashboard_instance.latest_metrics = SystemMetrics(
             pipelines={},
             databases=[],
@@ -1410,10 +1428,10 @@ class TestWebSocketEndpoint:
         )
 
         with patch("dashboard.dashboard.dashboard", mock_dashboard_instance):
-            test_app = FastAPI()
+            test_app = ConsoleApp()
             test_app.websocket("/ws")(websocket_endpoint)
 
-            with TestClient(test_app) as client, client.websocket_connect("/ws") as _websocket:
+            with TestClient(test_app) as client, client.websocket_connect(f"/ws?ticket={_ws_ticket(fake_catalog)}") as _websocket:
                 # Verify connection was added
                 assert len(mock_dashboard_instance.websocket_connections) == 1
 
@@ -1426,26 +1444,25 @@ class TestWebSocketEndpoint:
                 # (handled by WebSocketDisconnect exception)
 
     @pytest.mark.asyncio
-    async def test_websocket_error_handling(self) -> None:
+    async def test_websocket_error_handling(self, fake_catalog: FakeCatalogApi) -> None:
         """Test WebSocket error handling."""
-        from fastapi import FastAPI
-
-        from dashboard.dashboard import websocket_endpoint
+        from dashboard.dashboard import ConsoleApp, websocket_endpoint
 
         # Mock dashboard instance
         mock_dashboard_instance = Mock()
         mock_dashboard_instance.websocket_connections = set()
         mock_dashboard_instance._ws_lock = None  # Will be lazily initialized as asyncio.Lock
+        mock_dashboard_instance.events.backlog.return_value = []
         mock_dashboard_instance.latest_metrics = None  # No initial metrics
 
         with (
             patch("dashboard.dashboard.dashboard", mock_dashboard_instance),
             patch("dashboard.dashboard.logger") as _mock_logger,
         ):
-            test_app = FastAPI()
+            test_app = ConsoleApp()
             test_app.websocket("/ws")(websocket_endpoint)
 
-            with TestClient(test_app) as client, client.websocket_connect("/ws") as _websocket:
+            with TestClient(test_app) as client, client.websocket_connect(f"/ws?ticket={_ws_ticket(fake_catalog)}") as _websocket:
                 # Verify connection was added
                 assert len(mock_dashboard_instance.websocket_connections) == 1
 
@@ -1544,19 +1561,22 @@ class TestWebSocketGeneralException:
     """Test WebSocket general exception handler (lines 569-573)."""
 
     @pytest.mark.asyncio
-    async def test_websocket_general_exception_cleans_up(self) -> None:
+    async def test_websocket_general_exception_cleans_up(self, fake_catalog: FakeCatalogApi) -> None:
         """Test that a non-WebSocketDisconnect exception removes the connection."""
         from dashboard.dashboard import websocket_endpoint
+        from dashboard.session_auth import WS_TICKET_SCOPE_KEY
 
         mock_ws = AsyncMock()
+        mock_ws.scope = {WS_TICKET_SCOPE_KEY: _ws_ticket(fake_catalog)}
         mock_ws.accept = AsyncMock()
         mock_ws.send_text = AsyncMock()
-        # Make receive_text raise a generic exception (not WebSocketDisconnect)
-        mock_ws.receive_text = AsyncMock(side_effect=RuntimeError("network error"))
+        # Make receive raise a generic exception (not WebSocketDisconnect)
+        mock_ws.receive = AsyncMock(side_effect=RuntimeError("network error"))
 
         mock_dashboard_instance = Mock()
         mock_dashboard_instance.websocket_connections = set()
         mock_dashboard_instance._ws_lock = None  # Will be lazily initialized as asyncio.Lock
+        mock_dashboard_instance.events.backlog.return_value = []
         mock_dashboard_instance.latest_metrics = None  # Skip initial send
 
         with (

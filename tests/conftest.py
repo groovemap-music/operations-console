@@ -20,6 +20,7 @@ from playwright.sync_api import Browser, Page, sync_playwright
 from psycopg import AsyncConnection, AsyncCursor
 
 from dashboard.config import DashboardConfig
+from tests.fake_catalog_api import FakeCatalogApi
 
 
 if TYPE_CHECKING:
@@ -67,102 +68,98 @@ def pytest_runtest_makereport(item: pytest.Item) -> Iterator[None]:
     setattr(item, f"rep_{report.when}", report)
 
 
-@pytest.fixture(scope="session")
-def test_server() -> Any:
-    """Start the test dashboard server for E2E tests.
+E2E_CONSOLE_URL = "http://127.0.0.1:8003"
+E2E_CATALOG_PORT = 18004
+E2E_CATALOG_URL = f"http://127.0.0.1:{E2E_CATALOG_PORT}"
 
-    This fixture is only used when running E2E tests.
-    """
-    # Get project root directory
-    project_root = str(Path(__file__).resolve().parents[1])
 
-    # Start server as subprocess
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
-    # Ensure Python can find the project modules
-    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
-
-    server_process = subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "tests.dashboard_test_app:create_test_app",
-            "--factory",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "8003",
-            "--log-level",
-            "info",  # Changed from warning to info for better debugging
-        ],
+def _start_server(module: str, port: int, env: dict[str, str], cwd: str) -> subprocess.Popen[str]:
+    return subprocess.Popen(  # noqa: S603  # Fixed test-server modules, never external input.
+        [sys.executable, "-m", "uvicorn", module, "--factory", "--host", "127.0.0.1", "--port", str(port), "--log-level", "info"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        cwd=project_root,  # Set working directory to project root
+        cwd=cwd,
     )
 
-    # Wait for server to be ready
-    max_retries = 40  # 20 seconds total
-    server_started = False
-    for retry in range(max_retries):
+
+def _wait_until_ready(process: subprocess.Popen[str], health_url: str, project_root: str) -> None:
+    """Poll a public health route for up to 20 seconds, failing with the server's output."""
+    for retry in range(40):
         try:
-            response = httpx.get("http://127.0.0.1:8003/api/metrics", timeout=1.0)
-            if response.status_code == 200:
-                server_started = True
-                break
+            if httpx.get(health_url, timeout=1.0).status_code == 200:
+                return
         except Exception:  # noqa: S110
             pass  # Server might not be ready yet
-
-        # Check if process died
-        if server_process.poll() is not None:
-            stdout, stderr = server_process.communicate()
-            error_msg = f"Server process died after {retry} retries.\n"
-            error_msg += f"Working directory: {project_root}\n"
-            error_msg += f"Python executable: {sys.executable}\n"
-            if stdout:
-                error_msg += f"STDOUT:\n{stdout}\n"
-            else:
-                error_msg += "STDOUT: (empty)\n"
-            if stderr:
-                error_msg += f"STDERR:\n{stderr}\n"
-            else:
-                error_msg += "STDERR: (empty)\n"
-            raise RuntimeError(error_msg)
-
+        if process.poll() is not None:
+            stdout, stderr = process.communicate()
+            raise RuntimeError(
+                f"Server for {health_url} died after {retry} retries.\n"
+                f"Working directory: {project_root}\nPython executable: {sys.executable}\n"
+                f"STDOUT:\n{stdout or '(empty)'}\nSTDERR:\n{stderr or '(empty)'}\n"
+            )
         time.sleep(0.5)
-
-    # If we reach here, server didn't start successfully
-    if not server_started:
-        server_process.terminate()
-        try:
-            stdout, stderr = server_process.communicate(timeout=2)
-            error_msg = "Test server failed to start after 20 seconds.\n"
-            error_msg += f"Working directory: {project_root}\n"
-            error_msg += f"Python executable: {sys.executable}\n"
-            if stdout:
-                error_msg += f"STDOUT:\n{stdout}\n"
-            else:
-                error_msg += "STDOUT: (empty)\n"
-            if stderr:
-                error_msg += f"STDERR:\n{stderr}\n"
-            else:
-                error_msg += "STDERR: (empty)\n"
-            raise RuntimeError(error_msg)
-        except subprocess.TimeoutExpired as e:
-            server_process.kill()
-            raise RuntimeError("Test server failed to start and didn't terminate cleanly") from e
-
-    yield
-
-    # Cleanup
-    server_process.terminate()
+    process.terminate()
     try:
-        server_process.wait(timeout=5)
+        stdout, stderr = process.communicate(timeout=2)
+    except subprocess.TimeoutExpired as e:
+        process.kill()
+        raise RuntimeError(f"Server for {health_url} failed to start and didn't terminate cleanly") from e
+    raise RuntimeError(f"Server for {health_url} failed to start after 20 seconds.\nSTDOUT:\n{stdout or '(empty)'}\nSTDERR:\n{stderr or '(empty)'}\n")
+
+
+def _stop_server(process: subprocess.Popen[str]) -> None:
+    process.terminate()
+    try:
+        process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        server_process.kill()
-        server_process.wait()
+        process.kill()
+        process.wait()
+
+
+@pytest.fixture(scope="session")
+def test_server() -> Any:
+    """Start a fake catalog-api and the console test server for E2E tests.
+
+    The console reaches the fake over a real socket, exactly as it reaches catalog-api, and
+    validates every session against it with the positive cache disabled
+    (``SESSION_CACHE_SECONDS=0``), so a revocation or outage the suite triggers takes effect on
+    the next request instead of up to 30 seconds later.
+    """
+    project_root = str(Path(__file__).resolve().parents[1])
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    # Ensure Python can find the project modules
+    env["PYTHONPATH"] = project_root + os.pathsep + env.get("PYTHONPATH", "")
+    env["API_HOST"] = "127.0.0.1"
+    env["API_PORT"] = str(E2E_CATALOG_PORT)
+    env["SESSION_CACHE_SECONDS"] = "0"
+
+    catalog = _start_server("tests.fake_catalog_api:create_app", E2E_CATALOG_PORT, env, project_root)
+    try:
+        _wait_until_ready(catalog, f"{E2E_CATALOG_URL}/__fake__/health", project_root)
+        console = _start_server("tests.dashboard_test_app:create_test_app", 8003, env, project_root)
+        try:
+            _wait_until_ready(console, f"{E2E_CONSOLE_URL}/health", project_root)
+            yield
+        finally:
+            _stop_server(console)
+    finally:
+        _stop_server(catalog)
+
+
+@pytest.fixture
+def fake_catalog() -> Iterator[FakeCatalogApi]:
+    """Point the console's session gate at an in-process fake catalog-api for one test."""
+    from dashboard.session_auth import gate
+
+    saved = dict(vars(gate))
+    catalog = FakeCatalogApi()
+    gate.configure("catalog-api.test", 8004, transport=httpx.ASGITransport(app=catalog.app))
+    yield catalog
+    vars(gate).clear()
+    vars(gate).update(saved)
 
 
 @pytest.fixture(scope="session")

@@ -79,19 +79,22 @@ def parse_queue_samples(text: str) -> dict[QueueKey, QueueSample]:
 class RateTracker:
     """Turn consecutive counter samples into per-second publish and ack rates.
 
-    A queue seen for the first time, or again after missing a poll, has no baseline and reports no
-    rate. A counter that goes down is a broker or queue reset and yields no rate for that interval.
+    A rate of ``None`` means "not computable this interval", never zero: a queue seen for the first
+    time, or again after missing a poll, has no baseline; a counter that goes down is a broker or
+    queue reset; and a scrape whose time did not advance has no elapsed interval. A computed
+    ``0.0`` means the counter really did not move. A counter series the broker has not emitted yet
+    parses as a total of zero, so it still yields a rate once traffic starts.
     """
 
     _previous: dict[QueueKey, tuple[float, QueueSample]] = field(default_factory=dict)
 
-    def update(self, samples: dict[QueueKey, QueueSample], now: float) -> dict[QueueKey, tuple[float, float]]:
+    def update(self, samples: dict[QueueKey, QueueSample], now: float) -> dict[QueueKey, tuple[float | None, float | None]]:
         """Record a scrape taken at monotonic time ``now`` and return (publish, ack) rates per queue."""
-        rates: dict[QueueKey, tuple[float, float]] = {}
+        rates: dict[QueueKey, tuple[float | None, float | None]] = {}
         for key, sample in samples.items():
             baseline = self._previous.get(key)
             if baseline is None or now <= baseline[0]:
-                rates[key] = (0.0, 0.0)
+                rates[key] = (None, None)
                 continue
             elapsed = now - baseline[0]
             rates[key] = (
@@ -102,7 +105,7 @@ class RateTracker:
         return rates
 
 
-def _rate(before: float, after: float, elapsed: float) -> float:
+def _rate(before: float, after: float, elapsed: float) -> float | None:
     if after < before:
-        return 0.0
+        return None
     return (after - before) / elapsed

@@ -1,10 +1,18 @@
 """API tests for the dashboard using FastAPI TestClient."""
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+if TYPE_CHECKING:
+    from tests.fake_catalog_api import FakeCatalogApi
+
+
+def _auth(catalog: FakeCatalogApi) -> dict[str, str]:
+    return {"Authorization": f"Bearer {catalog.mint()}"}
 
 
 class TestDashboardAPI:
@@ -17,8 +25,9 @@ class TestDashboardAPI:
         dashboard_mock_neo4j_driver: Any,
         dashboard_mock_httpx_client: Any,
         dashboard_mock_psycopg_connect: Any,
+        fake_catalog: FakeCatalogApi,
     ) -> TestClient:
-        """Create a test client with mocked dependencies."""
+        """Create a test client, signed in as an admin, with mocked dependencies."""
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_dashboard_config),
             patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=dashboard_mock_neo4j_driver),
@@ -31,7 +40,7 @@ class TestDashboardAPI:
             # Import the app after patching
             from dashboard.dashboard import app
 
-            return TestClient(app)
+            return TestClient(app, headers=_auth(fake_catalog))
 
     def test_root_endpoint(self, test_client: TestClient) -> None:
         """Test that the root endpoint returns the index page."""
@@ -60,18 +69,19 @@ class TestDashboardAPI:
         assert response.status_code == 200
         assert "javascript" in response.headers["content-type"]
 
-    def test_admin_page(self, test_client: TestClient) -> None:
-        """Test that /admin serves admin.html directly."""
-        response = test_client.get("/admin")
-        assert response.status_code == 200
-        assert "text/html" in response.headers["content-type"]
-        assert "Admin" in response.text
+    @pytest.mark.parametrize("path", ["/admin", "/admin.html"])
+    def test_admin_page_redirects_to_the_console_shell(self, test_client: TestClient, path: str) -> None:
+        """The admin tabs moved into the shell at /; old admin links redirect there."""
+        response = test_client.get(path, follow_redirects=False)
+        assert response.status_code == 307
+        assert response.headers["location"] == "/"
 
     def test_services_endpoint_without_dashboard(
         self,
         mock_dashboard_config: Any,
         dashboard_mock_neo4j_driver: Any,
         dashboard_mock_psycopg_connect: Any,
+        fake_catalog: FakeCatalogApi,
     ) -> None:
         """Test /api/services endpoint when dashboard is not initialized."""
         with (
@@ -82,7 +92,7 @@ class TestDashboardAPI:
         ):
             from dashboard.dashboard import app
 
-            test_client = TestClient(app, raise_server_exceptions=False)
+            test_client = TestClient(app, raise_server_exceptions=False, headers=_auth(fake_catalog))
 
             response = test_client.get("/api/services")
             assert response.status_code == 200
@@ -93,6 +103,7 @@ class TestDashboardAPI:
         mock_dashboard_config: Any,
         dashboard_mock_neo4j_driver: Any,
         dashboard_mock_psycopg_connect: Any,
+        fake_catalog: FakeCatalogApi,
     ) -> None:
         """Test /api/queues endpoint when dashboard is not initialized."""
         with (
@@ -103,7 +114,7 @@ class TestDashboardAPI:
         ):
             from dashboard.dashboard import app
 
-            test_client = TestClient(app, raise_server_exceptions=False)
+            test_client = TestClient(app, raise_server_exceptions=False, headers=_auth(fake_catalog))
 
             response = test_client.get("/api/queues")
             assert response.status_code == 200
@@ -114,6 +125,7 @@ class TestDashboardAPI:
         mock_dashboard_config: Any,
         dashboard_mock_neo4j_driver: Any,
         dashboard_mock_psycopg_connect: Any,
+        fake_catalog: FakeCatalogApi,
     ) -> None:
         """Test /api/databases endpoint when dashboard is not initialized."""
         with (
@@ -124,7 +136,7 @@ class TestDashboardAPI:
         ):
             from dashboard.dashboard import app
 
-            test_client = TestClient(app, raise_server_exceptions=False)
+            test_client = TestClient(app, raise_server_exceptions=False, headers=_auth(fake_catalog))
 
             response = test_client.get("/api/databases")
             assert response.status_code == 200
@@ -134,15 +146,18 @@ class TestDashboardAPI:
 class TestQueuesEndpointServesLiveSnapshot:
     """/api/queues reads the loop's latest snapshot and never scrapes the broker itself."""
 
-    @staticmethod
-    def _get(snapshot: Any) -> Any:
+    @pytest.fixture(autouse=True)
+    def _signed_in(self, fake_catalog: FakeCatalogApi) -> None:
+        self.headers = _auth(fake_catalog)
+
+    def _get(self, snapshot: Any) -> Any:
         from unittest.mock import AsyncMock, Mock
 
         fake = Mock(latest_metrics=snapshot, get_queue_info=AsyncMock())
         with patch("dashboard.dashboard.dashboard", fake):
             from dashboard.dashboard import app
 
-            response = TestClient(app, raise_server_exceptions=False).get("/api/queues")
+            response = TestClient(app, raise_server_exceptions=False, headers=self.headers).get("/api/queues")
         fake.get_queue_info.assert_not_called()
         return response
 
@@ -165,6 +180,21 @@ class TestQueuesEndpointServesLiveSnapshot:
 
         assert response.status_code == 200
         assert response.json() == {"discogs": [queue.model_dump(mode="json")], "musicbrainz": None}
+
+    def test_unknown_rates_are_null_and_computed_zero_stays_zero(self) -> None:
+        from datetime import UTC, datetime
+
+        from dashboard.dashboard import PipelineMetrics, QueueInfo, SystemMetrics
+
+        unknown = QueueInfo(name="u", messages=1, messages_ready=1, messages_unacknowledged=0, consumers=1, message_rate=None, ack_rate=None)
+        idle = QueueInfo(name="i", messages=0, messages_ready=0, messages_unacknowledged=0, consumers=1, message_rate=0.0, ack_rate=0.0)
+        snapshot = SystemMetrics(
+            pipelines={"discogs": PipelineMetrics(services=[], queues=[unknown, idle])}, databases=[], timestamp=datetime.now(UTC)
+        )
+
+        rows = self._get(snapshot).json()["discogs"]
+
+        assert [(row["message_rate"], row["ack_rate"]) for row in rows] == [(None, None), (0.0, 0.0)]
 
     def test_empty_before_the_first_poll(self) -> None:
         response = self._get(None)
