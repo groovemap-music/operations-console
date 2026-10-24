@@ -5,10 +5,8 @@ from os import getenv
 from typing import cast
 
 from common.config import (
-    _build_amqp_url,
     _build_neo4j_uri,
     _build_postgres_connstr,
-    _coerce_port,
     _is_truthy,
     get_secret,
 )
@@ -18,7 +16,6 @@ from common.config import (
 class DashboardConfig:
     """Configuration for the privileged operations console."""
 
-    amqp_connection: str = field(repr=False)
     neo4j_host: str
     neo4j_username: str
     neo4j_password: str = field(repr=False)
@@ -26,10 +23,7 @@ class DashboardConfig:
     postgres_username: str
     postgres_password: str = field(repr=False)
     postgres_database: str
-    rabbitmq_username: str
-    rabbitmq_password: str = field(repr=False)
-    rabbitmq_management_host: str = "rabbitmq"
-    rabbitmq_management_port: int = 15672
+    rabbitmq_prometheus_url: str = "http://rabbitmq:15692"
     cors_origins: list[str] | None = None
     cache_warming_enabled: bool = True
     cache_webhook_secret: str | None = field(default=None, repr=False)
@@ -61,7 +55,6 @@ class DashboardConfig:
         cors_origins_raw = getenv("CORS_ORIGINS")
         cors_origins = [origin.strip() for origin in cors_origins_raw.split(",") if origin.strip()] if cors_origins_raw else None
         return cls(
-            amqp_connection=_build_amqp_url(),
             neo4j_host=_build_neo4j_uri(),
             neo4j_username=cast("str", neo4j_username),
             neo4j_password=cast("str", neo4j_password),
@@ -69,10 +62,7 @@ class DashboardConfig:
             postgres_username=cast("str", postgres_username),
             postgres_password=cast("str", postgres_password),
             postgres_database=cast("str", postgres_database),
-            rabbitmq_username=get_secret("RABBITMQ_USERNAME", "groovemap"),
-            rabbitmq_password=get_secret("RABBITMQ_PASSWORD", "groovemap"),
-            rabbitmq_management_host=getenv("RABBITMQ_MANAGEMENT_HOST", getenv("RABBITMQ_HOST", "rabbitmq")),
-            rabbitmq_management_port=_coerce_port(getenv("RABBITMQ_MANAGEMENT_PORT", "15672"), 15672),
+            rabbitmq_prometheus_url=getenv("RABBITMQ_PROMETHEUS_URL", "http://rabbitmq:15692").rstrip("/"),
             cors_origins=cors_origins,
             cache_warming_enabled=_is_truthy(getenv("CACHE_WARMING_ENABLED", "true")),
             cache_webhook_secret=get_secret("CACHE_WEBHOOK_SECRET"),

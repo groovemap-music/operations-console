@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator  # noqa: TC003  # FastAPI resolves li
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 from fastapi import FastAPI, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -31,7 +31,6 @@ class MockDashboardApp:
         """Initialize mock dashboard."""
         self.include_musicbrainz = include_musicbrainz
         self.config = DashboardConfig(
-            amqp_connection="amqp://test:test@localhost:5672/",
             neo4j_host="neo4j://localhost:7687",
             neo4j_username="test",
             neo4j_password="test",
@@ -39,12 +38,9 @@ class MockDashboardApp:
             postgres_username="test",
             postgres_password="test",
             postgres_database="test",
-            rabbitmq_username="test",
-            rabbitmq_password="test",
         )
         self.websocket_connections: set[WebSocket] = set()
         self.latest_metrics: dict[str, Any] | None = None
-        self.amqp_connection = AsyncMock()
         self.neo4j_driver = MagicMock()
         self.update_task: asyncio.Task[None] | None = None
 

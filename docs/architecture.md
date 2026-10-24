@@ -16,7 +16,7 @@ flowchart LR
     Console -->|service health reads| DiscogsIngestion
     Console -->|service health reads| MusicBrainzIngestion
     Console -->|service health reads| Consumers
-    Console -->|management metrics| RabbitMQ
+    Console -->|Prometheus /metrics/detailed :15692| RabbitMQ
     Console -->|statistics| Neo4j
     Console -->|statistics| Postgres
 ```
@@ -61,6 +61,6 @@ sequenceDiagram
 
 ## Runtime lifecycle
 
-Startup initializes RabbitMQ, Neo4j, PostgreSQL, and the console's two-second live metrics loop. The historical queue and service-health collector runs in `catalog-api`; the console reaches its authenticated history routes through the admin proxy. A partial dependency failure is reported in health data instead of being presented as healthy. Shutdown snapshots connected WebSockets before awaiting close operations, cancels the live collector, and closes each client without holding the connection-set lock across network I/O.
+Startup initializes Neo4j and PostgreSQL clients and the console's two-second live metrics loop; queue metrics are scraped over HTTP from the broker's Prometheus endpoint, so startup does not need RabbitMQ AMQP to be reachable. The historical queue and service-health collector runs in `catalog-api`; the console reaches its authenticated history routes through the admin proxy. A partial dependency failure is reported in health data instead of being presented as healthy. Shutdown snapshots connected WebSockets before awaiting close operations, cancels the live collector, and closes each client without holding the connection-set lock across network I/O.
 
 The image is `operations-console`, runs as numeric user `1000:1000`, and embeds its exact forty-character source revision in OCI metadata and the browser-visible corresponding-source link.

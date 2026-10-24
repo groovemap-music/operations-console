@@ -11,6 +11,7 @@ from collections.abc import AsyncGenerator  # noqa: TC003  # FastAPI resolves li
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 import orjson
@@ -18,7 +19,6 @@ import uvicorn
 from common import (
     AsyncResilientNeo4jDriver,
     AsyncResilientPostgreSQL,
-    AsyncResilientRabbitMQ,
     instrument_fastapi_app,
     instrument_httpx,
     neo4j_security_kwargs,
@@ -39,6 +39,7 @@ from dashboard.admin_proxy import configure as configure_admin_proxy
 from dashboard.admin_proxy import router as admin_router
 from dashboard.catalog_contract import DISCOGS_EXCHANGE_PREFIX, MUSICBRAINZ_EXCHANGE_PREFIX
 from dashboard.config import get_config
+from dashboard.queue_metrics import RateTracker, parse_queue_samples, scrape_params
 
 
 # Suppress per-request httpx INFO logs (health checks every 2s are too noisy)
@@ -92,7 +93,11 @@ class ServiceStatus(BaseModel):
 
 
 class QueueInfo(BaseModel):
-    """Model for RabbitMQ queue information."""
+    """Model for RabbitMQ queue information.
+
+    The rates are computed from counter deltas between polls; a queue with no computable rate
+    (first sample, counter reset) reports 0.0.
+    """
 
     name: str
     messages: int
@@ -118,6 +123,7 @@ class PipelineMetrics(BaseModel):
 
     services: list[ServiceStatus]
     queues: list[QueueInfo]
+    queues_available: bool = True  # False when the broker scrape failed; `queues` is then empty, not an idle pipeline
 
 
 class SystemMetrics(BaseModel):
@@ -191,7 +197,7 @@ class WebSocketConnections:
 # Queue prefixes are ALWAYS env-derived by the generated catalog contract, exactly like
 # the extractor and all four consumers.
 # Hardcoding the defaults here made the dashboard the only component that ignored a
-# prefix override: the management-API filter matched nothing, and get_queue_info logs
+# prefix override: the queue-name filter matched nothing, and get_queue_info logs
 # nothing on a zero-match 200, so both pipeline panes silently showed an empty,
 # healthy-looking pipeline while queues backed up (retained queue-prefix regression).
 PIPELINE_CONFIGS: dict[str, dict] = {
@@ -224,7 +230,7 @@ class DashboardApp:
         self.config = get_config()
         self.websockets = WebSocketConnections()
         self.latest_metrics: SystemMetrics | None = None
-        self.rabbitmq: AsyncResilientRabbitMQ | None = None
+        self._rate_trackers: dict[str, RateTracker] = {}
         self.neo4j_driver: AsyncResilientNeo4jDriver | None = None
         self.postgres_conn: AsyncResilientPostgreSQL | None = None
         self.update_task: asyncio.Task | None = None
@@ -250,10 +256,6 @@ class DashboardApp:
     async def startup(self) -> None:
         """Initialize connections on startup."""
         try:
-            self.rabbitmq = AsyncResilientRabbitMQ(connection_url=self.config.amqp_connection, heartbeat=600, connection_attempts=10, retry_delay=5.0)
-            await self.rabbitmq.connect()
-            logger.info("🐰 Connected to RabbitMQ with resilient connection")
-
             self.neo4j_driver = AsyncResilientNeo4jDriver(
                 uri=self.config.neo4j_host,
                 auth=(self.config.neo4j_username, self.config.neo4j_password),
@@ -293,8 +295,6 @@ class DashboardApp:
                 with contextlib.suppress(asyncio.CancelledError):
                     await self.update_task
 
-            if self.rabbitmq:
-                await self.rabbitmq.close()
             if self.neo4j_driver:
                 console_telemetry.reset_neo4j_gauges()
                 await self.neo4j_driver.close()
@@ -356,7 +356,7 @@ class DashboardApp:
             queues = await self.get_queue_info(config["queue_prefix"])
             # Auto-detect: include pipeline only if at least one service is reachable
             if any(s.status != "unknown" for s in services):
-                pipelines[pipeline_name] = PipelineMetrics(services=services, queues=queues)
+                pipelines[pipeline_name] = PipelineMetrics(services=services, queues=queues or [], queues_available=queues is not None)
 
         databases = await self.get_database_info()
 
@@ -402,54 +402,43 @@ class DashboardApp:
         async with httpx.AsyncClient(timeout=5.0) as client:
             return [await self._poll_service(client, name, url) for name, url in service_configs]
 
-    async def get_queue_info(self, prefix: str) -> list[QueueInfo]:
-        """Get RabbitMQ queue information."""
-        queues: list[QueueInfo] = []
+    async def get_queue_info(self, prefix: str) -> list[QueueInfo] | None:
+        """Read live queue metrics for queues under ``prefix`` from the RabbitMQ Prometheus endpoint.
 
-        if not self.rabbitmq:
-            return queues
-
+        Returns None when the scrape fails, so callers report the data as unavailable instead of
+        presenting an empty, healthy-looking pipeline.
+        """
         with console_telemetry.poll_span(console_telemetry.POLL_TARGET_RABBITMQ) as poll:
             try:
                 async with httpx.AsyncClient(timeout=5.0) as client:
-                    # Use RabbitMQ management API with host/credentials from config
-                    management_host = self.config.rabbitmq_management_host
-                    management_port = self.config.rabbitmq_management_port
-                    response = await client.get(
-                        f"http://{management_host}:{management_port}/api/queues",
-                        auth=(self.config.rabbitmq_username, self.config.rabbitmq_password),
-                    )
-
-                    if response.status_code == 200:
-                        queue_data = response.json()
-                        for queue in queue_data:
-                            if queue["name"].startswith(prefix):
-                                queues.append(
-                                    QueueInfo(
-                                        name=queue["name"],
-                                        messages=queue.get("messages", 0),
-                                        messages_ready=queue.get("messages_ready", 0),
-                                        messages_unacknowledged=queue.get("messages_unacknowledged", 0),
-                                        consumers=queue.get("consumers", 0),
-                                        message_rate=queue.get("message_stats", {}).get("publish_details", {}).get("rate", 0.0),
-                                        ack_rate=queue.get("message_stats", {}).get("ack_details", {}).get("rate", 0.0),
-                                    )
-                                )
-                    elif response.status_code == 401:
-                        poll.failed()
-                        logger.warning("⚠️ RabbitMQ management API authentication failed. Queue metrics unavailable.")
-                    else:
-                        poll.failed()
-                        logger.warning(f"⚠️ RabbitMQ management API returned status {response.status_code}")
-
+                    response = await client.get(f"{self.config.rabbitmq_prometheus_url}/metrics/detailed", params=scrape_params(prefix))
+                if response.status_code != 200:
+                    poll.failed()
+                    logger.warning(f"⚠️ RabbitMQ Prometheus endpoint returned status {response.status_code}. Queue metrics unavailable.")
+                    return None
+                samples = parse_queue_samples(response.text)
             except httpx.ConnectError as e:
                 poll.failed(e)
-                logger.debug("🐰 RabbitMQ management API unreachable. This is normal if RabbitMQ is not running.")
+                logger.warning("⚠️ RabbitMQ Prometheus endpoint unreachable. Queue metrics unavailable.")
+                return None
             except Exception as e:
                 poll.failed(e)
-                logger.error(f"❌ Error getting queue info: {e}")
+                logger.warning(f"⚠️ Error reading RabbitMQ queue metrics: {e}. Queue metrics unavailable.")
+                return None
 
-        return queues
+        rates = self._rate_trackers.setdefault(prefix, RateTracker()).update(samples, time.monotonic())
+        return [
+            QueueInfo(
+                name=queue,
+                messages=sample.messages,
+                messages_ready=sample.messages_ready,
+                messages_unacknowledged=sample.messages_unacknowledged,
+                consumers=sample.consumers,
+                message_rate=rates[(vhost, queue)][0],
+                ack_rate=rates[(vhost, queue)][1],
+            )
+            for (vhost, queue), sample in sorted(samples.items(), key=lambda item: item[0][1])
+        ]
 
     async def get_database_info(self) -> list[DatabaseInfo]:
         """Get database information."""
@@ -682,10 +671,12 @@ async def get_queues() -> JSONResponse:
     """Get queue information grouped by pipeline."""
     if not dashboard:
         return JSONResponse(content={})
-    result = {}
+    result: dict[str, list[dict[str, Any]] | None] = {}
     for pipeline_name, config in PIPELINE_CONFIGS.items():
         queues = await dashboard.get_queue_info(config["queue_prefix"])
-        if queues:
+        if queues is None:
+            result[pipeline_name] = None  # scrape failed: unavailable, not an empty pipeline
+        elif queues:
             result[pipeline_name] = [q.model_dump(mode="json") for q in queues]
     return JSONResponse(content=result)
 

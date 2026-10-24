@@ -31,6 +31,7 @@ dependencies = [
     "neo4j-rust-ext>=6.4.1.0",
     "orjson>=3.13.0",
     "pika>=1.4.4",
+    "prometheus-client>=0.25",
     "psycopg[binary]>=3.3.5",
     "pydantic>=2.14.1",
     "python-multipart>=0.0.32",

@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
@@ -10,6 +11,19 @@ import pytest
 from fastapi.testclient import TestClient
 
 from dashboard.dashboard import PIPELINE_CONFIGS, DashboardApp, DatabaseInfo, QueueInfo, ServiceStatus, SystemMetrics
+
+
+_RECORDED_METRICS = Path(__file__).parent / "fixtures" / "rabbitmq_4_4_metrics_detailed.txt"
+
+
+def _queue_body(*, published: int, acked: int) -> str:
+    """A /metrics/detailed body for one queue with the given cumulative counters."""
+    labels = 'vhost="/",queue="groovemap-q"'
+    return (
+        f"rabbitmq_detailed_queue_messages{{{labels}}} 7\n"
+        f'rabbitmq_detailed_queue_exchange_messages_published_total{{{labels},exchange="groovemap"}} {published}\n'
+        f"rabbitmq_detailed_queue_messages_acked_total{{{labels}}} {acked}\n"
+    )
 
 
 def _close_and_mock_task(coro: Any) -> MagicMock:
@@ -31,7 +45,6 @@ class TestDashboardAppInit:
             assert app.config is not None
             assert app.websocket_connections == set()
             assert app.latest_metrics is None
-            assert app.rabbitmq is None
             assert app.neo4j_driver is None
             assert app.postgres_conn is None
             assert app.update_task is None
@@ -44,7 +57,6 @@ class TestDashboardAppStartup:
     async def test_startup_success(self) -> None:
         """Test successful startup."""
         mock_config = Mock()
-        mock_config.amqp_connection = "amqp://test"
         mock_config.neo4j_host = "bolt://test:7687"
         mock_config.neo4j_username = "neo4j"
         mock_config.neo4j_password = "test"
@@ -53,13 +65,11 @@ class TestDashboardAppStartup:
         mock_config.postgres_username = "test"
         mock_config.postgres_password = "test"
 
-        mock_rabbitmq = AsyncMock()
         mock_neo4j = AsyncMock()
         mock_postgres = AsyncMock()
 
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_config),
-            patch("dashboard.dashboard.AsyncResilientRabbitMQ", return_value=mock_rabbitmq),
             patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=mock_neo4j),
             patch("dashboard.dashboard.AsyncResilientPostgreSQL", return_value=mock_postgres),
             patch("asyncio.create_task", side_effect=_close_and_mock_task) as mock_create_task,
@@ -69,8 +79,6 @@ class TestDashboardAppStartup:
             await app.startup()
 
             # Verify connections were established
-            mock_rabbitmq.connect.assert_called_once()
-            assert app.rabbitmq == mock_rabbitmq
             assert app.neo4j_driver == mock_neo4j
             assert app.postgres_conn == mock_postgres
 
@@ -81,7 +89,6 @@ class TestDashboardAppStartup:
     async def test_startup_with_port_in_postgres_host(self) -> None:
         """Test startup with custom PostgreSQL port."""
         mock_config = Mock()
-        mock_config.amqp_connection = "amqp://test"
         mock_config.neo4j_host = "bolt://test:7687"
         mock_config.neo4j_username = "neo4j"
         mock_config.neo4j_password = "test"
@@ -92,7 +99,6 @@ class TestDashboardAppStartup:
 
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_config),
-            patch("dashboard.dashboard.AsyncResilientRabbitMQ", return_value=AsyncMock()),
             patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=AsyncMock()),
             patch("dashboard.dashboard.AsyncResilientPostgreSQL") as mock_postgres_class,
             patch("asyncio.create_task", side_effect=_close_and_mock_task),
@@ -110,15 +116,12 @@ class TestDashboardAppStartup:
     async def test_startup_error(self) -> None:
         """Test startup error handling."""
         mock_config = Mock()
-        mock_config.amqp_connection = "amqp://test"
 
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_config),
-            patch("dashboard.dashboard.AsyncResilientRabbitMQ") as mock_rabbitmq_class,
+            patch("dashboard.dashboard.AsyncResilientNeo4jDriver", side_effect=Exception("Connection failed")),
             patch("dashboard.dashboard.logger") as mock_logger,
         ):
-            mock_rabbitmq_class.return_value.connect.side_effect = Exception("Connection failed")
-
             app = DashboardApp()
             with pytest.raises(Exception, match="Connection failed"):
                 await app.startup()
@@ -146,7 +149,6 @@ class TestDashboardAppShutdown:
             # Create a real task that will raise CancelledError
             app.update_task = asyncio.create_task(cancelled_task())
 
-            app.rabbitmq = AsyncMock()
             app.neo4j_driver = AsyncMock()
             app.postgres_conn = AsyncMock()
 
@@ -160,7 +162,6 @@ class TestDashboardAppShutdown:
 
             # Verify task was cancelled (it starts cancelled so we can't check this)
             # But we can verify connections were closed
-            app.rabbitmq.close.assert_called_once()
             app.neo4j_driver.close.assert_called_once()
             app.postgres_conn.close.assert_called_once()
 
@@ -191,8 +192,8 @@ class TestDashboardAppShutdown:
             patch("dashboard.dashboard.logger") as mock_logger,
         ):
             app = DashboardApp()
-            app.rabbitmq = AsyncMock()
-            app.rabbitmq.close.side_effect = Exception("Close failed")
+            app.neo4j_driver = AsyncMock()
+            app.neo4j_driver.close.side_effect = Exception("Close failed")
 
             await app.shutdown()
 
@@ -663,244 +664,181 @@ class TestDashboardAppDataCollection:
                 assert statuses[2].status == "unknown"
                 assert "Connection failed" in statuses[2].error
 
-    @pytest.mark.asyncio
-    async def test_get_queue_info_success(self) -> None:
-        """Test getting queue information successfully."""
+    @staticmethod
+    def _queue_app(url: str = "http://rabbitmq:15692") -> DashboardApp:
         mock_config = Mock()
-        mock_config.rabbitmq_username = "guest"
-        mock_config.rabbitmq_password = "guest"
-
+        mock_config.rabbitmq_prometheus_url = url
         with patch("dashboard.dashboard.get_config", return_value=mock_config):
-            app = DashboardApp()
-            app.rabbitmq = AsyncMock()  # Set rabbitmq connection
+            return DashboardApp()
 
-            # Mock RabbitMQ management API response
-            queue_data = [
-                {
-                    "name": "groovemap.artists",
-                    "messages": 100,
-                    "messages_ready": 50,
-                    "messages_unacknowledged": 50,
-                    "consumers": 2,
-                    "message_stats": {
-                        "publish_details": {"rate": 10.5},
-                        "ack_details": {"rate": 9.8},
-                    },
-                },
-                {
-                    "name": "groovemap.releases",
-                    "messages": 200,
-                    "messages_ready": 150,
-                    "messages_unacknowledged": 50,
-                    "consumers": 3,
-                    "message_stats": {
-                        "publish_details": {"rate": 20.0},
-                        "ack_details": {"rate": 18.5},
-                    },
-                },
-                {
-                    "name": "other.queue",  # Should be filtered out
-                    "messages": 10,
-                    "messages_ready": 5,
-                    "messages_unacknowledged": 5,
-                    "consumers": 1,
-                },
-            ]
-
-            async def mock_get(_url: str, **_kwargs: Any) -> Mock:
-                response = Mock()
-                response.status_code = 200
-                response.json = Mock(return_value=queue_data)
-                return response
-
-            with patch("httpx.AsyncClient") as mock_client_class:
-                mock_client = AsyncMock()
-                mock_client.get = mock_get
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock(return_value=None)
-                mock_client_class.return_value = mock_client
-
-                queues = await app.get_queue_info("groovemap")
-
-                # Should only have 2 queues (groovemap prefix)
-                assert len(queues) == 2
-                assert queues[0].name == "groovemap.artists"
-                assert queues[0].messages == 100
-                assert queues[0].message_rate == 10.5
-                assert queues[1].name == "groovemap.releases"
+    @staticmethod
+    def _scrape(body: str | Exception, status: int = 200) -> Any:
+        """Patch httpx.AsyncClient so each GET returns `body` (or raises it); yields the get mock."""
+        client = AsyncMock()
+        if isinstance(body, Exception):
+            client.get = AsyncMock(side_effect=body)
+        else:
+            response = Mock()
+            response.status_code = status
+            response.text = body
+            client.get = AsyncMock(return_value=response)
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        return client
 
     @pytest.mark.asyncio
-    async def test_get_queue_info_uses_configured_management_host(self) -> None:
-        """The management API call must target config.rabbitmq_management_host/_port,
-        not a hardcoded 'rabbitmq' hostname — regression for a non-default RABBITMQ_HOST
-        silently producing empty queue metrics."""
-        mock_config = Mock()
-        mock_config.rabbitmq_username = "guest"
-        mock_config.rabbitmq_password = "guest"
-        mock_config.rabbitmq_management_host = "mq.internal"
-        mock_config.rabbitmq_management_port = 25672
+    async def test_get_queue_info_maps_recorded_broker_response(self) -> None:
+        """Gauges map straight from a /metrics/detailed capture taken from a real RabbitMQ 4.4 broker."""
+        app = self._queue_app()
+        client = self._scrape(_RECORDED_METRICS.read_text(encoding="utf-8"))
 
-        with patch("dashboard.dashboard.get_config", return_value=mock_config):
-            app = DashboardApp()
-            app.rabbitmq = AsyncMock()
+        with patch("httpx.AsyncClient", return_value=client):
+            queues = await app.get_queue_info("groovemap-discogs")
 
-            captured_urls: list[str] = []
+        assert queues == [
+            QueueInfo(
+                name="groovemap-discogs-graphinator-artists",
+                messages=6,
+                messages_ready=6,
+                messages_unacknowledged=0,
+                consumers=0,
+                message_rate=0.0,  # first sample has no baseline
+                ack_rate=0.0,
+            )
+        ]
+        url = client.get.call_args.args[0]
+        params = client.get.call_args.kwargs["params"]
+        assert url == "http://rabbitmq:15692/metrics/detailed"
+        assert [value for key, value in params if key == "family"] == [
+            "queue_coarse_metrics",
+            "queue_consumer_count",
+            "queue_delivery_metrics",
+            "queue_exchange_metrics",
+        ]
+        assert [value for key, value in params if key == "queue"] == ["^groovemap\\-discogs"]
 
-            async def mock_get(url: str, **_kwargs: Any) -> Mock:
-                captured_urls.append(url)
-                response = Mock()
-                response.status_code = 200
-                response.json = Mock(return_value=[])
-                return response
+    @pytest.mark.asyncio
+    async def test_get_queue_info_uses_configured_prometheus_url(self) -> None:
+        app = self._queue_app("http://mq.internal:25692")
+        client = self._scrape("")
 
-            with patch("httpx.AsyncClient") as mock_client_class:
-                mock_client = AsyncMock()
-                mock_client.get = mock_get
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock(return_value=None)
-                mock_client_class.return_value = mock_client
+        with patch("httpx.AsyncClient", return_value=client):
+            assert await app.get_queue_info("groovemap") == []
 
+        assert client.get.call_args.args[0] == "http://mq.internal:25692/metrics/detailed"
+
+    @pytest.mark.asyncio
+    async def test_get_queue_info_computes_rates_from_two_polls(self) -> None:
+        app = self._queue_app()
+        first = _queue_body(published=100, acked=40)
+        second = _queue_body(published=150, acked=70)
+
+        with patch("dashboard.dashboard.time.monotonic", side_effect=[1000.0, 1002.0]):
+            with patch("httpx.AsyncClient", return_value=self._scrape(first)):
+                before = await app.get_queue_info("groovemap")
+            with patch("httpx.AsyncClient", return_value=self._scrape(second)):
+                after = await app.get_queue_info("groovemap")
+
+        assert (before[0].message_rate, before[0].ack_rate) == (0.0, 0.0)
+        assert (after[0].message_rate, after[0].ack_rate) == (25.0, 15.0)
+
+    @pytest.mark.asyncio
+    async def test_get_queue_info_counter_reset_yields_no_rate_then_recovers(self) -> None:
+        app = self._queue_app()
+        bodies = [_queue_body(published=500, acked=400), _queue_body(published=5, acked=2), _queue_body(published=25, acked=12)]
+        rates = []
+
+        with patch("dashboard.dashboard.time.monotonic", side_effect=[0.0, 2.0, 4.0]):
+            for body in bodies:
+                with patch("httpx.AsyncClient", return_value=self._scrape(body)):
+                    queue = (await app.get_queue_info("groovemap"))[0]
+                rates.append((queue.message_rate, queue.ack_rate))
+
+        assert rates == [(0.0, 0.0), (0.0, 0.0), (10.0, 5.0)]
+
+    @pytest.mark.asyncio
+    async def test_get_queue_info_queue_that_disappears_is_rebaselined(self) -> None:
+        app = self._queue_app()
+        bodies = [_queue_body(published=100, acked=0), "", _queue_body(published=300, acked=0)]
+        results = []
+
+        with patch("dashboard.dashboard.time.monotonic", side_effect=[0.0, 2.0, 4.0]):
+            for body in bodies:
+                with patch("httpx.AsyncClient", return_value=self._scrape(body)):
+                    results.append(await app.get_queue_info("groovemap"))
+
+        assert results[1] == []
+        assert results[2][0].message_rate == 0.0, "a queue that missed a poll has no baseline, not a 100/s spike"
+
+    @pytest.mark.asyncio
+    async def test_get_queue_info_counters_appear_after_first_event(self) -> None:
+        """The broker omits a counter series until its first event; the rate still reflects it."""
+        app = self._queue_app()
+        idle = 'rabbitmq_detailed_queue_messages{vhost="/",queue="groovemap-q"} 0\n'
+
+        with patch("dashboard.dashboard.time.monotonic", side_effect=[0.0, 2.0]):
+            with patch("httpx.AsyncClient", return_value=self._scrape(idle)):
                 await app.get_queue_info("groovemap")
+            with patch("httpx.AsyncClient", return_value=self._scrape(_queue_body(published=10, acked=4))):
+                queue = (await app.get_queue_info("groovemap"))[0]
 
-            assert captured_urls == ["http://mq.internal:25672/api/queues"]
-
-    @pytest.mark.asyncio
-    async def test_get_queue_info_no_rabbitmq(self) -> None:
-        """Test getting queue info when RabbitMQ is not connected."""
-        mock_config = Mock()
-
-        with patch("dashboard.dashboard.get_config", return_value=mock_config):
-            app = DashboardApp()
-            # No rabbitmq connection
-
-            queues = await app.get_queue_info("groovemap")
-
-            # Should return empty list
-            assert queues == []
+        assert (queue.message_rate, queue.ack_rate) == (5.0, 2.0)
 
     @pytest.mark.asyncio
-    async def test_get_queue_info_auth_failure(self) -> None:
-        """Test queue info when authentication fails."""
-        mock_config = Mock()
-        mock_config.rabbitmq_username = "guest"
-        mock_config.rabbitmq_password = "wrong"
+    async def test_get_queue_info_sums_publishes_across_exchanges(self) -> None:
+        app = self._queue_app()
+        body = (
+            'rabbitmq_detailed_queue_exchange_messages_published_total{vhost="/",exchange="a",queue="groovemap-q"} 10\n'
+            'rabbitmq_detailed_queue_exchange_messages_published_total{vhost="/",exchange="b",queue="groovemap-q"} 20\n'
+        )
+        later = (
+            'rabbitmq_detailed_queue_exchange_messages_published_total{vhost="/",exchange="a",queue="groovemap-q"} 20\n'
+            'rabbitmq_detailed_queue_exchange_messages_published_total{vhost="/",exchange="b",queue="groovemap-q"} 40\n'
+        )
+
+        with patch("dashboard.dashboard.time.monotonic", side_effect=[0.0, 3.0]):
+            with patch("httpx.AsyncClient", return_value=self._scrape(body)):
+                await app.get_queue_info("groovemap")
+            with patch("httpx.AsyncClient", return_value=self._scrape(later)):
+                queue = (await app.get_queue_info("groovemap"))[0]
+
+        assert queue.message_rate == 10.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            pytest.param(("body", 503), id="non-200"),
+            pytest.param(httpx.ConnectError("refused"), id="connect-error"),
+            pytest.param(Exception("boom"), id="unexpected-error"),
+        ],
+    )
+    async def test_get_queue_info_scrape_failure_is_unavailable_and_warns(self, failure: Any) -> None:
+        """A failed scrape is None (unavailable) with a warning, never an empty list."""
+        app = self._queue_app()
+        client = self._scrape(*failure) if isinstance(failure, tuple) else self._scrape(failure)
+
+        with patch("httpx.AsyncClient", return_value=client), patch("dashboard.dashboard.logger") as mock_logger:
+            assert await app.get_queue_info("groovemap") is None
+
+        mock_logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_collect_all_metrics_marks_failed_scrape_unavailable(self) -> None:
+        app = self._queue_app()
+        services = [ServiceStatus(name="x", status="healthy", last_seen=datetime.now(UTC), current_task=None, progress=None, error=None)]
 
         with (
-            patch("dashboard.dashboard.get_config", return_value=mock_config),
-            patch("dashboard.dashboard.logger") as mock_logger,
+            patch.object(app, "get_service_statuses", new_callable=AsyncMock, return_value=services),
+            patch.object(app, "get_queue_info", new_callable=AsyncMock, return_value=None),
+            patch.object(app, "get_database_info", new_callable=AsyncMock, return_value=[]),
         ):
-            app = DashboardApp()
-            app.rabbitmq = AsyncMock()
+            metrics = await app.collect_all_metrics()
 
-            async def mock_get(_url: str, **_kwargs: Any) -> Mock:
-                response = Mock()
-                response.status_code = 401
-                return response
-
-            with patch("httpx.AsyncClient") as mock_client_class:
-                mock_client = AsyncMock()
-                mock_client.get = mock_get
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock(return_value=None)
-                mock_client_class.return_value = mock_client
-
-                queues = await app.get_queue_info("groovemap")
-
-                # Should return empty list and log warning
-                assert queues == []
-                mock_logger.warning.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_get_queue_info_non_200_status(self) -> None:
-        """Test queue info when API returns non-200 status."""
-        mock_config = Mock()
-        mock_config.rabbitmq_username = "guest"
-        mock_config.rabbitmq_password = "guest"
-
-        with (
-            patch("dashboard.dashboard.get_config", return_value=mock_config),
-            patch("dashboard.dashboard.logger") as mock_logger,
-        ):
-            app = DashboardApp()
-            app.rabbitmq = AsyncMock()
-
-            async def mock_get(_url: str, **_kwargs: Any) -> Mock:
-                response = Mock()
-                response.status_code = 503
-                return response
-
-            with patch("httpx.AsyncClient") as mock_client_class:
-                mock_client = AsyncMock()
-                mock_client.get = mock_get
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock(return_value=None)
-                mock_client_class.return_value = mock_client
-
-                queues = await app.get_queue_info("groovemap")
-
-                # Should return empty list and log warning
-                assert queues == []
-                mock_logger.warning.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_get_queue_info_connection_error(self) -> None:
-        """Test queue info when connection error occurs."""
-        mock_config = Mock()
-        mock_config.rabbitmq_username = "guest"
-        mock_config.rabbitmq_password = "guest"
-
-        with (
-            patch("dashboard.dashboard.get_config", return_value=mock_config),
-            patch("dashboard.dashboard.logger") as mock_logger,
-        ):
-            app = DashboardApp()
-            app.rabbitmq = AsyncMock()
-
-            async def mock_get(_url: str, **_kwargs: Any) -> Mock:
-                raise httpx.ConnectError("Connection refused")
-
-            with patch("httpx.AsyncClient") as mock_client_class:
-                mock_client = AsyncMock()
-                mock_client.get = mock_get
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock(return_value=None)
-                mock_client_class.return_value = mock_client
-
-                queues = await app.get_queue_info("groovemap")
-
-                # Should return empty list and log debug
-                assert queues == []
-                mock_logger.debug.assert_called()
-
-    @pytest.mark.asyncio
-    async def test_get_queue_info_unexpected_error(self) -> None:
-        """Test queue info when unexpected error occurs."""
-        mock_config = Mock()
-        mock_config.rabbitmq_username = "guest"
-        mock_config.rabbitmq_password = "guest"
-
-        with (
-            patch("dashboard.dashboard.get_config", return_value=mock_config),
-            patch("dashboard.dashboard.logger") as mock_logger,
-        ):
-            app = DashboardApp()
-            app.rabbitmq = AsyncMock()
-
-            async def mock_get(_url: str, _auth: tuple[str, str]) -> Mock:
-                raise Exception("Unexpected error")
-
-            with patch("httpx.AsyncClient") as mock_client_class:
-                mock_client = AsyncMock()
-                mock_client.get = mock_get
-                mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-                mock_client.__aexit__ = AsyncMock(return_value=None)
-                mock_client_class.return_value = mock_client
-
-                queues = await app.get_queue_info("groovemap")
-
-                # Should return empty list and log error
-                assert queues == []
-                mock_logger.error.assert_called()
+        pipeline = metrics.pipelines["discogs"]
+        assert pipeline.queues == []
+        assert pipeline.queues_available is False
+        assert metrics.model_dump(mode="json")["pipelines"]["discogs"]["queues_available"] is False
 
     @pytest.mark.asyncio
     async def test_get_database_info_success(self) -> None:
@@ -1525,7 +1463,6 @@ class TestPostgresAddressParsing:
     async def test_startup_postgres_host_without_port(self) -> None:
         """Test startup with PostgreSQL address without port."""
         mock_config = Mock()
-        mock_config.amqp_connection = "amqp://test"
         mock_config.neo4j_host = "bolt://test:7687"
         mock_config.neo4j_username = "neo4j"
         mock_config.neo4j_password = "test"
@@ -1537,12 +1474,10 @@ class TestPostgresAddressParsing:
         with patch("dashboard.dashboard.get_config", return_value=mock_config):
             app = DashboardApp()
 
-            mock_rabbitmq = AsyncMock()
             mock_neo4j = AsyncMock()
             mock_postgres = AsyncMock()
 
             with (
-                patch("dashboard.dashboard.AsyncResilientRabbitMQ", return_value=mock_rabbitmq),
                 patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=mock_neo4j),
                 patch("dashboard.dashboard.AsyncResilientPostgreSQL", return_value=mock_postgres),
                 patch("asyncio.create_task", side_effect=_close_and_mock_task) as _mock_create_task,
@@ -1654,7 +1589,6 @@ class TestLifespanFunction:
     def test_lifespan_executes_startup_and_shutdown(self) -> None:
         """Test that the real lifespan function runs ASCII art, startup, and shutdown."""
         mock_config = Mock()
-        mock_config.amqp_connection = "amqp://test"
         mock_config.neo4j_host = "bolt://test:7687"
         mock_config.neo4j_username = "neo4j"
         mock_config.neo4j_password = "test"
@@ -1663,13 +1597,11 @@ class TestLifespanFunction:
         mock_config.postgres_username = "test"
         mock_config.postgres_password = "test"
 
-        mock_rabbitmq = AsyncMock()
         mock_neo4j = AsyncMock()
         mock_postgres = AsyncMock()
 
         with (
             patch("dashboard.dashboard.get_config", return_value=mock_config),
-            patch("dashboard.dashboard.AsyncResilientRabbitMQ", return_value=mock_rabbitmq),
             patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=mock_neo4j),
             patch("dashboard.dashboard.AsyncResilientPostgreSQL", return_value=mock_postgres),
             patch("asyncio.create_task", side_effect=_close_and_mock_task),
