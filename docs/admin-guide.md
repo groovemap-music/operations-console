@@ -23,11 +23,34 @@ Passwords must be at least 8 characters. If the email already exists, the passwo
 docker exec -it groovemap-api admin-setup --list
 ```
 
-## Accessing the admin panel
+## Signing in to the console
 
-Navigate to `http://<host>:8003/admin` and log in with your admin credentials.
+Navigate to `http://<host>:8003` and sign in with your admin credentials. The console is one
+page: until `catalog-api` confirms an admin session it shows only the login form, and after
+sign-in the live **Overview** tab comes first, followed by the admin tabs. The old
+`http://<host>:8003/admin` and `/admin.html` addresses redirect to `/`.
 
-The monitoring dashboard at `http://<host>:8003` remains public — no login required.
+Every data route (`/api/metrics`, `/api/services`, `/api/queues`, `/api/databases`,
+`/api/queue-prefixes`, `/api/session`) and the live WebSocket require a live admin session;
+only `/health` and the login page are public. The console holds no JWT secret: it asks
+`catalog-api` (`GET /api/admin/auth/session`) whether the bearer is live and caches a yes for at
+most 30 seconds. A 401 or 403 from `catalog-api` (missing, expired, revoked, password-changed,
+or non-admin token) is answered `401` with `"reason": "invalid"`; a `catalog-api` error or an
+unreachable `catalog-api` is answered `503` with `"reason": "unavailable"`.
+
+The console returns to the login form, with the reason shown above it, when you sign out, when
+the session expires or is revoked while the console is open, and when `catalog-api` cannot be
+reached to confirm it. The open console re-checks its session every 15 seconds and just after
+the session's expiry. Signing out through the console also drops its cached copy of the session
+at once; a session revoked elsewhere stops working within the 30-second cache window.
+
+The live Overview cannot send `Authorization` on a WebSocket, so it first posts the bearer to
+`POST /api/ws-ticket` for a single-use ticket valid for 30 seconds and opens
+`/ws?ticket=<ticket>`. A missing, reused, or expired ticket is closed with code `4401`, as is an
+open socket whose session stops being valid (re-checked every 30 seconds and at expiry). The
+console removes the ticket from the request's query string before its access log or request
+spans read it and redacts it from server log lines, but a reverse proxy in front of the console
+keeps its own access log: configure it not to log query strings for `/ws`.
 
 ## Triggering an extraction
 
@@ -176,7 +199,7 @@ Both tables are indexed on `recorded_at` for efficient range queries. Rows older
 
 ### Queue Trends and System Health tabs
 
-The admin panel (`http://<host>:8003/admin`) exposes two tabs backed by the history endpoints:
+The console (`http://<host>:8003`) exposes two tabs backed by the history endpoints:
 
 - **Queue Trends** — Line charts showing message depth over time for each RabbitMQ queue. Use the range selector (1h / 6h / 24h / 7d / 30d / 90d / 365d) to zoom in or out.
 - **System Health** — Status timeline showing per-service health over the selected range. Unhealthy periods are highlighted in red; response time is shown as a secondary series.

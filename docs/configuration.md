@@ -25,8 +25,9 @@ unless `NEO4J_TLS_VERIFY` is explicitly `false`, `0`, or `no`.
 | `RABBITMQ_PROMETHEUS_URL` | `http://rabbitmq:15692` | Base URL of the broker's `rabbitmq_prometheus` plugin. The console reads queue depth, consumers, and rates from `{url}/metrics/detailed`; the endpoint is unauthenticated on the internal network, so the console needs no RabbitMQ credential and opens no AMQP connection. |
 | `DISCOGS_EXCHANGE_PREFIX` | `groovemap-discogs` | Prefix promoted from the `discogs-ingestion` catalog-event contract. |
 | `MUSICBRAINZ_EXCHANGE_PREFIX` | `groovemap-musicbrainz` | Prefix promoted from the `musicbrainz-ingestion` catalog-event contract. |
-| `API_HOST` | `api` | Internal `catalog-api` host used only by the constrained admin proxy. |
+| `API_HOST` | `api` | Internal `catalog-api` host used by the constrained admin proxy and to validate admin sessions. |
 | `API_PORT` | `8004` | Internal `catalog-api` port. |
+| `SESSION_CACHE_SECONDS` | `30` | How long a confirmed admin session is trusted before the console asks `catalog-api` again. Clamped to 0–30; `0` validates every request. Only positive answers are cached, and never past the session's own expiry. |
 
 Publish and ack rates are not broker-reported values: the Prometheus plugin exposes cumulative counters, and the console divides the counter delta between consecutive two-second polls by the elapsed time. A queue's first sample, the first sample after it was missing from a poll, and an interval in which a counter went down (a reset) have no computable rate and report `0.0`. If a scrape fails or returns a non-200 status, the console logs a warning and marks that pipeline's queue data unavailable (`queues_available: false` in `/api/metrics` and the WebSocket payload, `null` for the pipeline in `/api/queues`) instead of reporting an empty pipeline.
 

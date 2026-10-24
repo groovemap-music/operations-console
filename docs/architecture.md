@@ -5,7 +5,7 @@ The operations console is the human-facing observability and privileged-administ
 ```mermaid
 flowchart LR
     Operator[Operator browser] -->|HTTP and WebSocket :8003| Console[operations-console]
-    Console -->|authenticated admin proxy| Catalog[catalog-api]
+    Console -->|session validation and authenticated admin proxy| Catalog[catalog-api]
     Catalog -->|trigger| DiscogsIngestion[discogs-ingestion]
     Catalog -->|trigger| MusicBrainzIngestion[musicbrainz-ingestion]
     DiscogsIngestion -->|groovemap-discogs events| RabbitMQ[(RabbitMQ)]
@@ -46,7 +46,22 @@ the only supported promotion path.
 
 ## Browser and API surfaces
 
-The public monitoring page receives live metrics over WebSocket and exposes read-only health endpoints. The administrator page sends bearer-authenticated requests through a constrained proxy whose allowed paths come from the promoted `catalog-api` contract. Queue names are derived from the promoted exchange prefixes; arbitrary queue and URL input is rejected.
+The console is one shell at `/`: a login form, then a live Overview followed by the admin tabs. Only `/health` and the shell's static assets are public. Every console data route requires a bearer that `catalog-api` confirms through the promoted `admin_session` operation; the console caches a confirmed session for at most 30 seconds, keyed by a digest of the token, and treats any other answer as no session. The live Overview reaches its WebSocket with a single-use, 30-second ticket from an authenticated `POST /api/ws-ticket`, which the console strips from the query string before logging or tracing. Admin tabs send bearer-authenticated requests through a constrained proxy whose allowed paths come from the promoted `catalog-api` contract. Queue names are derived from the promoted exchange prefixes; arbitrary queue and URL input is rejected.
+
+```mermaid
+sequenceDiagram
+    participant Browser
+    participant Console as operations-console
+    participant API as catalog-api
+    Browser->>Console: Data request with bearer
+    Console->>API: GET /api/admin/auth/session (cached up to 30 s)
+    API-->>Console: 200 session, or 401/403
+    Console-->>Browser: Data, or 401 and a reason
+    Browser->>Console: POST /api/ws-ticket with bearer
+    Console-->>Browser: Single-use ticket, 30 s
+    Browser->>Console: WebSocket /ws?ticket=...
+    Console-->>Browser: Live metrics, or close 4401
+```
 
 ```mermaid
 sequenceDiagram
