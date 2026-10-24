@@ -95,6 +95,60 @@ class TestDashboardUI:
         expect(banner.first).to_have_class(hidden)
         expect(dial).to_have_text("2.0")
 
+    def test_a_synthetic_consumer_and_entity_type_render_without_markup_changes(self, page: Page) -> None:
+        """The Overview draws whatever /api/topology describes: a third consumer and a new entity type appear."""
+        entities = ["artists", "release-groups", "tracks"]
+
+        def queues_of(consumer: str) -> list[dict]:
+            return [
+                {
+                    "entity": entity,
+                    "name": f"acme-synthetic-{consumer}-{entity}",
+                    "dead_letter_exchange": f"acme-synthetic-{consumer}-{entity}.dlx",
+                    "dead_letter_queue": f"acme-synthetic-{consumer}-{entity}.dlq",
+                }
+                for entity in entities
+            ]
+
+        topology = {
+            "pipelines": [
+                {
+                    "id": "synthetic",
+                    "label": "Synthetic",
+                    "queue_prefix": "acme-synthetic",
+                    "entity_types": entities,
+                    "producer": {"name": "extractor-synthetic", "label": "Extractor", "exchanges": []},
+                    "consumers": [
+                        {"name": name, "label": name.capitalize(), "datastore": store, "queues": queues_of(name)}
+                        for name, store in (("alpha", "neo4j"), ("beta", "postgresql"), ("gamma", "valkey"))
+                    ],
+                    "dead_letter_queues": [],
+                }
+            ],
+            "datastores": [{"id": "neo4j", "label": "Neo4j"}, {"id": "valkey", "label": "Valkey"}],
+        }
+        page.route("**/api/topology", lambda route: route.fulfill(json=topology))
+        sign_in(page)
+        page.evaluate("() => { window.dashboard.ws.onmessage = null; }")
+        queue = {
+            "name": "acme-synthetic-gamma-tracks",
+            "messages": 7,
+            "messages_ready": 7,
+            "messages_unacknowledged": 0,
+            "consumers": 1,
+            "message_rate": 1.5,
+            "ack_rate": None,
+        }
+        payload = {"pipelines": {"synthetic": {"services": [], "queues": [queue], "queues_available": True}}, "databases": []}
+        page.evaluate("(data) => window.dashboard.updateDashboard(data)", payload)
+
+        expect(page.locator("#service-gamma")).to_be_visible(timeout=10000)
+        expect(page.locator("#synthetic-gamma-tracks-count")).to_have_text("7")
+        expect(page.locator("#synthetic-rate-text-gamma-tracks-publish")).to_have_text("1.5")
+        expect(page.locator("#synthetic-rate-text-gamma-tracks-ack")).to_have_text("—")
+        expect(page.locator("#synthetic-bar-tracks-gamma")).to_be_visible()
+        expect(page.locator("#service-gamma [data-datastore]")).to_have_text("→ Valkey")
+
     def test_database_cards_display(self, page: Page) -> None:
         """Test that database cards are displayed."""
         sign_in(page)

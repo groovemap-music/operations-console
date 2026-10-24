@@ -8,7 +8,7 @@ from tests.fake_catalog_api import ADMIN_EMAIL, ADMIN_PASSWORD
 
 CONSOLE_URL = "http://localhost:8003"
 CATALOG_URL = "http://127.0.0.1:18004"
-DATA_ROUTES = ["/api/metrics", "/api/services", "/api/queues", "/api/databases", "/api/queue-prefixes", "/api/session"]
+DATA_ROUTES = ["/api/metrics", "/api/services", "/api/queues", "/api/databases", "/api/queue-prefixes", "/api/topology", "/api/session"]
 
 
 def sign_in(page: Page, email: str = ADMIN_EMAIL) -> None:

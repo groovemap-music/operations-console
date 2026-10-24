@@ -61,9 +61,18 @@ def test_every_tab_has_a_panel_and_only_the_overview_starts_visible() -> None:
 
 def test_the_overview_keeps_the_live_view_content() -> None:
     overview = SHELL[SHELL.index('id="tab-overview"') : SHELL.index("<!-- /tab-overview -->")]
-    for element_id in ("pipeline-discogs", "pipeline-musicbrainz", "db-neo4j", "db-postgresql", "activityLog", "lastUpdated"):
+    for element_id in ("pipelines", "db-neo4j", "db-postgresql", "activityLog", "lastUpdated"):
         assert f'id="{element_id}"' in overview, element_id
     assert 'id="dlq-toggle"' in SHELL
+
+
+def test_the_overview_markup_names_no_pipeline_queue_consumer_or_entity() -> None:
+    """Pipelines are drawn from /api/topology, so the shell carries no per-pipeline element ids."""
+    overview = SHELL[SHELL.index('id="tab-overview"') : SHELL.index("<!-- /tab-overview -->")]
+    ids = re.findall(r'\bid="([^"]+)"', overview)
+    vocabulary = ("discogs", "musicbrainz", "graphinator", "tableinator", "extractor", "masters", "releases", "artists", "labels", "rate-", "bar-")
+    assert [i for i in ids if any(word in i for word in vocabulary)] == []
+    assert "data-queues-unavailable" not in overview
 
 
 def test_the_console_and_login_are_both_hidden_until_the_script_decides() -> None:

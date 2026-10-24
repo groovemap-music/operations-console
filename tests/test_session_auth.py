@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from tests.fake_catalog_api import FakeCatalogApi
 
 
-DATA_ROUTES = ["/api/metrics", "/api/services", "/api/queues", "/api/databases", "/api/queue-prefixes", "/api/session"]
+DATA_ROUTES = ["/api/metrics", "/api/services", "/api/queues", "/api/databases", "/api/queue-prefixes", "/api/topology", "/api/session"]
 
 
 def _bearer(token: str) -> dict[str, str]:

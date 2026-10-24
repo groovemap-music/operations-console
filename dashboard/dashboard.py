@@ -54,6 +54,7 @@ from dashboard.session_auth import (
     take_ws_ticket,
 )
 from dashboard.session_auth import gate as session_gate
+from dashboard.topology import build_topology
 
 
 # Suppress per-request httpx INFO logs (health checks every 2s are too noisy)
@@ -224,6 +225,9 @@ class WebSocketConnections:
 # healthy-looking pipeline while queues backed up (retained queue-prefix regression).
 PIPELINE_CONFIGS: dict[str, dict] = {
     "discogs": {
+        "label": "Discogs",
+        "producer": "extractor-discogs",
+        "consumers": [{"name": "graphinator", "datastore": "neo4j"}, {"name": "tableinator", "datastore": "postgresql"}],
         "services": [
             ("extractor-discogs", "http://extractor-discogs:8000/health"),
             ("graphinator", "http://graphinator:8001/health"),
@@ -233,6 +237,9 @@ PIPELINE_CONFIGS: dict[str, dict] = {
         "entity_types": ["masters", "releases", "artists", "labels"],
     },
     "musicbrainz": {
+        "label": "MusicBrainz",
+        "producer": "extractor-musicbrainz",
+        "consumers": [{"name": "brainzgraphinator", "datastore": "neo4j"}, {"name": "brainztableinator", "datastore": "postgresql"}],
         "services": [
             ("extractor-musicbrainz", "http://extractor-musicbrainz:8000/health"),
             ("brainzgraphinator", "http://brainzgraphinator:8011/health"),
@@ -740,6 +747,12 @@ async def get_queue_prefixes() -> JSONResponse:
     button would 404 without this (retained queue-prefix regression).
     """
     return JSONResponse(content={"discogs": DISCOGS_EXCHANGE_PREFIX, "musicbrainz": MUSICBRAINZ_EXCHANGE_PREFIX})
+
+
+@app.get("/api/topology", dependencies=_SESSION_REQUIRED)
+async def get_topology() -> JSONResponse:
+    """Describe the pipelines the Overview lays out: producers, per-entity queues, consumers, DLQs, datastores."""
+    return JSONResponse(content=build_topology(PIPELINE_CONFIGS))
 
 
 @app.get("/api/databases", dependencies=_SESSION_REQUIRED)
