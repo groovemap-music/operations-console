@@ -44,6 +44,8 @@ from dashboard.deep_links import router as deep_links_router
 from dashboard.events import EventDetector
 from dashboard.grafana_alerts import router as grafana_alerts_router
 from dashboard.history import router as history_router
+from dashboard.progress import configure as configure_progress
+from dashboard.progress import router as progress_router
 from dashboard.queue_metrics import RateTracker, parse_queue_samples, scrape_params
 from dashboard.session_auth import (
     WS_CLOSE_UNAUTHENTICATED,
@@ -902,6 +904,8 @@ session_gate.configure(_admin_api_host, _admin_api_port, cache_seconds=cache_sec
 app.include_router(admin_public_router)
 app.include_router(admin_router, dependencies=_SESSION_REQUIRED)
 app.include_router(history_router, dependencies=_SESSION_REQUIRED)
+configure_progress(build_topology(PIPELINE_CONFIGS)["pipelines"])
+app.include_router(progress_router, dependencies=_SESSION_REQUIRED)
 app.include_router(grafana_alerts_router, dependencies=_SESSION_REQUIRED)
 app.include_router(deep_links_router, dependencies=_SESSION_REQUIRED)
 

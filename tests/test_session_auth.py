@@ -63,7 +63,7 @@ DATA_ROUTES = [
     "/api/session",
 ]
 # Answer 503 without VictoriaMetrics, so they are probed for the gate only.
-HISTORY_ROUTES = ["/api/history/queues", "/api/history/health"]
+HISTORY_ROUTES = ["/api/history/queues", "/api/history/health", "/api/progress/discogs?start=2026-01-01T00:00:00Z"]
 
 
 def _bearer(token: str) -> dict[str, str]:
