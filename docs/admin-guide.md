@@ -241,88 +241,22 @@ identifiers even though the owning repositories have descriptive names. The opti
 
 ### Queue and health history endpoints
 
-The browser calls the console routes below. The console forwards them to the corresponding
-fixed paths in the promoted `catalog-api` contract.
+The console reads history from VictoriaMetrics itself; `catalog-api` no longer serves metrics
+history. The browser calls the console routes below, which are behind the admin session.
 
-| Data | Console route | Upstream `catalog-api` route |
-| --- | --- | --- |
-| Queue history | `GET /admin/api/queues/history?range=<range>` | `GET /api/admin/queues/history?range=<range>` |
-| Service health | `GET /admin/api/health/history?range=<range>` | `GET /api/admin/health/history?range=<range>` |
+| Data | Console route |
+| --- | --- |
+| Queue history | `GET /api/history/queues?range=<range>` |
+| Service health | `GET /api/history/health?range=<range>` |
 
-Both endpoints require admin authentication (Bearer token).
-
-**Valid range values:**
-
-| Range  | Description             | Data Granularity  |
-| ------ | ----------------------- | ----------------- |
-| `1h`   | Last 1 hour             | 5-minute buckets  |
-| `6h`   | Last 6 hours            | 5-minute buckets  |
-| `24h`  | Last 24 hours (default) | 15-minute buckets |
-| `7d`   | Last 7 days             | 1-hour buckets    |
-| `30d`  | Last 30 days            | 6-hour buckets    |
-| `90d`  | Last 90 days            | 1-day buckets     |
-| `365d` | Last 365 days           | 1-day buckets     |
-
-Granularity is selected automatically based on the requested range. Omitting the `range` parameter defaults to `24h`.
-
-### Historical metrics collector
-
-A background collector runs inside `catalog-api`, not operations-console, and periodically
-samples queue depths and service health. It stores history in PostgreSQL for these queries.
-
-The collector interval is controlled by the `METRICS_COLLECTION_INTERVAL` environment variable (default: 300 seconds / 5 minutes).
-
-### Collector environment variables
-
-| Variable                      | Default | Description                                                                              |
-| ----------------------------- | ------- | ---------------------------------------------------------------------------------------- |
-| `METRICS_RETENTION_DAYS`      | `366`   | How many days of metrics to retain in the database. Older rows are pruned automatically. |
-| `METRICS_COLLECTION_INTERVAL` | `300`   | Seconds between each metrics collection cycle in the background collector.               |
-
-These variables configure `catalog-api`; they are not operations-console variables. Set them
-on the API service through deployment configuration:
-
-```dotenv
-METRICS_RETENTION_DAYS=366
-METRICS_COLLECTION_INTERVAL=300
-```
-
-### Database tables
-
-`database-schema` owns the persistence definitions. `catalog-api` writes and queries two
-PostgreSQL tables:
-
-**`queue_metrics`** — RabbitMQ queue depth snapshots:
-
-| Column                    | Type         | Description                                      |
-| ------------------------- | ------------ | ------------------------------------------------ |
-| `id`                      | bigint       | Primary key (generated always as identity)       |
-| `recorded_at`             | timestamptz  | When the sample was taken                        |
-| `queue_name`              | varchar(100) | Name of the RabbitMQ queue                       |
-| `messages_ready`          | integer      | Number of ready messages at sample time          |
-| `messages_unacknowledged` | integer      | Number of unacknowledged messages at sample time |
-| `consumers`               | integer      | Number of active consumers at sample time        |
-| `publish_rate`            | real         | Message publish rate                             |
-| `ack_rate`                | real         | Message acknowledgement rate                     |
-
-**`service_health_metrics`** — Per-service health check results:
-
-| Column             | Type        | Description                                             |
-| ------------------ | ----------- | ------------------------------------------------------- |
-| `id`               | bigint      | Primary key (generated always as identity)              |
-| `recorded_at`      | timestamptz | When the sample was taken                               |
-| `service_name`     | varchar(50) | Runtime service identity (for example, the aliases for `discogs-graph-enricher` and `discogs-sql-loader`) |
-| `status`           | varchar(20) | Health status (`healthy`, `unhealthy`, `unknown`)       |
-| `response_time_ms` | real        | Health check response time in milliseconds              |
-| `endpoint_stats`   | jsonb       | Per-endpoint latency statistics (API service only)      |
-
-Both tables are indexed on `recorded_at` for efficient range queries. Rows older than `METRICS_RETENTION_DAYS` are pruned automatically.
+Valid `range` values are `1h`, `6h`, `24h` (default), `7d`, `30d` and `90d`. See
+[configuration](configuration.md) for `VICTORIA_METRICS_URL` and the series the tabs depend on.
 
 ### Queue Trends and System Health tabs
 
 The console (`http://<host>:8003`) exposes two tabs backed by the history endpoints:
 
-- **Queue Trends** — Line charts showing message depth over time for each RabbitMQ queue. Use the range selector (1h / 6h / 24h / 7d / 30d / 90d / 365d) to zoom in or out.
+- **Queue Trends** — Line charts showing message depth over time for each RabbitMQ queue. Use the range selector to zoom in or out.
 - **System Health** — Status timeline showing per-service health over the selected range. Unhealthy periods are highlighted in red; response time is shown as a secondary series.
 
 ## Extraction Analysis: Media Mapping Coverage
