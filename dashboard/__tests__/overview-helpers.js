@@ -10,7 +10,7 @@ const DASHBOARD_JS_PATH = resolve(__dirname, '..', 'static', 'dashboard.js');
 function loadDashboardScript() {
     const code = readFileSync(DASHBOARD_JS_PATH, 'utf-8');
     const withoutAutoInit = code.replace(/document\.addEventListener\(\s*['"]DOMContentLoaded['"][\s\S]*$/, '');
-    const wrapped = `(function() {\n${withoutAutoInit}\nglobalThis.__Dashboard = Dashboard;\nglobalThis.__QueueHealth = QueueHealth;\nglobalThis.__Attention = Attention;\nglobalThis.__matrixLayout = matrixLayout;\n})();`;
+    const wrapped = `(function() {\n${withoutAutoInit}\nglobalThis.__Dashboard = Dashboard;\nglobalThis.__QueueHealth = QueueHealth;\nglobalThis.__Attention = Attention;\nglobalThis.__DeepLinks = DeepLinks;\nglobalThis.__matrixLayout = matrixLayout;\n})();`;
     vm.runInThisContext(wrapped, { filename: DASHBOARD_JS_PATH });
 }
 
@@ -29,6 +29,12 @@ export function loadQueueHealth() {
 export function loadAttention() {
     loadDashboardScript();
     return globalThis.__Attention;
+}
+
+/** The deep-link builder, as dashboard.js defines it. */
+export function loadDeepLinks() {
+    loadDashboardScript();
+    return globalThis.__DeepLinks;
 }
 
 /** The shape /api/topology returns, built the way the server derives it. */
@@ -83,7 +89,7 @@ export const DRAWER_MARKUP = `
 <dialog id="queue-drawer">
   <h2 id="queue-drawer-title"></h2><p id="queue-drawer-subtitle"></p>
   <button id="queue-drawer-close" type="button">Close</button>
-  <p id="queue-drawer-state"></p><dl id="queue-drawer-numbers"></dl>
+  <p id="queue-drawer-state"></p><nav id="queue-drawer-links" hidden></nav><dl id="queue-drawer-numbers"></dl>
 </dialog>`;
 
 /** A dashboard with the live-view side effects stubbed, an empty `#pipelines` container, and the drawer. */
@@ -107,6 +113,8 @@ export function makeDashboard({ narrow = false } = {}) {
         alerts: null,
         attentionSeen: new Set(),
         attentionCollapsed: false,
+        linkBases: { grafana: null, traces: null },
+        linkSets: new Map(),
     });
     for (const method of ['updateServices', 'updateDatabases', 'updateLastUpdated', 'renderActivityLog']) {
         dashboard[method] = vi.fn();

@@ -57,6 +57,34 @@ configured but does not answer, the token file cannot be read, or the response i
 list, the route answers `available: false` with a note and the bar shows it beside the derived
 items.
 
+## Grafana and trace links
+
+Each service, queue, and datastore links into the provisioned Grafana dashboards instead of
+redrawing their charts. The links need no token: they are plain URLs the operator's browser opens
+in a new tab (`rel="noopener noreferrer"`), so they work with `GRAFANA_URL` alone.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `GRAFANA_URL` | unset | Base URL of Grafana. With it unset, no Grafana or trace link is drawn. |
+| `TRACES_URL` | `GRAFANA_URL` | Optional base URL of the Grafana that hosts the `groovemap-traces` dashboard, for a deployment that serves traces from a different Grafana. VictoriaTraces itself serves only the Tempo query API, which Grafana reads, so trace links are a Grafana dashboard and not a separate trace UI. |
+
+A base that is not an `http` or `https` URL is treated as unset. The console serves the bases to
+the signed-in browser from `GET /api/links`, behind the admin session; the browser adds the
+dashboard variables and the current range. Every value is URL-encoded, and the link carries the
+shared time range as `from=now-<range>&to=now` (24h when none is chosen).
+
+| Where | Link | Dashboard and variables |
+| --- | --- | --- |
+| Queue detail drawer | Queue | `groovemap-infrastructure`, `var-queue` = the queue |
+| Queue detail drawer | Dead-letter queue | `groovemap-infrastructure`, `var-queue` = the `.dlq` queue |
+| Queue detail drawer | Pipeline | `groovemap-pipeline-overview`, `var-source` = `discogs` or `musicbrainz` |
+| Queue detail drawer, consumer heading | Consumer | `groovemap-consumers`, `var-service` = the consumer |
+| Extractor heading | Grafana | `groovemap-ingestion`, `var-service` = the extractor, `var-source` = the pipeline |
+| Extractor and consumer headings, drawer | Traces | `groovemap-traces`, `var-service` = the service |
+| Neo4j card | Grafana | `groovemap-neo4j` (all services) |
+| PostgreSQL card | Grafana | `groovemap-infrastructure`: PostgreSQL has no dashboard of its own, its panels sit beside RabbitMQ and Valkey |
+| Attention item for a queue or a service | the matching links above | as above |
+
 ## HTTP, logging, source, and telemetry
 
 | Variable | Default | Meaning |

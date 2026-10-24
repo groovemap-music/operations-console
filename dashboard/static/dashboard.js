@@ -237,6 +237,69 @@ const Attention = (() => {
     return { ALERT_POLL_MS, SERVICE_OK, DATASTORE_OK, derive, overall };
 })();
 
+// ─── Deep links: from the console into Grafana and traces ─────────────────────
+//
+// Pure link building. The console shows live state and a short window of history; the provisioned
+// Grafana dashboards hold everything longer, so each service, queue, and datastore links there
+// instead of redrawing their charts. A link carries the dashboard's own variables and the console's
+// shared time range. With a base URL unset there is no link at all, never a broken one.
+const DeepLinks = (() => {
+    const DEFAULT_RANGE = '24h';
+    const RANGE_PATTERN = /^\d+[mhd]$/;
+    // The provisioned dashboards' uids (deployment config/grafana/dashboards).
+    const DASHBOARD = {
+        pipeline: 'groovemap-pipeline-overview',   // var: source (discogs | musicbrainz)
+        consumers: 'groovemap-consumers',          // var: service
+        infrastructure: 'groovemap-infrastructure', // var: queue (RabbitMQ), plus PostgreSQL and Valkey panels
+        ingestion: 'groovemap-ingestion',          // vars: service, source
+        neo4j: 'groovemap-neo4j',                  // var: service (the writer), All by default
+        traces: 'groovemap-traces',                // vars: service, span
+    };
+
+    // The console's range ("24h", "7d") as Grafana's relative from/to.
+    function timeRange(range) {
+        return { from: `now-${RANGE_PATTERN.test(range) ? range : DEFAULT_RANGE}`, to: 'now' };
+    }
+
+    // `{base}/d/{uid}?var-x=..&from=..&to=..`, every value URL-encoded; null when the base is unset.
+    function dashboardUrl(base, key, vars, range) {
+        if (!base || !DASHBOARD[key]) return null;
+        const { from, to } = timeRange(range);
+        const query = [...Object.entries(vars || {}).map(([name, value]) => [`var-${name}`, value]), ['from', from], ['to', to]]
+            .map(([name, value]) => `${encodeURIComponent(name)}=${encodeURIComponent(value)}`).join('&');
+        return `${base}/d/${encodeURIComponent(DASHBOARD[key])}?${query}`;
+    }
+
+    // Grafana panels vs. the trace view, which may be hosted under its own base URL.
+    function resolve(bases, spec, range) {
+        const base = spec.dashboard === 'traces' ? bases?.traces : bases?.grafana;
+        return dashboardUrl(base, spec.dashboard, spec.vars, range);
+    }
+
+    // What each kind of thing links to: `[{ label, dashboard, vars }]`.
+    const specs = {
+        queue: (pipeline, queue, deadLetterQueue) => [
+            { label: 'Queue', dashboard: 'infrastructure', vars: { queue } },
+            ...(deadLetterQueue ? [{ label: 'Dead-letter queue', dashboard: 'infrastructure', vars: { queue: deadLetterQueue } }] : []),
+            { label: 'Pipeline', dashboard: 'pipeline', vars: { source: pipeline } },
+        ],
+        producer: (pipeline, service) => [
+            { label: 'Grafana', dashboard: 'ingestion', vars: { service, source: pipeline } },
+            { label: 'Traces', dashboard: 'traces', vars: { service } },
+        ],
+        consumer: (service) => [
+            { label: 'Grafana', dashboard: 'consumers', vars: { service } },
+            { label: 'Traces', dashboard: 'traces', vars: { service } },
+        ],
+        datastore: (id) => (id === 'neo4j'
+            ? [{ label: 'Grafana', dashboard: 'neo4j', vars: {} }]
+            // PostgreSQL has no dashboard of its own; its panels sit on the infrastructure one.
+            : id === 'postgresql' ? [{ label: 'Grafana', dashboard: 'infrastructure', vars: {} }] : []),
+    };
+
+    return { DASHBOARD, timeRange, dashboardUrl, resolve, specs };
+})();
+
 // Below this viewport width a pipeline with more than two consumers switches to the stacked,
 // self-labelled cell layout (the matrix CSS in index.html holds the same breakpoint).
 const MATRIX_STACKED_MAX_WIDTH = 479;
@@ -284,6 +347,11 @@ class Dashboard {
         this.attentionSeen = new Set();
         this.attentionCollapsed = false;
 
+        // Deep links: the Grafana and traces base URLs the console serves (null until asked, and
+        // null for a base that is unset), and the specs behind every link container on the page.
+        this.linkBases = { grafana: null, traces: null };
+        this.linkSets = new Map();
+
         document.addEventListener('console:authenticated', (event) => this.start(event.detail?.token));
         document.addEventListener('console:signed-out', () => this.stop());
 
@@ -293,6 +361,11 @@ class Dashboard {
         const drawer = document.getElementById('queue-drawer');
         drawer?.addEventListener('close', () => this._onDrawerClosed());
         document.getElementById('queue-drawer-close')?.addEventListener('click', () => this.closeQueueDrawer());
+        document.querySelectorAll('[data-datastore-links]').forEach(el => this._linkSet(el, DeepLinks.specs.datastore(el.dataset.datastoreLinks)));
+        // The shared range lives in admin.js; a link follows it as soon as it changes.
+        document.addEventListener('click', (event) => {
+            if (event.target.closest?.('.range-btn')) setTimeout(() => this._refreshLinks(), 0);
+        });
         document.getElementById('attention-toggle')?.addEventListener('click', () => {
             this.attentionCollapsed = !this.attentionCollapsed;
             this.updateAttention();
@@ -315,6 +388,7 @@ class Dashboard {
         this.fetchInitialData();
         this.initializeWebSocket();
         this.startAlertPolling();
+        this.fetchLinkBases();
     }
 
     stop() {
@@ -583,7 +657,9 @@ class Dashboard {
             control = this._el('button', { cls: 'attention-link', attrs: { ...attrs, type: 'button' } }, mark, ` ${item.text}`);
             control.addEventListener('click', () => this.goToAttention(item.target));
         }
-        return this._el('li', { cls: 'attention-item', attrs: { 'data-severity': item.severity, 'data-attention-id': item.id } }, control);
+        const links = this._el('span', { cls: 'mx-links attention-links', attrs: { 'aria-label': 'Grafana links' } });
+        this._linkSet(links, this._attentionLinkSpecs(item.target));
+        return this._el('li', { cls: 'attention-item', attrs: { 'data-severity': item.severity, 'data-attention-id': item.id } }, control, links);
     }
 
     // Show the Overview (or the item's tab) and take the operator to the thing itself.
@@ -629,6 +705,92 @@ class Dashboard {
         if (!this.active || this.token !== token) return;
         this.alerts = alerts.configured ? alerts : null;
         this.updateAttention();
+    }
+
+    // ─── Deep links ───────────────────────────────────────────────────────────
+
+    // The base URLs come from the console (never the page), behind the session like every data route.
+    async fetchLinkBases() {
+        if (!this.active) return;
+        const token = this.token;
+        let bases = { grafana: null, traces: null };
+        try {
+            const response = await fetch('/api/links', { headers: this._authHeaders(), cache: 'no-store' });
+            if (SESSION_REFUSALS.has(response.status)) {
+                this.requestSessionCheck();
+                return;
+            }
+            if (response.ok) {
+                const body = await response.json();
+                bases = { grafana: body.grafana || null, traces: body.traces || null };
+            }
+        } catch {
+            // No links is the safe answer when the bases cannot be read.
+        }
+        if (!this.active || this.token !== token) return;
+        this.linkBases = bases;
+        this._refreshLinks();
+    }
+
+    _linkRange() {
+        return localStorage.getItem('console_range') || '24h';
+    }
+
+    // Register `container` as showing `specs` and draw it. An empty container stays hidden, so a
+    // base URL that is unset leaves no stray label behind.
+    _linkSet(container, specs, labelPrefix = '') {
+        if (!container) return;
+        this.linkSets.set(container, { specs, labelPrefix });
+        this._renderLinkSet(container);
+    }
+
+    _renderLinkSet(container) {
+        const { specs, labelPrefix } = this.linkSets.get(container);
+        const range = this._linkRange();
+        const links = specs.flatMap(spec => {
+            const href = DeepLinks.resolve(this.linkBases, spec, range);
+            if (!href) return [];
+            const label = labelPrefix ? `${labelPrefix} ${spec.label.toLowerCase()}` : spec.label;
+            const subject = spec.vars.service || spec.vars.queue || spec.vars.source;
+            const name = `${label}${subject ? ` for ${subject}` : ''}${spec.dashboard === 'traces' ? '' : ' in Grafana'}`;
+            return [this._el('a', {
+                cls: 'mx-link',
+                text: label,
+                attrs: { href, target: '_blank', rel: 'noopener noreferrer', 'data-link': spec.dashboard, 'aria-label': `${name}, opens in a new tab` },
+            })];
+        });
+        // Live updates redraw the drawer; keep the anchors (and a focused one) when nothing changed.
+        const key = links.map(a => `${a.textContent}|${a.href}`).join('\n');
+        if (container.dataset.linkKey === key) return;
+        container.dataset.linkKey = key;
+        container.replaceChildren(...links);
+        container.hidden = links.length === 0;
+    }
+
+    _refreshLinks() {
+        for (const container of [...this.linkSets.keys()]) {
+            if (container.isConnected) this._renderLinkSet(container);
+            else this.linkSets.delete(container);
+        }
+    }
+
+    _producerOrConsumerSpecs(serviceName) {
+        for (const pipeline of this.topology?.pipelines || []) {
+            if (pipeline.producer.name === serviceName) return DeepLinks.specs.producer(pipeline.id, serviceName);
+            if (pipeline.consumers.some(consumer => consumer.name === serviceName)) return DeepLinks.specs.consumer(serviceName);
+        }
+        return [];
+    }
+
+    // What an attention item links to besides taking the operator to the thing on this page.
+    _attentionLinkSpecs(target) {
+        if (target.type === 'service') return this._producerOrConsumerSpecs(target.service);
+        if (target.type === 'cell') {
+            const pipeline = this._pipeline(target.pipeline);
+            const queue = pipeline?.consumers.find(c => c.name === target.consumer)?.queues.find(q => q.entity === target.entity);
+            return queue ? DeepLinks.specs.queue(pipeline.id, queue.name, queue.dead_letter_queue).slice(0, 2) : [];
+        }
+        return [];
     }
 
     // ─── Initial data fetch ───────────────────────────────────────────────────
@@ -798,6 +960,12 @@ class Dashboard {
         return el;
     }
 
+    _linkContainer(specs) {
+        const container = this._el('span', { cls: 'mx-links', attrs: { 'aria-label': 'Grafana links' } });
+        this._linkSet(container, specs);
+        return container;
+    }
+
     _entityLabel(entity) {
         return entity.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
     }
@@ -845,7 +1013,8 @@ class Dashboard {
                 this._el('span', { cls: 'mx-producer-label', text: producer.label }),
                 badge(`${producerPrefix}-status-badge`),
                 this._el('span', { cls: 'mx-dim', text: 'Total records' }),
-                this._el('span', { id: `${producerPrefix}-total-records`, cls: 'mx-high mono', text: '—' })),
+                this._el('span', { id: `${producerPrefix}-total-records`, cls: 'mx-high mono', text: '—' }),
+                this._linkContainer(DeepLinks.specs.producer(pipeline.id, producer.name))),
             this._el('span', {
                 cls: 'mx-unavailable-banner hidden',
                 text: 'Queue metrics unavailable',
@@ -856,7 +1025,8 @@ class Dashboard {
         consumers.forEach(consumer => cells.push(this._el('div', { id: `service-${consumer.name}`, cls: 'mx-colhead' },
             this._el('b', { cls: 'mx-consumer', text: consumer.label }),
             this._el('span', { cls: 'mx-datastore', text: this._datastoreLabel(consumer.datastore), attrs: { 'data-datastore': consumer.datastore } }),
-            badge(`${pipeline.id}-${consumer.name}-status-badge`))));
+            badge(`${pipeline.id}-${consumer.name}-status-badge`),
+            this._linkContainer(DeepLinks.specs.consumer(consumer.name)))));
         types.forEach(entity => {
             cells.push(this._el('div', { cls: 'mx-rowhead' },
                 this._el('span', { cls: 'mx-entity', text: this._entityLabel(entity) }),
@@ -1098,6 +1268,15 @@ class Dashboard {
         if (!consumer || !title || !numbers) return;
         const model = this._cellModel(pipeline, consumer, ref.entity);
         const { health, dlq, last, dlqLast, samples, dlqSamples, unavailable } = model;
+
+        const links = document.getElementById('queue-drawer-links');
+        if (links) {
+            const queue = model.queue;
+            this._linkSet(links, [
+                ...(queue ? DeepLinks.specs.queue(pipeline.id, queue.name, queue.dead_letter_queue) : []),
+                ...DeepLinks.specs.consumer(consumer.name).map(spec => ({ ...spec, label: `Consumer ${spec.label === 'Traces' ? 'traces' : ''}`.trim() })),
+            ]);
+        }
 
         title.textContent = `${this._entityLabel(ref.entity)} → ${consumer.label}`;
         if (subtitle) subtitle.textContent = `${pipeline.label} pipeline · ${this._datastoreLabel(consumer.datastore)}`;

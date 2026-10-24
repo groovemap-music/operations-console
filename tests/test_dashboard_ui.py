@@ -272,6 +272,39 @@ class TestDashboardUI:
         expect(drawer).to_be_hidden()
         expect(cell).to_be_focused()
 
+    def test_the_drawer_links_to_grafana_with_its_variables_and_the_shared_range(self, page: Page) -> None:
+        """With the bases served, the drawer links the queue, its DLQ, the pipeline, and the consumer."""
+        page.route("**/api/links", lambda route: route.fulfill(json={"grafana": "https://grafana.test", "traces": "https://traces.test"}))
+        page.add_init_script("localStorage.setItem('console_range', '7d')")
+        show_scenario(page, DESKTOP)
+        page.locator("#discogs-tableinator-releases-cell").click()
+        queue = "groovemap-discogs-tableinator-releases"
+        links = page.locator("#queue-drawer-links a")
+        hrefs = [links.nth(i).get_attribute("href") for i in range(links.count())]
+        assert hrefs == [
+            f"https://grafana.test/d/groovemap-infrastructure?var-queue={queue}&from=now-7d&to=now",
+            f"https://grafana.test/d/groovemap-infrastructure?var-queue={queue}.dlq&from=now-7d&to=now",
+            "https://grafana.test/d/groovemap-pipeline-overview?var-source=discogs&from=now-7d&to=now",
+            "https://grafana.test/d/groovemap-consumers?var-service=tableinator&from=now-7d&to=now",
+            "https://traces.test/d/groovemap-traces?var-service=tableinator&from=now-7d&to=now",
+        ]
+        expect(links.first).to_have_attribute("rel", "noopener noreferrer")
+        expect(links.first).to_have_attribute("target", "_blank")
+        expect(page.locator("#service-extractor-discogs a").first).to_have_attribute(
+            "href", "https://grafana.test/d/groovemap-ingestion?var-service=extractor-discogs&var-source=discogs&from=now-7d&to=now"
+        )
+        expect(page.locator('[data-datastore-links="neo4j"] a')).to_have_attribute(
+            "href", "https://grafana.test/d/groovemap-neo4j?from=now-7d&to=now"
+        )
+
+    def test_no_link_is_drawn_when_the_bases_are_unset(self, page: Page) -> None:
+        """An unset GRAFANA_URL leaves no link, not a broken one."""
+        page.route("**/api/links", lambda route: route.fulfill(json={"grafana": None, "traces": None}))
+        show_scenario(page, DESKTOP)
+        page.locator("#discogs-tableinator-releases-cell").click()
+        expect(page.locator("#queue-drawer")).to_be_visible()
+        assert page.locator("a.mx-link").count() == 0
+
     def test_unavailable_queue_metrics_are_explicit_and_recover(self, page: Page) -> None:
         """A failed broker scrape shows "Queue metrics unavailable" and unavailable cells, then clears."""
         sign_in(page)
