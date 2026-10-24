@@ -61,8 +61,18 @@ class MockDashboardApp(DashboardApp):
         self.include_musicbrainz = include_musicbrainz
 
     async def startup(self) -> None:
-        """Run the real collection loop; no datastore clients are opened."""
-        self.update_task = asyncio.create_task(self.collect_metrics_loop())
+        """Take the first reading, then run the real collection loop; no datastore clients are opened.
+
+        The first reading is in place (and is the event baseline) before the app serves a request, so a
+        request or a seeded event cannot race the loop's first poll, which waits one interval.
+        """
+        self.latest_metrics = await self.collect_all_metrics()
+        self.events.observe(self.latest_metrics)
+        self.update_task = asyncio.create_task(self._loop_after_first_interval())
+
+    async def _loop_after_first_interval(self) -> None:
+        await asyncio.sleep(2)
+        await self.collect_metrics_loop()
 
     async def shutdown(self) -> None:
         """Stop the loop and close any live sockets."""
