@@ -21,6 +21,16 @@ def sign_in(page: Page, email: str = ADMIN_EMAIL) -> None:
     expect(page.locator("#console-view")).to_be_visible(timeout=10000)
 
 
+def freeze_live_feed(page: Page) -> None:
+    """Wait for the live socket to open, then stop it overwriting payloads a test injects.
+
+    The socket is opened after sign-in (it first trades the bearer for a ticket), so a handler
+    cleared before it exists either fails or leaves the first live frame to replace the payload.
+    """
+    page.wait_for_function("() => window.dashboard.ws && window.dashboard.ws.readyState === WebSocket.OPEN", timeout=10000)
+    page.evaluate("() => { window.dashboard.ws.onmessage = null; }")
+
+
 def fake_catalog(path: str, body: dict[str, object] | None = None) -> None:
     """Drive the standalone fake catalog-api's test controls."""
     httpx.post(f"{CATALOG_URL}/__fake__/{path}", json=body or {}, timeout=5.0).raise_for_status()

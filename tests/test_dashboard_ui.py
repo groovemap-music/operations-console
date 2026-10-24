@@ -6,7 +6,7 @@ import re
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.e2e_console import CONSOLE_URL, DATA_ROUTES, sign_in
+from tests.e2e_console import CONSOLE_URL, DATA_ROUTES, freeze_live_feed, sign_in
 
 
 @pytest.mark.e2e
@@ -66,7 +66,7 @@ class TestDashboardUI:
         sign_in(page)
         expect(page.locator("#discogs-rate-circle-graphinator-masters-publish")).to_be_visible(timeout=10000)
         # Stop the live feed overwriting the payloads this test injects.
-        page.evaluate("() => { window.dashboard.ws.onmessage = null; }")
+        freeze_live_feed(page)
         service = {"name": "graphinator", "status": "healthy", "last_seen": None, "current_task": None, "progress": None, "error": None}
         queue = {
             "name": "groovemap-discogs-graphinator-masters",
@@ -129,7 +129,7 @@ class TestDashboardUI:
         }
         page.route("**/api/topology", lambda route: route.fulfill(json=topology))
         sign_in(page)
-        page.evaluate("() => { window.dashboard.ws.onmessage = null; }")
+        freeze_live_feed(page)
         queue = {
             "name": "acme-synthetic-gamma-tracks",
             "messages": 7,

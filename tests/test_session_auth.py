@@ -58,7 +58,8 @@ DATA_ROUTES = [
     "/api/services",
     "/api/queues",
     "/api/databases",
-    "/api/queue-prefixes", "/api/topology",
+    "/api/queue-prefixes",
+    "/api/topology",
     "/api/session",
 ]
 # Answer 503 without VictoriaMetrics, so they are probed for the gate only.
