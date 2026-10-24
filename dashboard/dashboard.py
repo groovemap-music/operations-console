@@ -41,6 +41,7 @@ from dashboard.admin_proxy import router as admin_router
 from dashboard.catalog_contract import DISCOGS_EXCHANGE_PREFIX, MUSICBRAINZ_EXCHANGE_PREFIX
 from dashboard.config import get_config
 from dashboard.deep_links import router as deep_links_router
+from dashboard.events import EventDetector
 from dashboard.grafana_alerts import router as grafana_alerts_router
 from dashboard.history import router as history_router
 from dashboard.queue_metrics import RateTracker, parse_queue_samples, scrape_params
@@ -263,6 +264,11 @@ class DashboardApp:
         self.websockets = WebSocketConnections()
         self.latest_metrics: SystemMetrics | None = None
         self._rate_trackers: dict[str, RateTracker] = {}
+        self.events = EventDetector(
+            dead_letter_queues=frozenset(
+                queue for pipeline in build_topology(PIPELINE_CONFIGS)["pipelines"] for queue in pipeline["dead_letter_queues"]
+            )
+        )
         self.neo4j_driver: AsyncResilientNeo4jDriver | None = None
         self.postgres_conn: AsyncResilientPostgreSQL | None = None
         self.update_task: asyncio.Task | None = None
@@ -352,6 +358,7 @@ class DashboardApp:
 
                 # Broadcast to all connected websockets
                 await self.broadcast_metrics(metrics)
+                await self.broadcast_events(self.events.observe(metrics))
 
                 # Log a summary every 50 cycles (~100s) instead of every request
                 if cycle_count % 50 == 0:
@@ -604,6 +611,13 @@ class DashboardApp:
         ).decode()
         await self.websockets.broadcast(message)
 
+    async def broadcast_events(self, events: list[dict[str, Any]]) -> None:
+        """Stream newly detected events to every connected websocket."""
+        if not events or not self.websocket_connections:
+            return
+        for event in events:
+            await self.websockets.broadcast(orjson.dumps({"type": "event", "data": event}).decode())
+
 
 # Create the dashboard app instance
 dashboard: DashboardApp | None = None
@@ -840,6 +854,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     }
                 ).decode()
             )
+
+        # The recent events follow, so a reconnecting client does not start with an empty log.
+        if dashboard:
+            await websocket.send_text(orjson.dumps({"type": "event_backlog", "data": dashboard.events.backlog()}).decode())
 
         # Keep the connection alive until the client leaves or the session ends. The re-check
         # deadline is monotonic and only moves after a re-check, so client frames cannot hold

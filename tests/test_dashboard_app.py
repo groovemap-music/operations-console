@@ -351,6 +351,8 @@ class TestDashboardAppMetrics:
             with (
                 patch.object(app, "collect_all_metrics", side_effect=mock_collect),
                 patch.object(app, "broadcast_metrics", new_callable=AsyncMock),
+                patch.object(app, "broadcast_events", new_callable=AsyncMock),
+                patch.object(app, "events", Mock()),
                 patch("asyncio.sleep", new_callable=AsyncMock),
                 patch("dashboard.dashboard.logger") as mock_logger,
             ):
@@ -1418,6 +1420,7 @@ class TestWebSocketEndpoint:
         mock_dashboard_instance = Mock()
         mock_dashboard_instance.websocket_connections = set()
         mock_dashboard_instance._ws_lock = None  # Will be lazily initialized as asyncio.Lock
+        mock_dashboard_instance.events.backlog.return_value = []
         mock_dashboard_instance.latest_metrics = SystemMetrics(
             pipelines={},
             databases=[],
@@ -1449,6 +1452,7 @@ class TestWebSocketEndpoint:
         mock_dashboard_instance = Mock()
         mock_dashboard_instance.websocket_connections = set()
         mock_dashboard_instance._ws_lock = None  # Will be lazily initialized as asyncio.Lock
+        mock_dashboard_instance.events.backlog.return_value = []
         mock_dashboard_instance.latest_metrics = None  # No initial metrics
 
         with (
@@ -1572,6 +1576,7 @@ class TestWebSocketGeneralException:
         mock_dashboard_instance = Mock()
         mock_dashboard_instance.websocket_connections = set()
         mock_dashboard_instance._ws_lock = None  # Will be lazily initialized as asyncio.Lock
+        mock_dashboard_instance.events.backlog.return_value = []
         mock_dashboard_instance.latest_metrics = None  # Skip initial send
 
         with (

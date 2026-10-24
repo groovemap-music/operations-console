@@ -16,6 +16,11 @@ const SESSION_REFUSALS = new Set([401, 503]);
 const RECONNECT_BASE_MS = 5000;
 const RECONNECT_MAX_MS = 60000;
 
+// Operator actions shown in the System Event Log, read from the audit log every minute.
+const AUDIT_ACTIONS = ['extraction.trigger', 'dlq.purge'];
+const AUDIT_PAGE_SIZE = 20;
+const AUDIT_POLL_MS = 60000;
+
 // ─── Queue health: the Overview matrix's rules ────────────────────────────────
 //
 // From spike gm-operations-console-2rf (docs/spikes/gm-operations-console-2rf-pipeline-visualization.md).
@@ -322,8 +327,14 @@ class Dashboard {
         this.connecting = false;
         this.reconnectTimer = null;
         this.reconnectDelay = RECONNECT_BASE_MS;
+        // The System Event Log, newest first: events the server detected and streamed (`server`),
+        // recent operator actions from the audit log (`audit`), and queue health changes the matrix
+        // derives in this browser (`local`). Connect and disconnect are the connection indicator's
+        // business, never log entries.
         this.activityLog = [];
-        this.maxLogEntries = 50;
+        this.maxLogEntries = 100;
+        this.lastServerEventId = 0;
+        this.auditTimer = null;
 
         // The pipeline layout from /api/topology; the Overview draws nothing until it arrives.
         this.topology = null;
@@ -388,6 +399,7 @@ class Dashboard {
         this.fetchInitialData();
         this.initializeWebSocket();
         this.startAlertPolling();
+        this.startAuditPolling();
         this.fetchLinkBases();
     }
 
@@ -400,6 +412,10 @@ class Dashboard {
         this.closeQueueDrawer();
         this._resetHistory();
         this.stopAlertPolling();
+        this.stopAuditPolling();
+        this.activityLog = [];
+        this.lastServerEventId = 0;
+        this.renderActivityLog();
         this.lastReading = null;
         this.alerts = null;
         this.attentionSeen = new Set();
@@ -478,7 +494,6 @@ class Dashboard {
 
         socket.onopen = () => {
             this.updateConnectionStatus('connected');
-            this.addLogEntry('Connected to dashboard', 'info');
         };
 
         socket.onmessage = (event) => {
@@ -486,10 +501,7 @@ class Dashboard {
             // and is closed straight after.
             this.reconnectDelay = RECONNECT_BASE_MS;
             try {
-                const message = JSON.parse(event.data);
-                if (message.type === 'metrics_update') {
-                    this.updateDashboard(message.data);
-                }
+                this.handleMessage(JSON.parse(event.data));
             } catch {
                 // Ignore malformed WebSocket messages (e.g., partial frames during reconnect)
             }
@@ -508,17 +520,17 @@ class Dashboard {
             if (!this.active) return;
             this.ws = null;
             if (event.code === WS_CLOSE_UNAUTHENTICATED) {
-                this.addLogEntry('Live feed closed: the session is no longer valid', 'warning');
                 this.requestSessionCheck();
                 return;
             }
-            if (event.code === WS_CLOSE_UNAVAILABLE) {
-                this.addLogEntry('Live feed paused: catalog-api could not confirm the session', 'warning');
-            } else {
-                this.addLogEntry('Disconnected from dashboard', 'warning');
-            }
             this.reconnect();
         };
+    }
+
+    handleMessage(message) {
+        if (message.type === 'metrics_update') this.updateDashboard(message.data);
+        else if (message.type === 'event_backlog') this.applyEventBacklog(message.data);
+        else if (message.type === 'event') this.applyServerEvent(message.data);
     }
 
     // Schedule one reconnect after the current backoff delay, then double the delay.
@@ -1374,13 +1386,100 @@ class Dashboard {
 
     // ─── Activity log ─────────────────────────────────────────────────────────
 
-    addLogEntry(message, type = 'info') {
-        const ts = new Date().toLocaleTimeString('en-US', {
+    // Add one entry, keeping the log newest first by the time the event happened.
+    addLogEntry(message, type = 'info', { time = Date.now(), source = 'local' } = {}) {
+        const timestamp = new Date(time).toLocaleTimeString('en-US', {
             hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'
         });
-        this.activityLog.unshift({ timestamp: ts, message, type });
-        if (this.activityLog.length > this.maxLogEntries) this.activityLog.pop();
+        this.activityLog.unshift({ time, timestamp, message, type, source });
+        this._trimActivityLog();
         this.renderActivityLog();
+    }
+
+    _trimActivityLog() {
+        this.activityLog.sort((a, b) => b.time - a.time);
+        if (this.activityLog.length > this.maxLogEntries) this.activityLog.length = this.maxLogEntries;
+    }
+
+    // Replace every entry of one source, then render once.
+    _replaceLogSource(source, entries) {
+        this.activityLog = this.activityLog.filter(e => e.source !== source);
+        for (const { message, type, time } of entries) {
+            const timestamp = new Date(time).toLocaleTimeString('en-US', {
+                hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit'
+            });
+            this.activityLog.push({ time, timestamp, message, type, source });
+        }
+        this._trimActivityLog();
+        this.renderActivityLog();
+    }
+
+    // ─── Server events and operator actions ───────────────────────────────────
+
+    static serverEntry(event) {
+        const time = Date.parse(event.timestamp);
+        return { message: event.message, type: event.level, time: Number.isNaN(time) ? Date.now() : time };
+    }
+
+    // The recent history the server kept, sent on every connect: it replaces what this client had.
+    applyEventBacklog(events) {
+        if (!Array.isArray(events)) return;
+        this.lastServerEventId = events.reduce((max, e) => Math.max(max, e.id || 0), 0);
+        this._replaceLogSource('server', events.map(Dashboard.serverEntry));
+    }
+
+    // One live event; an id the backlog already covered is not shown twice.
+    applyServerEvent(event) {
+        if (!event || (event.id && event.id <= this.lastServerEventId)) return;
+        if (event.id) this.lastServerEventId = event.id;
+        const { message, type, time } = Dashboard.serverEntry(event);
+        this.addLogEntry(message, type, { time, source: 'server' });
+    }
+
+    // Operator actions come from the audit log through the console's own /admin/api proxy with
+    // this session's bearer, in the browser: the console holds no service credential for
+    // catalog-api, so nothing about another operator's audit view is kept on the server.
+    startAuditPolling() {
+        this.stopAuditPolling();
+        this.fetchAuditEntries();
+        this.auditTimer = setInterval(() => this.fetchAuditEntries(), AUDIT_POLL_MS);
+    }
+
+    stopAuditPolling() {
+        if (this.auditTimer) clearInterval(this.auditTimer);
+        this.auditTimer = null;
+    }
+
+    static auditMessage(entry) {
+        const who = entry.admin_email || 'an operator';
+        const target = entry.target ? ` ${entry.target}` : '';
+        if (entry.action === 'extraction.trigger') return `${who} triggered an extraction`;
+        if (entry.action === 'dlq.purge') return `${who} purged DLQ${target}`;
+        return `${who}: ${entry.action}${target}`;
+    }
+
+    async fetchAuditEntries() {
+        if (!this.active) return;
+        const token = this.token;
+        try {
+            const responses = await Promise.all(AUDIT_ACTIONS.map(action =>
+                fetch(`/admin/api/audit-log?action=${encodeURIComponent(action)}&page_size=${AUDIT_PAGE_SIZE}`, { headers: this._authHeaders(), cache: 'no-store' })));
+            if (!this.active || this.token !== token) return;
+            if (responses.some(r => SESSION_REFUSALS.has(r.status))) {
+                this.requestSessionCheck();
+                return;
+            }
+            // A failed fetch leaves the entries already shown; the next poll tries again.
+            if (!responses.every(r => r.ok)) return;
+            const bodies = await Promise.all(responses.map(r => r.json()));
+            if (!this.active || this.token !== token) return;
+            const entries = bodies.flatMap(body => body.entries || []).map(entry => ({
+                message: Dashboard.auditMessage(entry), type: 'info', time: Date.parse(entry.created_at),
+            })).filter(entry => !Number.isNaN(entry.time));
+            this._replaceLogSource('audit', entries);
+        } catch {
+            // Offline or malformed: keep what is shown.
+        }
     }
 
     renderActivityLog() {

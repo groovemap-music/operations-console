@@ -6,7 +6,7 @@ import re
 import pytest
 from playwright.sync_api import Page, Route, expect
 
-from tests.e2e_console import CONSOLE_URL, DATA_ROUTES, freeze_live_feed, sign_in
+from tests.e2e_console import CONSOLE_URL, DATA_ROUTES, fake_catalog, freeze_live_feed, sign_in
 
 
 DESKTOP = {"width": 1440, "height": 900}
@@ -429,17 +429,33 @@ class TestDashboardUI:
         status_indicator = page.locator(".status-indicator")
         expect(status_indicator).to_have_class(re.compile(r"connected"), timeout=10000)
 
-    def test_activity_log_display(self, page: Page) -> None:
-        """Test that the activity log is displayed."""
+    def test_activity_log_shows_server_events_and_operator_actions_not_the_connection(self, page: Page) -> None:
+        """The log holds server events and audited operator actions; connect is only the indicator."""
         sign_in(page)
+        freeze_live_feed(page)
+        expect(page.locator("#activityLog")).to_be_visible(timeout=10000)
+        expect(page.locator(".status-text")).to_have_text("Connected", timeout=15000)
+        expect(page.locator("#activityLog")).not_to_contain_text("Connected to dashboard")
 
-        # Event log panel is present
-        activity_log = page.locator("#activityLog")
-        expect(activity_log).to_be_visible(timeout=10000)
-
-        # Should have at least one log entry (connection message)
-        log_entries = page.locator(".log-entry")
-        expect(log_entries.first).to_be_visible(timeout=15000)
+        fake_catalog(
+            "audit",
+            {"entries": [{"action": "dlq.purge", "admin_email": "sre@example.com", "target": "q.dlq", "created_at": "2026-01-01T10:00:20+00:00"}]},
+        )
+        page.evaluate(
+            """() => {
+                window.dashboard.handleMessage({type: 'event_backlog', data: [
+                    {id: 1, level: 'error', message: 'Neo4j is down', timestamp: '2026-01-01T10:00:00+00:00'},
+                    {id: 2, level: 'info', message: 'Neo4j is up', timestamp: '2026-01-01T10:00:30+00:00'},
+                ]});
+                window.dashboard.handleMessage({type: 'event', data: {id: 3, level: 'error', message: 'graphinator is unhealthy', timestamp: '2026-01-01T10:01:00+00:00'}});
+                return window.dashboard.fetchAuditEntries();
+            }"""
+        )
+        messages = page.locator(".log-entry span:last-child")
+        expect(messages).to_have_text(
+            ["graphinator is unhealthy", "Neo4j is up", "sre@example.com purged DLQ q.dlq", "Neo4j is down"],
+            timeout=10000,
+        )
 
     def test_responsive_design(self, page: Page) -> None:
         """Test that the dashboard is responsive."""

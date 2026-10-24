@@ -48,6 +48,7 @@ class FakeCatalogApi:
         self.tokens: dict[str, FakeToken] = {}
         self.outage = False
         self.session_calls = 0
+        self.audit_entries: list[dict[str, Any]] = []
         self.app = self._build_app()
 
     def mint(self, email: str = ADMIN_EMAIL, *, lifetime_seconds: float = 3600, is_admin: bool = True) -> str:
@@ -112,6 +113,20 @@ class FakeCatalogApi:
             if isinstance(record, JSONResponse):
                 return record
             return JSONResponse({"extractions": []})
+
+        @app.get(catalog_admin_contract.ADMIN_AUDIT_LOG_PATH)
+        async def audit_log(request: Request) -> JSONResponse:
+            record = self._live(request)
+            if isinstance(record, JSONResponse):
+                return record
+            action = request.query_params.get("action")
+            entries = [entry for entry in self.audit_entries if action in (None, entry["action"])]
+            return JSONResponse({"entries": entries, "total": len(entries), "page": 1, "page_size": 50})
+
+        @app.post("/__fake__/audit")
+        async def set_audit(request: Request) -> JSONResponse:
+            self.audit_entries = (await request.json())["entries"]
+            return JSONResponse({"entries": len(self.audit_entries)})
 
         @app.post("/__fake__/outage")
         async def set_outage(request: Request) -> JSONResponse:
