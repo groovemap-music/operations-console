@@ -115,6 +115,25 @@ backlog change, how long acks have been at zero, and its dead-letter queue. Esca
 Below 480 px wide, a pipeline with more than two consumers lists each entity's cells in two
 columns, and every cell names its consumer.
 
+## Pipeline topology
+
+On a viewport at least 1,024 px wide, **Topology** in a pipeline's matrix head opens that
+pipeline's flow: the extractor, one fanout exchange per entity type, each consumer's queue per
+entity, the consumers, and the datastores they write to, all drawn from `/api/topology`. Edge
+width is the live rate on the square root of messages per second (3,000/s and faster at full
+width). A dashed hairline is 0/s and a dotted one a rate the console cannot compute yet. An
+exchange's rate is its bound queues' publish rate (a fanout exchange copies every message to
+each), and a consumer's edge to its datastore is the sum of its queues' ack rates.
+
+Each queue node is its matrix cell under the same rules: ◆ and a thick border for critical, ▲ for
+a warning, the DLQ badge, and the same backlog and lag. A consumer takes the worst state of its
+queues and counts them. Select a queue (or focus it and press Enter) to open its detail drawer
+over the flow; Escape or **Close** closes the flow. The flow is optional: below 1,024 px there is
+no **Topology** control, an open flow closes when the window narrows, and nothing on the
+Overview depends on it. The matrix stays the Overview because the flow needs horizontal panning
+on a phone and its edges braid with more consumers
+([spike evidence](spikes/gm-operations-console-2rf-pipeline-visualization.md#evidence)).
+
 ## Run progress
 
 While an extraction runs, a headline above its pipeline's matrix says when it will finish:
