@@ -112,6 +112,8 @@ describe('RunProgress.gap', () => {
     it('names what is missing', () => {
         expect(RunProgress.gap({ ...labels, totals: { extracted: null, expected: null }, acked: {} })).toBe("no history from the run's start");
         expect(RunProgress.gap({ ...labels, totals: { extracted: 0, expected: null }, acked: {} })).toBe('Releases not extracted yet');
+        expect(RunProgress.gap({ ...labels, totals: { extracted: 10, file_progress: null, expected: null, waiting_for_checkpoint: true }, acked: {} }))
+            .toBe("Releases waiting for the extractor's first progress checkpoint");
         expect(RunProgress.gap({ ...labels, totals: { extracted: 10, file_progress: null, expected: null }, acked: {} })).toBe('no file progress for Releases');
         expect(RunProgress.gap({ ...labels, totals, acked: { loaded: null } })).toBe('no acked baseline for Graphinator · Releases');
     });
@@ -267,6 +269,19 @@ describe('the Overview with a run', () => {
         const releases = section.querySelector('[data-run-entity="releases"]');
         expect(releases.querySelector('.rp-entity-head').textContent).toBe('Releases · progress unavailable: no file progress for Releases');
         expect(releases.querySelector('[data-run-cell="graphinator-releases"]').textContent).toBe('Graphinatorprogress unavailable');
+    });
+
+    it("waits for the extractor's first checkpoint instead of reading the previous run's ratio", () => {
+        const data = progress();
+        data.entities = data.entities.map(e => (e.entity === 'releases'
+            ? { entity: 'releases', extracted: 50_000, file_progress: null, expected: null, waiting_for_checkpoint: true } : e));
+        dashboard.runProgress.discogs.data = data;
+        feed();
+        expect(headlineEl().textContent).toBe("Progress unavailable: Releases waiting for the extractor's first progress checkpoint");
+        dashboard.showOverviewView('progress');
+        const releases = document.querySelector('#run-progress-discogs [data-run-entity="releases"]');
+        expect(releases.querySelector('.rp-entity-head').textContent).toBe("Releases · progress unavailable: Releases waiting for the extractor's first progress checkpoint");
+        expect(releases.querySelector('.rp-pct')).toBeNull();
     });
 
     it('shows a completed run with its duration and final counts', () => {

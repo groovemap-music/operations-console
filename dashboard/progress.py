@@ -9,6 +9,12 @@ batch as the gauge, so the two describe the same instant. The second is how many
 acknowledged since the run started: the run's increase of
 ``rabbitmq_detailed_queue_messages_acked_total{queue}`` over its value at the start (the baseline).
 
+The gauge keeps its last value between runs, and the extractor's telemetry SDK keeps exporting it,
+so at a run's start it still holds the previous run's ratio (1.0 for a finished file) until the
+extractor reaches its first 8 MiB checkpoint in the new file. A ratio is trusted only once the
+gauge has moved inside the run, or when it had no value at the start; until then the entity is
+waiting for that checkpoint and has no expected total.
+
 Nothing is kept in the console. Every request reads the baselines from VictoriaMetrics at the
 run's own start time, so a console restart mid-run changes nothing. The browser names the run
 (pipeline, start, and end once it finished) from the extraction history it reads through the admin
@@ -60,6 +66,8 @@ def progress_queries(source: str, queue_prefix: str, span_seconds: int) -> dict[
         "records": f'sum by (entity) ({RECORDS}{{source="{source}"}})',
         # Only a sample inside the run counts: an older one describes the previous run's file.
         "file_progress": f'max by (entity) (last_over_time({FILE_PROGRESS}{{source="{source}"}}[{span_seconds}s]))',
+        # The raw gauge, at the start and over the run, to tell this run's ratio from a stale one.
+        "file_progress_raw": f'max by (entity) ({FILE_PROGRESS}{{source="{source}"}})',
     }
 
 
@@ -109,6 +117,14 @@ def counter_increase(baseline: float | None, points: list[tuple[float, float]], 
     return increases
 
 
+def gauge_moved(at_start: float | None, points: list[tuple[float, float]], start: float) -> bool:
+    """Whether the gauge describes this run: it had no value at the start, or it has moved since."""
+    in_run = [value for ts, value in points if ts > start]
+    if at_start is None:
+        return bool(in_run)
+    return any(value != at_start for value in in_run)
+
+
 def expected_records(extracted: float | None, file_progress: float | None) -> int | None:
     """Records the entity will have: extracted / bytes read over file size; None until both are known."""
     if extracted is None or file_progress is None or extracted <= 0 or file_progress <= 0:
@@ -132,6 +148,8 @@ def shape_progress(pipeline: dict[str, Any], start: float, end: float, results: 
     records_end = instant_values(results["records_end"], "entity")
     records_points = range_values(results["records_range"], "entity")
     file_progress = instant_values(results["file_progress"], "entity")
+    progress_start = instant_values(results["file_progress_start"], "entity")
+    progress_points = range_values(results["file_progress_range"], "entity")
     # The extractor creates a records series with its first batch, so one missing at the start had
     # counted nothing yet. That holds only if VictoriaMetrics held data then at all, which the
     # acked baselines (long-lived queues) show.
@@ -143,7 +161,20 @@ def shape_progress(pipeline: dict[str, Any], start: float, end: float, results: 
         increase = counter_increase(baseline, _with_end(records_points.get(entity, []), end, records_end.get(entity)), start)
         extracted = round(increase[-1][1]) if increase else (0 if increase is not None else None)
         ratio = file_progress.get(entity)
-        entities.append({"entity": entity, "extracted": extracted, "file_progress": ratio, "expected": expected_records(extracted, ratio)})
+        # A ratio the gauge has not moved to inside the run is the previous run's.
+        in_run = _with_end(progress_points.get(entity, []), end, ratio)
+        waiting = ratio is not None and not gauge_moved(progress_start.get(entity), in_run, start)
+        if waiting:
+            ratio = None
+        entities.append(
+            {
+                "entity": entity,
+                "extracted": extracted,
+                "file_progress": ratio,
+                "expected": expected_records(extracted, ratio),
+                "waiting_for_checkpoint": waiting,
+            }
+        )
 
     queues = []
     for consumer in pipeline["consumers"]:
@@ -170,7 +201,17 @@ async def read_progress(pipeline: dict[str, Any], start: float, end: float) -> d
     queries = progress_queries(pipeline["id"], pipeline["queue_prefix"], max(1, math.ceil(end - start)))
     step = f"{step_seconds(end - start)}s"
     async with vm_client() as client:
-        names = ["acked_start", "acked_end", "acked_range", "records_start", "records_end", "records_range", "file_progress"]
+        names = [
+            "acked_start",
+            "acked_end",
+            "acked_range",
+            "records_start",
+            "records_end",
+            "records_range",
+            "file_progress",
+            "file_progress_start",
+            "file_progress_range",
+        ]
         values = await asyncio.gather(
             query_instant(client, queries["acked"], start),
             query_instant(client, queries["acked"], end),
@@ -179,6 +220,8 @@ async def read_progress(pipeline: dict[str, Any], start: float, end: float) -> d
             query_instant(client, queries["records"], end),
             query_span(client, queries["records"], start, end, step),
             query_instant(client, queries["file_progress"], end),
+            query_instant(client, queries["file_progress_raw"], start),
+            query_span(client, queries["file_progress_raw"], start, end, step),
         )
     return shape_progress(pipeline, start, end, dict(zip(names, values, strict=True)))
 

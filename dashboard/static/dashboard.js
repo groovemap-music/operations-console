@@ -346,6 +346,8 @@ const RunProgress = (() => {
     function gap({ entityLabel, consumerLabel, totals, acked }) {
         if (!totals || totals.extracted === null) return 'no history from the run\'s start';
         if (totals.extracted === 0) return `${entityLabel} not extracted yet`;
+        // The gauge still holds the previous run's ratio until the new file's first checkpoint.
+        if (totals.waiting_for_checkpoint) return `${entityLabel} waiting for the extractor's first progress checkpoint`;
         if (totals.expected === null) return `no file progress for ${entityLabel}`;
         if (!acked || acked.loaded === null) return `no acked baseline for ${consumerLabel} · ${entityLabel}`;
         return null;

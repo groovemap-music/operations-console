@@ -37,7 +37,9 @@ class FakeVictoriaMetrics:
 
     @staticmethod
     def _name(query: str) -> str:
-        for name, metric in (("acked", progress.ACKED), ("records", progress.RECORDS), ("file_progress", progress.FILE_PROGRESS)):
+        if progress.FILE_PROGRESS in query:
+            return "file_progress" if "last_over_time" in query else "file_progress_raw"
+        for name, metric in (("acked", progress.ACKED), ("records", progress.RECORDS)):
             if metric in query:
                 return name
         raise AssertionError(query)
@@ -114,6 +116,7 @@ class TestQueries:
             "acked": 'sum by (queue) (rabbitmq_detailed_queue_messages_acked_total{queue=~"groovemap\\\\-discogs-.*"})',
             "records": 'sum by (entity) (groovemap_extraction_records_total{source="discogs"})',
             "file_progress": 'max by (entity) (last_over_time(groovemap_extraction_file_progress_ratio{source="discogs"}[3600s]))',
+            "file_progress_raw": 'max by (entity) (groovemap_extraction_file_progress_ratio{source="discogs"})',
         }
 
     def test_the_burn_up_step_follows_the_run_and_never_beats_the_scrape(self) -> None:
@@ -133,6 +136,22 @@ class TestExpectedTotal:
 
     def test_a_ratio_overshooting_one_reads_as_a_finished_file(self) -> None:
         assert progress.expected_records(1000, 1.02) == 1000
+
+
+class TestGaugeMoved:
+    def test_a_gauge_with_no_value_at_the_start_is_this_runs(self) -> None:
+        assert progress.gauge_moved(None, [(20, 0.05)], start=10)
+        assert not progress.gauge_moved(None, [], start=10)
+
+    def test_a_gauge_still_at_its_start_value_is_the_previous_runs(self) -> None:
+        assert not progress.gauge_moved(1.0, [(10, 1.0), (20, 1.0), (30, 1.0)], start=10)
+        # An aborted previous file left 0.6: a value below 1 is no proof either.
+        assert not progress.gauge_moved(0.6, [(20, 0.6)], start=10)
+
+    def test_a_gauge_that_moved_inside_the_run_is_this_runs(self) -> None:
+        assert progress.gauge_moved(1.0, [(20, 1.0), (30, 0.02)], start=10)
+        # A sample at or before the start (a range step aligned down) is not inside the run.
+        assert not progress.gauge_moved(1.0, [(5, 0.3), (10, 0.4), (20, 1.0)], start=10)
 
 
 class TestCounterIncrease:
@@ -167,14 +186,39 @@ class TestRoute:
     def test_expected_is_the_runs_extracted_records_over_its_file_progress(self, client: TestClient, vm: FakeVictoriaMetrics) -> None:
         a_run(vm)
         releases = by(get(client).json()["entities"], "entity", "releases")
-        assert releases == {"entity": "releases", "extracted": 2_000_000, "file_progress": 0.4, "expected": 5_000_000}
+        assert releases == {
+            "entity": "releases",
+            "extracted": 2_000_000,
+            "file_progress": 0.4,
+            "expected": 5_000_000,
+            "waiting_for_checkpoint": False,
+        }
         assert vm.instant_times("records") == [START, END]
         assert vm.instant_times("file_progress") == [END]
 
     def test_an_entity_without_a_gauge_sample_in_the_run_has_no_expected_total(self, client: TestClient, vm: FakeVictoriaMetrics) -> None:
         a_run(vm)
         masters = by(get(client).json()["entities"], "entity", "masters")
-        assert masters == {"entity": "masters", "extracted": 0, "file_progress": None, "expected": None}
+        assert masters == {"entity": "masters", "extracted": 0, "file_progress": None, "expected": None, "waiting_for_checkpoint": False}
+
+    def test_a_stale_ratio_waits_for_the_first_checkpoint_then_counts(self, client: TestClient, vm: FakeVictoriaMetrics) -> None:
+        a_run(vm)
+        # The previous run finished its file: the SDK keeps exporting 1.0 into this run, while
+        # 50,000 records are already extracted before the new file's first 8 MiB checkpoint.
+        vm.instant[("file_progress_raw", START)] = [sample("entity", "releases", 1.0)]
+        vm.ranges["file_progress_raw"] = [series("entity", "releases", [(START, 1.0), (START + 30, 1.0), (START + 60, 1.0)])]
+        vm.instant[("file_progress", END)] = [sample("entity", "releases", 1.0)]
+        vm.instant[("records", END)] = [sample("entity", "releases", 17_050_000)]
+        vm.ranges["records"] = [series("entity", "releases", [(START, 17_000_000), (START + 60, 17_050_000)])]
+        releases = by(get(client).json()["entities"], "entity", "releases")
+        assert releases == {"entity": "releases", "extracted": 50_000, "file_progress": None, "expected": None, "waiting_for_checkpoint": True}
+
+        # The checkpoint lands: the gauge moves to this file's real ratio.
+        vm.ranges["file_progress_raw"] = [series("entity", "releases", [(START, 1.0), (START + 30, 1.0), (START + 60, 0.01)])]
+        vm.instant[("file_progress", END)] = [sample("entity", "releases", 0.01)]
+        releases = by(get(client).json()["entities"], "entity", "releases")
+        assert releases == {"entity": "releases", "extracted": 50_000, "file_progress": 0.01, "expected": 5_000_000, "waiting_for_checkpoint": False}
+        assert set(vm.instant_times("file_progress_raw")) == {START}
 
     def test_a_queue_without_a_baseline_has_no_loaded_count(self, client: TestClient, vm: FakeVictoriaMetrics) -> None:
         a_run(vm)

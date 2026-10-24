@@ -142,7 +142,9 @@ Nothing is kept in the console: the baseline is read at the run's start time on 
 so a console restart mid-run changes nothing. When a total or a baseline cannot be derived (no
 file-progress sample in the run, an entity not extracted yet, no data from the run's start) the
 view says "progress unavailable" and why, and the headline says so too; it never shows a guessed
-total. An unknown or zero ack rate gives no ETA ("Finish time unknown"). Extraction records do not
+total. The file-progress gauge keeps the previous run's ratio until the extractor reaches its first
+8 MiB checkpoint in the new file, so an entity whose gauge has not moved since the run started is
+shown as waiting for that checkpoint rather than as fully read. An unknown or zero ack rate gives no ETA ("Finish time unknown"). Extraction records do not
 name their source, and catalog-api's trigger reaches the Discogs extractor, so runs are shown
 against the Discogs pipeline.
 
