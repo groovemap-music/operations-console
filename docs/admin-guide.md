@@ -75,6 +75,39 @@ console removes the ticket from the request's query string before its access log
 spans read it and redacts it from server log lines, but a reverse proxy in front of the console
 keeps its own access log: configure it not to log query strings for `/ws`.
 
+## Reading the Overview
+
+The Overview draws one matrix per pipeline from `/api/topology`: rows are entity types, columns
+are consumers with the datastore they write to, and each cell is one work queue. A cell shows the
+messages queued, an ↑ or ↓ when the depth changed by 1,000 or more over the last 5 minutes, the
+lag, and a badge for its dead-letter queue. Lag is the backlog divided by the queue's mean ack
+rate over the last 5 minutes, and it colours the cell in four bins (under 1 minute, under 10
+minutes, under 1 hour, 1 hour or more); the legend above the matrices names them.
+
+Every cell is judged by the same rules, from the pipeline-visualization spike
+([gm-operations-console-2rf](spikes/gm-operations-console-2rf-pipeline-visualization.md)):
+
+| State | Rule | Shown as |
+|---|---|---|
+| Stalled (critical) | Messages queued, at least one consumer, and a computed ack rate of 0 for at least 60 seconds | ◆ `STALLED`, thick border, hatched cell |
+| No consumer (critical) | Messages queued and no consumer | ◆ `NO CONSUMER`, thick border, hatched cell |
+| DLQ growing (critical) | The dead-letter queue is deeper than 5 minutes ago | Filled ◆ DLQ badge with the growth; the cell is hatched |
+| DLQ not empty (warning) | The dead-letter queue holds messages and is not growing | ▲ DLQ badge with the depth |
+
+A queue filling during an extraction is not an alarm. A rate the console cannot compute (the
+first reading, a missed poll, a broker counter reset) is shown as unknown and never counts toward
+a stall, so a stall needs 60 seconds of real zero-ack readings. The browser keeps the last 5
+minutes of readings for these rules; it starts them again when the live feed reconnects or a
+pipeline's queue metrics become unavailable, which a pipeline then shows with a banner and every
+cell marked unavailable. Each change into or out of a critical or warning state is written to the
+System Event Log.
+
+Select a cell (or focus it and press Enter) to open the queue's details: its depth, ready and
+unacknowledged messages, consumers, publish and ack rates, the 5-minute mean ack rate, lag,
+backlog change, how long acks have been at zero, and its dead-letter queue. Escape closes it.
+Below 480 px wide, a pipeline with more than two consumers lists each entity's cells in two
+columns, and every cell names its consumer.
+
 ## Triggering an extraction
 
 Use **Trigger Discogs Extraction** or **Trigger MusicBrainz Extraction** in the admin panel.
