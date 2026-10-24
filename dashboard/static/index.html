@@ -193,6 +193,7 @@
             --mx-ramp-2: #4361a6;
             --mx-ramp-3: #8c8de6;
             --mx-ramp-3-text: #0d1b2a;
+            --mx-edge: #2f6f8f;
             --mx-backdrop: rgba(6, 10, 18, 0.7);
         }
         [data-theme="light"] {
@@ -210,6 +211,7 @@
             --mx-ramp-2: #98ade3;
             --mx-ramp-3: #8384d3;
             --mx-ramp-3-text: #0d1b2a;
+            --mx-edge: #5f97aa;
             --mx-backdrop: rgba(13, 27, 42, 0.4);
         }
         .attention-bar {
@@ -375,6 +377,46 @@
             .rp-gap { grid-column: 1 / -1; }
         }
         tr[data-highlight] { outline: 2px solid var(--mx-accent); outline-offset: -2px; }
+        /* Topology drill-down (spike gm-operations-console-2rf, flow.html): one pipeline's flow, opened
+           from its matrix head. Desktop only: below 1024 px (TopologyFlow.MIN_WIDTH) there is no control. */
+        .mx-topology-btn {
+            display: none; margin-left: auto; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+            color: var(--mx-accent); background: none; border: 1px solid var(--mx-border); border-radius: 6px; padding: 2px 10px;
+        }
+        .mx-topology-btn:hover { border-color: var(--mx-accent); }
+        .mx-topology-btn:focus-visible { outline: 2px solid var(--mx-accent); outline-offset: 2px; }
+        @media (min-width: 1024px) {
+            .mx-topology-btn { display: inline-block; }
+        }
+        .tp-dialog {
+            width: min(1000px, calc(100vw - 32px)); max-width: none; max-height: calc(100vh - 32px); margin: auto;
+            border: 1px solid var(--mx-border); border-radius: 12px; padding: 16px; overflow: auto;
+            background: var(--mx-surface); color: var(--mx-text-high);
+        }
+        .tp-dialog::backdrop { background: var(--mx-backdrop); }
+        .tp-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; margin: 8px 0 12px; font-size: 12px; color: var(--mx-text-mid); }
+        .tp-svg { display: block; max-width: 100%; height: auto; }
+        .tp-svg text { fill: var(--mx-text-high); font-size: 12px; }
+        .tp-svg .tp-sub { fill: var(--mx-text-mid); font-size: 11px; }
+        .tp-svg .tp-col { fill: var(--mx-text-dim); font-size: 11px; font-weight: 700; letter-spacing: 0.12em; }
+        .tp-svg .tp-crit-text { fill: var(--mx-crit); font-weight: 700; }
+        .tp-svg .tp-warn-text { fill: var(--mx-warn); font-weight: 700; }
+        .tp-box { fill: var(--mx-surface); stroke: var(--mx-text-dim); stroke-width: 1; }
+        .tp-node.tp-warn .tp-box { stroke: var(--mx-warn); stroke-width: 2; }
+        .tp-node.tp-crit .tp-box { fill: var(--mx-crit-bg); stroke: var(--mx-crit); stroke-width: 3; }
+        .tp-node.tp-unknown .tp-box { stroke-dasharray: 4 3; }
+        .tp-queue { cursor: pointer; outline: none; }
+        .tp-queue:hover .tp-box { stroke: var(--mx-accent); }
+        .tp-queue:focus-visible .tp-box { stroke: var(--mx-accent); stroke-width: 3; }
+        .tp-dlq:not([data-state="crit"]):not([data-state="warn"]) { display: none; }
+        .tp-pill { fill: var(--mx-surface); stroke-width: 1.5; }
+        .tp-dlq[data-state="warn"] .tp-pill { stroke: var(--mx-warn); }
+        .tp-dlq[data-state="warn"] .tp-pill-text { fill: var(--mx-warn); font-size: 11px; font-weight: 700; }
+        .tp-dlq[data-state="crit"] .tp-pill { stroke: var(--mx-crit); fill: var(--mx-crit); }
+        .tp-dlq[data-state="crit"] .tp-pill-text { fill: var(--mx-surface); font-size: 11px; font-weight: 700; }
+        .tp-edge { fill: none; stroke: var(--mx-edge); }
+        .tp-edge-idle { stroke-dasharray: 3 4; }
+        .tp-edge-unknown { stroke-dasharray: 1 5; stroke-linecap: round; }
     </style>
 </head>
 <body class="p-4 sm:p-8" style="background:#060a12;">
@@ -543,6 +585,22 @@
                 <p id="queue-drawer-state" class="mx-drawer-state" role="status"></p>
                 <nav id="queue-drawer-links" class="mx-links" aria-label="Grafana links" hidden></nav>
                 <dl id="queue-drawer-numbers"></dl>
+            </dialog>
+
+            <!-- Topology drill-down: one pipeline's flow, opened from its matrix head on desktop widths
+                 and drawn by dashboard.js from /api/topology and the live metrics. -->
+            <dialog id="topology-dialog" class="tp-dialog" aria-labelledby="topology-title">
+                <div class="mx-drawer-head">
+                    <h2 id="topology-title">Pipeline topology</h2>
+                    <button id="topology-close" type="button" class="mx-drawer-close" aria-label="Close the pipeline topology">Close</button>
+                </div>
+                <div class="tp-legend">
+                    <span>Edge width = messages/s (√ scale) · dashed = 0/s · dotted = rate unknown</span>
+                    <span><b class="mx-crit-text">◆</b> critical</span>
+                    <span><b class="mx-warn-text">▲</b> warning</span>
+                    <span>Select a queue for its details</span>
+                </div>
+                <div id="topology-flow"></div>
             </dialog>
 
             <!-- ================================================================

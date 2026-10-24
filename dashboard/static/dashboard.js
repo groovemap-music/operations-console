@@ -427,6 +427,106 @@ const RunProgress = (() => {
     return { POLL_MS, BLOCKERS, pipelineOf, latestRuns, isRunning, duration, gap, eta, consumerEta, headline, burnupSeries, burnup };
 })();
 
+// ─── Topology: one pipeline's flow, an optional desktop drill-down ────────────
+//
+// Pure geometry for the producer → exchanges → per-entity queues → consumers → datastores
+// diagram (spike gm-operations-console-2rf, flow.html). The spike ruled it out as the Overview:
+// it needs horizontal panning on a phone and braids its edges with twice the consumers. So it is
+// only opened from a pipeline's matrix head on a viewport at least MIN_WIDTH wide, and nothing on
+// the Overview depends on it. Node states are the matrix cells' own (QueueHealth); this module
+// only places nodes and sizes edges.
+const TopologyFlow = (() => {
+    const MIN_WIDTH = 1024;      // narrower viewports get no Topology control (index.html holds the same breakpoint)
+    const RATE_MAX = 3000;       // messages/s drawn at full edge width; faster edges are capped
+    const WIDTH = 950;
+    const TOP = 26;              // room for the column headings
+    const QUEUE_HEIGHT = 58, QUEUE_GAP = 6, GROUP_GAP = 14;
+    const COLUMNS = {
+        producer: { x: 0, w: 130, title: 'PRODUCER' },
+        exchange: { x: 160, w: 150, title: 'EXCHANGE (FANOUT)' },
+        queue: { x: 350, w: 250, title: 'QUEUE' },
+        consumer: { x: 660, w: 150, title: 'CONSUMER' },
+        datastore: { x: 840, w: 110, title: 'DATASTORE' },
+    };
+
+    // Edge width grows with the square root of the rate, so a slow edge stays visible next to a
+    // fast one. Zero and unknown rates are hairlines, told apart by their dash pattern.
+    function edgeWidth(rate) {
+        if (rate === null || rate === undefined || !(rate > 0)) return 1;
+        return 1.5 + 10 * Math.sqrt(Math.min(rate, RATE_MAX) / RATE_MAX);
+    }
+
+    function edgeStyle(rate) {
+        if (rate === null || rate === undefined || Number.isNaN(rate)) return 'unknown';
+        return rate > 0 ? 'flowing' : 'idle';
+    }
+
+    // A fanout exchange copies every message to each bound queue, so its publish rate is any
+    // bound queue's; the highest known one, or null when none is known.
+    function exchangeRate(rates) {
+        const known = rates.filter(r => r !== null && r !== undefined);
+        return known.length ? Math.max(...known) : null;
+    }
+
+    // What a consumer writes to its datastore: the sum of its queues' known ack rates.
+    function sumRates(rates) {
+        const known = rates.filter(r => r !== null && r !== undefined);
+        return known.length ? known.reduce((a, b) => a + b, 0) : null;
+    }
+
+    function curve(x1, y1, x2, y2) {
+        const mx = (x1 + x2) / 2;
+        return `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`;
+    }
+
+    // Nodes and edges for one /api/topology pipeline. Queues are grouped by entity, next to their
+    // exchange; consumers and datastores are spread evenly down the full height.
+    function layout(pipeline) {
+        const { entity_types: entities, consumers } = pipeline;
+        const nodes = [];
+        const edges = [];
+        const node = (n) => { nodes.push(n); return n; };
+        const box = (kind, y, h) => ({ x: COLUMNS[kind].x, y, w: COLUMNS[kind].w, h });
+
+        let y = TOP;
+        const queueNodes = [];
+        const exchanges = entities.map(entity => {
+            const top = y;
+            consumers.forEach(consumer => {
+                queueNodes.push(node({ key: `queue:${consumer.name}:${entity}`, kind: 'queue', consumer: consumer.name, entity, ...box('queue', y, QUEUE_HEIGHT) }));
+                y += QUEUE_HEIGHT + QUEUE_GAP;
+            });
+            const mid = (top + y - QUEUE_GAP) / 2;
+            y += GROUP_GAP;
+            return node({ key: `exchange:${entity}`, kind: 'exchange', entity, ...box('exchange', mid - 22, 44) });
+        });
+        const height = Math.max(y - GROUP_GAP, TOP + 80);
+        const spread = (count, i) => TOP + ((height - TOP) / count) * (i + 0.5);
+
+        const producer = node({ key: 'producer', kind: 'producer', ...box('producer', spread(1, 0) - 40, 80) });
+        const consumerNodes = consumers.map((consumer, i) =>
+            node({ key: `consumer:${consumer.name}`, kind: 'consumer', consumer: consumer.name, ...box('consumer', spread(consumers.length, i) - 26, 52) }));
+        const stores = [...new Set(consumers.map(c => c.datastore))];
+        const storeNodes = stores.map((datastore, i) =>
+            node({ key: `datastore:${datastore}`, kind: 'datastore', datastore, ...box('datastore', spread(stores.length, i) - 22, 44) }));
+
+        const right = n => n.x + n.w;
+        const middle = n => n.y + n.h / 2;
+        const edge = (from, to) => edges.push({ key: `${from.key}>${to.key}`, from: from.key, to: to.key, d: curve(right(from), middle(from), to.x, middle(to)) });
+        exchanges.forEach(exchange => edge(producer, exchange));
+        queueNodes.forEach(queue => {
+            edge(exchanges[entities.indexOf(queue.entity)], queue);
+            edge(queue, consumerNodes[consumers.findIndex(c => c.name === queue.consumer)]);
+        });
+        consumers.forEach((consumer, i) => edge(consumerNodes[i], storeNodes[stores.indexOf(consumer.datastore)]));
+
+        const columns = Object.entries(COLUMNS).map(([kind, { x, title }]) => ({ kind, x, title }));
+        return { width: WIDTH, height, columns, nodes, edges };
+    }
+
+    return { MIN_WIDTH, RATE_MAX, edgeWidth, edgeStyle, exchangeRate, sumRates, layout };
+})();
+
 // Below this viewport width a pipeline with more than two consumers switches to the stacked,
 // self-labelled cell layout (the matrix CSS in index.html holds the same breakpoint).
 const MATRIX_STACKED_MAX_WIDTH = 479;
@@ -472,6 +572,9 @@ class Dashboard {
         this.healthKinds = {};
         this.drawerQueue = null;
         this.drawerReturnFocus = null;
+        // The pipeline the topology drill-down shows (null while closed), and what it was opened from.
+        this.topologyPipeline = null;
+        this.topologyReturnFocus = null;
 
         // The attention bar: the latest reading, the Grafana alerts the console last served (null
         // until asked), and which items the operator has already seen, so a new one re-opens a
@@ -500,6 +603,14 @@ class Dashboard {
 
         this.narrowViewport = window.matchMedia?.(`(max-width: ${MATRIX_STACKED_MAX_WIDTH}px)`);
         this.narrowViewport?.addEventListener?.('change', () => this._applyMatrixLayout());
+
+        // The topology drill-down exists only on a wide viewport; narrowing the window closes it.
+        this.wideViewport = window.matchMedia?.(`(min-width: ${TopologyFlow.MIN_WIDTH}px)`);
+        this.wideViewport?.addEventListener?.('change', () => {
+            if (!this._isWideViewport()) this.closeTopology();
+        });
+        document.getElementById('topology-dialog')?.addEventListener('close', () => this._onTopologyClosed());
+        document.getElementById('topology-close')?.addEventListener('click', () => this.closeTopology());
 
         const drawer = document.getElementById('queue-drawer');
         drawer?.addEventListener('close', () => this._onDrawerClosed());
@@ -546,6 +657,7 @@ class Dashboard {
         this.topology = null;
         this.pendingData = null;
         this.closeQueueDrawer();
+        this.closeTopology();
         this._resetHistory();
         this.stopAlertPolling();
         this.stopAuditPolling();
@@ -1134,6 +1246,7 @@ class Dashboard {
     renderTopology(topology) {
         this.topology = topology;
         this.closeQueueDrawer();
+        this.closeTopology();
         this._resetHistory();
         const container = document.getElementById('pipelines');
         if (!container) return;
@@ -1173,7 +1286,8 @@ class Dashboard {
                 cls: 'mx-unavailable-banner hidden',
                 text: 'Queue metrics unavailable',
                 attrs: { 'data-queues-unavailable': pipeline.id, role: 'status' },
-            }));
+            }),
+            this._topologyButton(pipeline));
 
         const cells = [this._el('div', { cls: 'mx-corner', attrs: { 'aria-hidden': 'true' } })];
         consumers.forEach(consumer => cells.push(this._el('div', { id: `service-${consumer.name}`, cls: 'mx-colhead' },
@@ -1322,6 +1436,7 @@ class Dashboard {
             }
         }
         if (this.drawerQueue?.pipeline === pipeline.id) this._renderDrawer();
+        if (this.topologyPipeline === pipeline.id) this._fillTopologyFlow();
         this._renderHeadline(pipeline);
         if (this.overviewView === 'progress') this._renderRunPipeline(pipeline);
     }
@@ -1356,7 +1471,12 @@ class Dashboard {
             dlqBadge.textContent = '';
         }
 
-        const label = [`${this._entityLabel(model.entity)} to ${model.consumer.label}`];
+        cell.setAttribute('aria-label', this._cellLabel(model));
+    }
+
+    // What a screen reader hears for one queue, in the matrix and in the topology.
+    _cellLabel({ entity, consumer, health, dlq, lag, last, trend, unavailable }) {
+        const label = [`${this._entityLabel(entity)} to ${consumer.label}`];
         if (unavailable) label.push('queue metrics unavailable');
         else if (!last) label.push('not reported');
         else {
@@ -1366,7 +1486,7 @@ class Dashboard {
         if (health.state === 'crit') label.push(`critical: ${health.label}`);
         if (dlq.state === 'crit') label.push(`critical: ${dlq.label}`);
         if (dlq.state === 'warn') label.push(`warning: ${dlq.label}`);
-        cell.setAttribute('aria-label', label.join('; '));
+        return label.join('; ');
     }
 
     // Log a queue entering a critical or warning state, and leaving one, once per change.
@@ -1480,6 +1600,210 @@ class Dashboard {
             this._el('dt', { text: term }),
             this._el('dd', { cls: 'mono', text: unavailable && term !== 'Queue' && term !== 'Dead-letter queue' ? dash : value }),
         ]));
+    }
+
+    // ─── Topology drill-down: one pipeline's flow, on desktop widths only ─────
+
+    _isWideViewport() {
+        return this.wideViewport ? this.wideViewport.matches : window.innerWidth >= TopologyFlow.MIN_WIDTH;
+    }
+
+    // The control in a pipeline's matrix head; index.html hides it below TopologyFlow.MIN_WIDTH.
+    _topologyButton(pipeline) {
+        const button = this._el('button', {
+            cls: 'mx-topology-btn',
+            text: 'Topology',
+            attrs: {
+                type: 'button',
+                'data-topology': pipeline.id,
+                'aria-haspopup': 'dialog',
+                'aria-label': `Show the ${pipeline.label} pipeline topology`,
+            },
+        });
+        button.addEventListener('click', () => this.openTopology(pipeline.id, button));
+        return button;
+    }
+
+    openTopology(pipelineId, trigger = null) {
+        const dialog = document.getElementById('topology-dialog');
+        const pipeline = this._pipeline(pipelineId);
+        if (!dialog || !pipeline || !this._isWideViewport()) return;
+        this.topologyPipeline = pipeline.id;
+        this.topologyReturnFocus = trigger;
+        const title = document.getElementById('topology-title');
+        if (title) title.textContent = `${pipeline.label} pipeline topology`;
+        this._buildTopologyFlow(pipeline);
+        this._fillTopologyFlow();
+        if (!dialog.open) {
+            if (typeof dialog.showModal === 'function') dialog.showModal();
+            else dialog.setAttribute('open', '');
+        }
+    }
+
+    closeTopology() {
+        const dialog = document.getElementById('topology-dialog');
+        if (dialog?.open) {
+            if (typeof dialog.close === 'function') dialog.close();
+            else dialog.removeAttribute('open');
+        }
+        this._onTopologyClosed();
+    }
+
+    _onTopologyClosed() {
+        const target = this.topologyReturnFocus;
+        this.topologyPipeline = null;
+        this.topologyReturnFocus = null;
+        document.getElementById('topology-flow')?.replaceChildren();
+        if (target?.isConnected) target.focus();
+    }
+
+    _svg(tag, attrs = {}, ...children) {
+        const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+        for (const [name, value] of Object.entries(attrs)) el.setAttribute(name, String(value));
+        el.append(...children);
+        return el;
+    }
+
+    _svgText(x, y, cls, text = '') {
+        const el = this._svg('text', { x, y, class: cls });
+        el.textContent = text;
+        return el;
+    }
+
+    // Draw the pipeline's nodes and edges once; _fillTopologyFlow writes the live values into them.
+    // Each node and edge carries `data-node` / `data-edge` with its layout key.
+    _buildTopologyFlow(pipeline) {
+        const container = document.getElementById('topology-flow');
+        if (!container) return;
+        const { width, height, columns, nodes, edges } = TopologyFlow.layout(pipeline);
+        const svg = this._svg('svg', {
+            class: 'tp-svg', width, height, viewBox: `0 0 ${width} ${height}`,
+            role: 'group', 'aria-label': `${pipeline.label} pipeline flow`, 'data-flow': pipeline.id,
+        });
+        columns.forEach(({ x, title }) => svg.append(this._svgText(x, 12, 'tp-col', title)));
+        // Edges first, so nodes sit on top of them.
+        edges.forEach(({ key, d }) => svg.append(this._svg('path', { class: 'tp-edge', d, 'data-edge': key }, this._svg('title'))));
+        nodes.forEach(n => svg.append(this._topologyNode(pipeline, n)));
+        container.replaceChildren(svg);
+    }
+
+    _topologyNode(pipeline, n) {
+        const { x, y, w, h } = n;
+        const g = this._svg('g', { class: `tp-node tp-${n.kind}`, 'data-node': n.key, 'data-kind': n.kind, 'data-state': 'unknown' },
+            this._svg('rect', { class: 'tp-box', x, y, width: w, height: h, rx: 8 }));
+        const label = (text) => this._svgText(x + 10, y + (n.kind === 'queue' ? 17 : 18), 'tp-name', text);
+        const sub = (dy, text = '') => this._svgText(x + 10, y + dy, 'tp-sub', text);
+        const consumer = pipeline.consumers.find(c => c.name === n.consumer);
+        if (n.kind === 'producer') g.append(label(pipeline.producer.label), sub(36, pipeline.producer.name), sub(60));
+        if (n.kind === 'exchange') g.append(label(this._entityLabel(n.entity)), sub(34));
+        if (n.kind === 'datastore') g.append(this._svgText(x + 10, y + 27, 'tp-name', this._datastoreLabel(n.datastore)));
+        if (n.kind === 'consumer') g.append(label(consumer.label), sub(36));
+        if (n.kind === 'queue') {
+            const name = this._svgText(x + 10, y + 17, 'tp-name');
+            name.append(this._svg('tspan', { 'font-weight': 600 }), ` → ${consumer.label}`);
+            name.firstChild.textContent = this._entityLabel(n.entity);
+            g.append(name, sub(33),
+                this._svg('g', { class: 'tp-dlq', 'data-state': 'ok' },
+                    this._svg('rect', { class: 'tp-pill', x: x + 8, y: y + 39, width: 0, height: 14, rx: 7 }),
+                    this._svgText(x + 16, y + 50, 'tp-pill-text')));
+            // A queue opens the matrix's own detail drawer, and focus comes back here.
+            Object.assign(g.dataset, { pipeline: pipeline.id, consumer: n.consumer, entity: n.entity });
+            g.setAttribute('tabindex', '0');
+            g.setAttribute('role', 'button');
+            g.setAttribute('aria-haspopup', 'dialog');
+            g.addEventListener('click', () => this.openQueueDrawer(g));
+            g.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                this.openQueueDrawer(g);
+            });
+        }
+        return g;
+    }
+
+    _rateText(rate, suffix) {
+        return rate === null || rate === undefined ? 'rate unknown' : `${this._formatRate(rate)}/s ${suffix}`;
+    }
+
+    // Write the live values into the open flow: every queue's state is its matrix cell's model, a
+    // consumer takes the worst state of its queues, and edges are sized from the latest rates.
+    _fillTopologyFlow() {
+        const pipeline = this._pipeline(this.topologyPipeline);
+        const svg = document.querySelector(`#topology-flow [data-flow="${this.topologyPipeline}"]`);
+        if (!pipeline || !svg) return;
+        const nodeEl = key => svg.querySelector(`[data-node="${key}"]`);
+        const setEdge = (from, to, rate, what) => {
+            const path = svg.querySelector(`[data-edge="${from}>${to}"]`);
+            if (!path) return;
+            const style = TopologyFlow.edgeStyle(rate);
+            path.setAttribute('class', `tp-edge tp-edge-${style}`);
+            path.setAttribute('stroke-width', TopologyFlow.edgeWidth(rate).toFixed(1));
+            path.dataset.rate = rate === null ? '' : String(rate);
+            path.firstChild.textContent = `${what}: ${this._rateText(rate, '').trim()}`;
+        };
+        const setState = (el, state) => {
+            el.dataset.state = state;
+            el.classList.remove('tp-ok', 'tp-warn', 'tp-crit', 'tp-unknown');
+            el.classList.add(`tp-${state}`);
+        };
+        const glyph = { crit: '◆ ', warn: '▲ ' };
+        const rateOf = (model, field) => (model.unavailable || !model.last ? null : model.last[field] ?? null);
+
+        const models = pipeline.consumers.flatMap(consumer => pipeline.entity_types.map(entity => this._cellModel(pipeline, consumer, entity)));
+        for (const model of models) {
+            const key = `queue:${model.consumer.name}:${model.entity}`;
+            const g = nodeEl(key);
+            if (!g) continue;
+            const { health, dlq, last, lag, unavailable } = model;
+            setState(g, model.state);
+            g.dataset.kind = health.kind;
+            g.setAttribute('aria-label', this._cellLabel(model));
+            const status = g.querySelector('.tp-sub');
+            const depth = last ? `${QueueHealth.formatCount(last.messages)} queued` : '';
+            status.setAttribute('class', health.state === 'crit' ? 'tp-sub tp-crit-text' : 'tp-sub');
+            if (unavailable) status.textContent = 'queue metrics unavailable';
+            else if (!last) status.textContent = 'not reported';
+            else if (health.state === 'crit') status.textContent = `${glyph.crit}${health.label} · ${depth}`;
+            else status.textContent = `${depth} · ${this._lagText(lag)}`;
+            const pill = g.querySelector('.tp-dlq');
+            pill.dataset.state = dlq.state;
+            pill.dataset.kind = dlq.kind;
+            const pillText = dlq.state === 'crit' || dlq.state === 'warn' ? `${glyph[dlq.state]}${dlq.label}` : '';
+            pill.querySelector('.tp-pill-text').textContent = pillText;
+            // Sized to its text at 11 px bold, so the badge reads as a badge rather than a bar.
+            pill.querySelector('.tp-pill').setAttribute('width', String(Math.round(16 + 6.6 * pillText.length)));
+            setEdge(`exchange:${model.entity}`, key, rateOf(model, 'message_rate'), `${this._entityLabel(model.entity)} → ${model.consumer.label} published`);
+            setEdge(key, `consumer:${model.consumer.name}`, rateOf(model, 'ack_rate'), `${this._entityLabel(model.entity)} → ${model.consumer.label} acknowledged`);
+        }
+
+        let out = null;
+        for (const entity of pipeline.entity_types) {
+            const rate = TopologyFlow.exchangeRate(models.filter(m => m.entity === entity).map(m => rateOf(m, 'message_rate')));
+            if (rate !== null) out = (out ?? 0) + rate;
+            const exchange = nodeEl(`exchange:${entity}`);
+            if (exchange) exchange.querySelector('.tp-sub').textContent = this._rateText(rate, 'in');
+            setEdge('producer', `exchange:${entity}`, rate, `${this._entityLabel(entity)} published`);
+        }
+        const producer = nodeEl('producer');
+        if (producer) producer.querySelectorAll('.tp-sub')[1].textContent = this._rateText(out, 'out');
+
+        for (const consumer of pipeline.consumers) {
+            const own = models.filter(m => m.consumer === consumer);
+            const state = QueueHealth.worst(...own.map(m => m.state));
+            const acked = TopologyFlow.sumRates(own.map(m => rateOf(m, 'ack_rate')));
+            const g = nodeEl(`consumer:${consumer.name}`);
+            if (g) {
+                setState(g, state);
+                const counts = ['crit', 'warn'].map(s => [s, own.filter(m => m.state === s).length]).filter(([, n]) => n);
+                const words = { crit: 'critical', warn: 'warning' };
+                const status = g.querySelector('.tp-sub');
+                status.setAttribute('class', `tp-sub${counts.length ? ` tp-${counts[0][0]}-text` : ''}`);
+                status.textContent = counts.length
+                    ? counts.map(([s, n]) => `${glyph[s]}${n} ${words[s]}`).join(' · ')
+                    : this._rateText(acked, 'acked');
+            }
+            setEdge(`consumer:${consumer.name}`, `datastore:${consumer.datastore}`, acked, `${consumer.label} → ${this._datastoreLabel(consumer.datastore)} written`);
+        }
     }
 
     // ─── Run progress: the ETA headline and the Run progress view ──────────────

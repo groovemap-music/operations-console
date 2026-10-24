@@ -10,7 +10,7 @@ const DASHBOARD_JS_PATH = resolve(__dirname, '..', 'static', 'dashboard.js');
 function loadDashboardScript() {
     const code = readFileSync(DASHBOARD_JS_PATH, 'utf-8');
     const withoutAutoInit = code.replace(/document\.addEventListener\(\s*['"]DOMContentLoaded['"][\s\S]*$/, '');
-    const wrapped = `(function() {\n${withoutAutoInit}\nglobalThis.__Dashboard = Dashboard;\nglobalThis.__QueueHealth = QueueHealth;\nglobalThis.__Attention = Attention;\nglobalThis.__DeepLinks = DeepLinks;\nglobalThis.__RunProgress = RunProgress;\nglobalThis.__matrixLayout = matrixLayout;\n})();`;
+    const wrapped = `(function() {\n${withoutAutoInit}\nglobalThis.__Dashboard = Dashboard;\nglobalThis.__QueueHealth = QueueHealth;\nglobalThis.__Attention = Attention;\nglobalThis.__DeepLinks = DeepLinks;\nglobalThis.__RunProgress = RunProgress;\nglobalThis.__matrixLayout = matrixLayout;\nglobalThis.__TopologyFlow = TopologyFlow;\n})();`;
     vm.runInThisContext(wrapped, { filename: DASHBOARD_JS_PATH });
 }
 
@@ -41,6 +41,12 @@ export function loadDeepLinks() {
 export function loadRunProgress() {
     loadDashboardScript();
     return { RunProgress: globalThis.__RunProgress, QueueHealth: globalThis.__QueueHealth };
+}
+
+/** The topology drill-down's pure layout and edge sizing, as dashboard.js defines it. */
+export function loadTopologyFlow() {
+    loadDashboardScript();
+    return globalThis.__TopologyFlow;
 }
 
 /** The shape /api/topology returns, built the way the server derives it. */
@@ -98,9 +104,19 @@ export const DRAWER_MARKUP = `
   <p id="queue-drawer-state"></p><nav id="queue-drawer-links" hidden></nav><dl id="queue-drawer-numbers"></dl>
 </dialog>`;
 
-/** A dashboard with the live-view side effects stubbed, an empty `#pipelines` container, and the drawer. */
-export function makeDashboard({ narrow = false } = {}) {
-    document.body.innerHTML = `${ATTENTION_MARKUP}<div id="pipelines"></div>${DRAWER_MARKUP}`;
+/** The shell's topology drill-down dialog, as index.html declares it. */
+export const TOPOLOGY_MARKUP = `
+<dialog id="topology-dialog">
+  <h2 id="topology-title"></h2><button id="topology-close" type="button">Close</button>
+  <div id="topology-flow"></div>
+</dialog>`;
+
+/**
+ * A dashboard with the live-view side effects stubbed, an empty `#pipelines` container, the drawer,
+ * and the topology dialog. `narrow` is a phone (stacked matrix), `wide` a desktop (topology control).
+ */
+export function makeDashboard({ narrow = false, wide = true } = {}) {
+    document.body.innerHTML = `${ATTENTION_MARKUP}<div id="pipelines"></div>${DRAWER_MARKUP}${TOPOLOGY_MARKUP}`;
     const Dashboard = loadDashboardClass();
     const dashboard = Object.create(Dashboard.prototype);
     Object.assign(dashboard, {
@@ -109,6 +125,9 @@ export function makeDashboard({ narrow = false } = {}) {
         healthKinds: {},
         drawerQueue: null,
         drawerReturnFocus: null,
+        topologyPipeline: null,
+        topologyReturnFocus: null,
+        wideViewport: { matches: wide },
         queuesUnavailable: {},
         activityLog: [],
         maxLogEntries: 100,

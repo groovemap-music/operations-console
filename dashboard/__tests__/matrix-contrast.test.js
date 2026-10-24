@@ -4,9 +4,10 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * WCAG 2.x contrast for every colour pair the Overview matrix and its drawer draw, in both
- * themes: text needs 4.5:1 (1.4.3) and state borders, badges, and focus rings 3:1 (1.4.11).
- * The tokens are read from index.html, so a changed colour is checked where it is defined.
+ * WCAG 2.x contrast for every colour pair the Overview matrix, its drawer, and the topology
+ * drill-down draw, in both themes: text needs 4.5:1 (1.4.3) and state borders, badges, edges,
+ * and focus rings 3:1 (1.4.11). The tokens are read from index.html, so a changed colour is
+ * checked where it is defined.
  */
 const SHELL = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '..', 'static', 'index.html'), 'utf-8');
 
@@ -67,6 +68,8 @@ function pairs(t) {
             'warning badge and banner border vs surface': [t.warn, t.surface],
             'focus ring vs surface': [t.accent, t.surface],
             'unavailable cell border and swatch outline vs surface': [t['text-dim'], t.surface],
+            'topology node outline vs surface': [t['text-dim'], t.surface],
+            'topology edge (solid, dashed 0/s, dotted unknown) vs surface': [t.edge, t.surface],
         },
     };
 }
