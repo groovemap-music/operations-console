@@ -20,7 +20,8 @@ JavaScript vulnerability audits.
 
 ## Automation
 
-The thin CI and release callers pin `groovemap-music/automation` at
+The thin CI and release callers pin `groovemap-music/automation`: CI at
+`dbf22ed83d486e9484fc8c6385c7c3e5995700e4` and release at
 `833cb464507678c38ab78bd4718ce697399463e9`. CI runs for pushes to `main`, ordinary and
 Dependabot-authored pull requests, manual dispatches, and two weekly full/security schedules.
 There is one required job graph for every pull request; no actor-specific skip or reduced
