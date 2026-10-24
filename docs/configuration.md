@@ -55,8 +55,10 @@ inhibited) from the server, behind the admin session like every other data route
 `GET /api/alerts`. The token is never sent to the browser, and neither it nor an upstream error
 message is logged or returned. Alert links point only into `GRAFANA_URL`. Alerts are configured
 only when a Grafana URL is set and `GRAFANA_TOKEN_FILE` names a readable, non-empty token; an
-unset, missing, or empty token file answers `configured: false` and the bar says nothing about
-Grafana. When Grafana is configured but does not answer, refuses the token (401 or 403), or the
+unset variable, a missing file, or an empty file answers `configured: false` and the bar says nothing about
+Grafana. A token file that exists but cannot be read (permissions, a directory in its place) or is
+not valid UTF-8 is a broken mount: the route answers `available: false` with the note and logs the
+error class only. When Grafana is configured but does not answer, refuses the token (401 or 403), or the
 response is not an alert list, the route answers `available: false` with a note and the bar shows
 it beside the derived items.
 

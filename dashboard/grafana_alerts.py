@@ -5,8 +5,9 @@ file, so the token never reaches the browser. The server reaches Grafana at ``GR
 (default ``GRAFANA_URL``), which may be an internal address such as ``http://grafana:3000``;
 ``GRAFANA_URL`` stays the browser-facing address used for links. Alerts are configured only when a
 Grafana URL is set and ``GRAFANA_TOKEN_FILE`` names a readable, non-empty token; otherwise the route
-answers ``configured: false`` with no note and the attention bar shows only the problems it derives
-from the live feed. A Grafana failure (including a 401 or 403) answers
+answers ``configured: false`` with no note (a missing file counts as not provided) and the attention bar shows only the problems it derives
+from the live feed. A token file that exists but cannot be read or decoded, or a Grafana failure
+(including a 401 or 403), answers
 ``available: false`` with a fixed note instead of an error status, so the bar degrades to the
 derived items and says why. Neither the token nor an upstream error message is logged or returned.
 
@@ -60,14 +61,21 @@ def grafana_public_url() -> str | None:
 
 
 def _read_token() -> str | None:
-    """The Grafana read token from ``GRAFANA_TOKEN_FILE``; None when unset, unreadable, or empty."""
+    """The Grafana read token from ``GRAFANA_TOKEN_FILE``.
+
+    None when the variable is unset, the file is missing, or it is empty: nothing was provided, so
+    alerts are not configured. A file that exists but cannot be read or decoded is a broken mount,
+    which raises GrafanaUnavailableError naming only the exception class.
+    """
     path = getenv("GRAFANA_TOKEN_FILE", "").strip()
     if not path:
         return None
     try:
         return Path(path).read_text(encoding="utf-8").strip() or None
-    except OSError:
+    except FileNotFoundError:
         return None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise GrafanaUnavailableError(f"token file {type(exc).__name__}") from None
 
 
 def _same_origin(url: str, base: str) -> bool:
@@ -129,10 +137,13 @@ async def fetch_alerts(base: str, token: str, public_base: str) -> list[dict[str
 async def firing_alerts() -> JSONResponse:
     """Firing Grafana alerts, or why there are none to show."""
     base = grafana_api_url()
-    token = _read_token()
-    if base is None or token is None:
-        return JSONResponse(content={"configured": False, "available": False, "alerts": [], "note": None})
+    unconfigured = JSONResponse(content={"configured": False, "available": False, "alerts": [], "note": None})
+    if base is None:
+        return unconfigured
     try:
+        token = _read_token()
+        if token is None:
+            return unconfigured
         alerts = await fetch_alerts(base, token, grafana_public_url() or base)
     except GrafanaUnavailableError as exc:
         logger.warning("grafana_alerts_unavailable", reason=str(exc))

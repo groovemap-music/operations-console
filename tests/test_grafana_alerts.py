@@ -156,6 +156,29 @@ class TestErrors:
         assert grafana.requests == []
 
 
+class TestBrokenTokenFile:
+    @pytest.mark.parametrize("kind", ["permission", "directory", "binary"])
+    def test_an_unreadable_token_file_is_unavailable_and_logged_without_the_token(
+        self, client: TestClient, grafana: FakeGrafana, configured: Path, kind: str
+    ) -> None:
+        if kind == "permission":
+            configured.chmod(0)
+        elif kind == "directory":
+            configured.unlink()
+            configured.mkdir()
+        else:
+            configured.write_bytes(b"\xff\xfe" + TOKEN.encode())
+        with capture_logs() as logs:
+            response = client.get("/api/alerts")
+        configured.chmod(0o700) if kind == "permission" else None
+        assert response.status_code == 200
+        assert response.json() == {"configured": True, "available": False, "alerts": [], "note": grafana_alerts.UNAVAILABLE_NOTE}
+        assert grafana.requests == []
+        assert [e["event"] for e in logs] == ["grafana_alerts_unavailable"]
+        assert TOKEN not in json.dumps(logs, default=str)
+        assert TOKEN not in response.text
+
+
 class TestApiUrl:
     def test_the_server_asks_grafana_api_url_and_links_use_grafana_url(
         self, client: TestClient, grafana: FakeGrafana, configured: Path, monkeypatch: pytest.MonkeyPatch
