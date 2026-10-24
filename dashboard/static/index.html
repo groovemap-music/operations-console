@@ -40,7 +40,6 @@
             --accent-red: #ff5252;
             --card-shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
             --scrollbar-thumb: #2a3d58;
-            --gauge-track: #1e3050;
             --log-msg: #b0bec5;
             --row-border: rgba(255,255,255,0.05);
         }
@@ -173,9 +172,144 @@
         }
         @keyframes spin { to { transform: rotate(360deg); } }
         .animate-spin { animation: spin 1s linear infinite; }
+
+        /* ─── Overview matrix (spike gm-operations-console-2rf) ───────────────────────
+           Every colour pair the matrix draws is checked for WCAG contrast in
+           dashboard/__tests__/matrix-contrast.test.js. The console renders dark; the light set
+           is checked too, ready for a light theme. Lag ramp: lightness rises ~15 L* per bin so
+           bins stay apart under every colour-vision simulation. */
+        :root, [data-theme="dark"] {
+            --mx-surface: #0f1a2e;
+            --mx-border: #1e3050;
+            --mx-text-high: #f0f4f8;
+            --mx-text-mid: #b0bec5;
+            --mx-text-dim: #8a9bb3;
+            --mx-accent: #00bcd4;
+            --mx-warn: #ffab00;
+            --mx-crit: #ff5c8a;
+            --mx-crit-bg: rgba(255, 92, 138, 0.16);
+            --mx-ramp-0: #0d2431;
+            --mx-ramp-1: #004a67;
+            --mx-ramp-2: #4361a6;
+            --mx-ramp-3: #8c8de6;
+            --mx-ramp-3-text: #0d1b2a;
+            --mx-backdrop: rgba(6, 10, 18, 0.7);
+        }
+        [data-theme="light"] {
+            --mx-surface: #ffffff;
+            --mx-border: #c3d0de;
+            --mx-text-high: #0d1b2a;
+            --mx-text-mid: #2c3e55;
+            --mx-text-dim: #4a5e78;
+            --mx-accent: #00798a;
+            --mx-warn: #6d4600;
+            --mx-crit: #c2185b;
+            --mx-crit-bg: rgba(194, 24, 91, 0.10);
+            --mx-ramp-0: #f0f8fb;
+            --mx-ramp-1: #a6dae7;
+            --mx-ramp-2: #98ade3;
+            --mx-ramp-3: #8384d3;
+            --mx-ramp-3-text: #0d1b2a;
+            --mx-backdrop: rgba(13, 27, 42, 0.4);
+        }
+        .mx-legend {
+            display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12px; color: var(--mx-text-mid);
+            background: var(--mx-surface); border: 1px solid var(--mx-border); border-radius: 12px; padding: 8px 12px;
+        }
+        .mx-legend-item { white-space: nowrap; }
+        .mx-swatch { display: inline-block; width: 14px; height: 10px; border-radius: 2px; vertical-align: -1px; margin-right: 4px; border: 1px solid var(--mx-text-dim); }
+        .mx-crit-text { color: var(--mx-crit); }
+        .mx-warn-text { color: var(--mx-warn); }
+        .mx-pipeline { background: var(--mx-surface); border: 1px solid var(--mx-border); border-radius: 12px; padding: 12px; }
+        .mx-pipeline-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-bottom: 8px; }
+        .mx-pipeline-head h2 { margin: 0; font-size: 14px; font-weight: 700; letter-spacing: 0.15em; text-transform: uppercase; color: var(--mx-text-dim); }
+        .mx-producer { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 12px; }
+        .mx-producer-label, .mx-high { color: var(--mx-text-high); }
+        .mx-producer-label { font-weight: 600; }
+        .mx-dim { color: var(--mx-text-dim); }
+        .mx-unavailable-banner {
+            font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+            color: var(--mx-warn); border: 1.5px solid var(--mx-warn); border-radius: 4px; padding: 1px 6px;
+        }
+        .mx-unavailable-banner::before { content: "▲ "; }
+        .mx-grid { display: grid; gap: 4px; grid-template-columns: minmax(72px, 150px) repeat(var(--mx-cols), minmax(0, 1fr)); }
+        .mx-colhead {
+            font-size: 12px; color: var(--mx-text-mid); padding: 4px 6px; align-self: end; min-width: 0;
+            display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px;
+        }
+        .mx-consumer { color: var(--mx-text-high); font-weight: 600; }
+        .mx-rowhead { font-size: 13px; padding: 6px; align-self: center; min-width: 0; color: var(--mx-text-high); }
+        .mx-extract { display: block; font-size: 11px; color: var(--mx-text-dim); }
+        .mx-extract-active { color: var(--mx-accent); }
+        /* A cell's parts flow in one wrapping line: one row per entity on a wide screen, and a
+           few short lines in a narrow column. */
+        .mx-cell {
+            font: inherit; text-align: left; cursor: pointer; position: relative; min-width: 0; min-height: 48px;
+            display: flex; flex-wrap: wrap; align-items: baseline; align-content: center; gap: 2px 10px;
+            border-radius: 6px; padding: 6px 8px; border: 1px solid var(--mx-border);
+            color: var(--mx-text-high); background: var(--mx-surface);
+        }
+        .mx-cell:hover { border-color: var(--mx-text-dim); }
+        .mx-cell:focus-visible { outline: 2px solid var(--mx-accent); outline-offset: 2px; }
+        .mx-cname { display: none; flex-basis: 100%; font-size: 12px; font-weight: 600; }
+        .mx-flag { font-size: 11px; font-weight: 700; }
+        .mx-flag:empty, .mx-dlq:empty { display: none; }
+        .mx-n { font-size: 18px; font-weight: 600; }
+        .mx-meta { font-size: 11px; color: var(--mx-text-mid); }
+        .mx-dlq { display: inline-block; font-size: 11px; font-weight: 700; border-radius: 9px; padding: 0 6px; border: 1.5px solid; background: var(--mx-surface); }
+        .mx-dlq-warn { color: var(--mx-warn); border-color: var(--mx-warn); }
+        .mx-dlq-crit { color: var(--mx-surface); border-color: var(--mx-crit); background: var(--mx-crit); }
+        .mx-lag-0 { background: var(--mx-ramp-0); }
+        .mx-lag-1 { background: var(--mx-ramp-1); }
+        .mx-lag-2 { background: var(--mx-ramp-2); }
+        .mx-lag-3 { background: var(--mx-ramp-3); }
+        .mx-cell.mx-lag-2 .mx-meta { color: var(--mx-text-high); }
+        .mx-cell.mx-lag-3, .mx-cell.mx-lag-3 .mx-meta { color: var(--mx-ramp-3-text); }
+        .mx-cell.mx-crit {
+            border: 3px solid var(--mx-crit); padding: 4px 6px;
+            background: repeating-linear-gradient(135deg, var(--mx-crit-bg) 0 6px, transparent 6px 12px), var(--mx-surface);
+        }
+        .mx-cell.mx-crit .mx-flag { color: var(--mx-crit); }
+        .mx-cell.mx-unavailable { border-style: dashed; border-color: var(--mx-text-dim); }
+        /* Stacked: consumer heads become a key above the rows, and every cell names its consumer. */
+        .mx-grid.mx-stacked { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .mx-stacked .mx-corner { display: none; }
+        .mx-stacked .mx-colhead { border: 1px solid var(--mx-border); border-radius: 6px; align-self: stretch; }
+        .mx-stacked .mx-rowhead { grid-column: 1 / -1; padding-bottom: 0; }
+        .mx-stacked .mx-cname { display: block; }
+        .mx-stacked .mx-extract { display: inline; margin-left: 8px; }
+        @media (max-width: 479px) {
+            .mx-pipeline { padding: 8px; }
+            .mx-grid { gap: 3px; grid-template-columns: minmax(60px, 80px) repeat(var(--mx-cols), minmax(0, 1fr)); }
+            .mx-rowhead { padding: 4px 2px; }
+            .mx-grid.mx-stacked { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            .mx-cell { padding: 4px 5px; }
+            .mx-cell.mx-crit { padding: 2px 3px; }
+            .mx-n { font-size: 15px; }
+        }
+        .mx-drawer {
+            position: fixed; inset: 0 0 0 auto; margin: 0; width: min(420px, 100vw); height: 100vh; max-height: 100vh; max-width: 100vw;
+            border: 0; border-left: 1px solid var(--mx-border); padding: 16px 20px; overflow-y: auto;
+            background: var(--mx-surface); color: var(--mx-text-high);
+        }
+        .mx-drawer::backdrop { background: var(--mx-backdrop); }
+        .mx-drawer-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+        .mx-drawer-head h2 { font-size: 16px; font-weight: 600; margin: 0; }
+        #queue-drawer-subtitle { font-size: 12px; color: var(--mx-text-mid); margin: 2px 0 0; }
+        .mx-drawer-state { font-size: 12px; font-weight: 700; margin: 12px 0; color: var(--mx-text-mid); }
+        .mx-drawer-state[data-state="crit"] { color: var(--mx-crit); }
+        .mx-drawer-state[data-state="warn"] { color: var(--mx-warn); }
+        .mx-drawer dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 12px; font-size: 12px; margin: 0; }
+        .mx-drawer dt { color: var(--mx-text-mid); }
+        .mx-drawer dd { margin: 0; color: var(--mx-text-high); overflow-wrap: anywhere; }
+        .mx-drawer-close {
+            font: inherit; font-size: 12px; background: transparent; color: var(--mx-text-mid); cursor: pointer;
+            border: 1px solid var(--mx-text-dim); border-radius: 6px; padding: 2px 8px;
+        }
+        .mx-drawer-close:focus-visible { outline: 2px solid var(--mx-accent); outline-offset: 2px; }
     </style>
 </head>
-<body class="p-8" style="background:#060a12;">
+<body class="p-4 sm:p-8" style="background:#060a12;">
 <div class="max-w-[1440px] mx-auto">
 
     <!-- ================================================================
@@ -250,13 +384,6 @@
             </div>
 
             <div class="flex flex-wrap items-center gap-4">
-                <div class="flex items-center space-x-4 py-1.5 px-4 rounded-full dashboard-card" style="border-radius:9999px">
-                    <span class="text-[10px] font-bold uppercase tracking-wider t-dim">DLQ Toggle</span>
-                    <label class="relative inline-flex items-center cursor-pointer">
-                        <input id="dlq-toggle" class="sr-only peer" type="checkbox" value=""/>
-                        <div class="w-8 h-4 bg-zinc-400 dark:bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-indigo-500"></div>
-                    </label>
-                </div>
                 <span id="admin-email" class="text-xs mono t-dim"></span>
                 <button id="logout-btn" class="text-xs font-bold uppercase tracking-wider text-red-400 hover:text-red-300 transition-colors flex items-center gap-1">
                     <span class="material-symbols-outlined text-sm">logout</span> Logout
@@ -310,8 +437,22 @@
              ============================================================ -->
         <div id="tab-overview" class="space-y-8">
 
-            <!-- Pipelines are drawn by dashboard.js from /api/topology and filled from live metrics. -->
-            <div id="pipelines" class="space-y-8"></div>
+            <!-- Each pipeline is an entity x consumer matrix, drawn by dashboard.js from /api/topology
+                 and filled from live metrics. -->
+            <div id="pipelines" class="space-y-4"></div>
+
+            <!-- Queue detail drawer: opened from a matrix cell, filled by dashboard.js. -->
+            <dialog id="queue-drawer" class="mx-drawer" aria-labelledby="queue-drawer-title">
+                <div class="mx-drawer-head">
+                    <div>
+                        <h2 id="queue-drawer-title">Queue</h2>
+                        <p id="queue-drawer-subtitle"></p>
+                    </div>
+                    <button id="queue-drawer-close" type="button" class="mx-drawer-close" aria-label="Close queue details">Close</button>
+                </div>
+                <p id="queue-drawer-state" class="mx-drawer-state" role="status"></p>
+                <dl id="queue-drawer-numbers"></dl>
+            </dialog>
 
             <!-- ================================================================
                  DATABASE STATISTICS

@@ -2,10 +2,11 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { DATASTORES, discogs, makeDashboard, queue as queueOf } from './overview-helpers.js';
 
 /**
- * A null rate means "not computable this interval". The rate dials render it as an em dash with
- * an accessible "rate unknown" label, never as 0, and a computed 0 still renders as 0.0.
+ * A null rate means "not computable this interval" (first poll, missed poll, counter reset). The
+ * matrix never treats it as a zero: a backlog with only unknown ack rates is not stalled and its
+ * lag is unknown, while a computed zero sustained for 60 s is a stall.
  */
-const queue = (rates) => queueOf('groovemap-discogs-graphinator-artists', rates);
+const NAME = 'groovemap-discogs-graphinator-artists';
 
 describe('Dashboard unknown rates', () => {
     let dashboard;
@@ -15,24 +16,33 @@ describe('Dashboard unknown rates', () => {
         dashboard.renderTopology({ pipelines: [discogs()], datastores: DATASTORES });
     });
 
-    const publish = () => document.getElementById('discogs-rate-text-graphinator-artists-publish');
-    const ack = () => document.getElementById('discogs-rate-text-graphinator-artists-ack');
-    const update = (rates) => dashboard.updateDashboard({ pipelines: { discogs: { services: [], queues: [queue(rates)], queues_available: true } } });
-
-    it('renders null rates as an em dash labelled rate unknown, never 0', () => {
-        update({ message_rate: null, ack_rate: null });
-        for (const dial of [publish(), ack()]) {
-            expect(dial.textContent).toBe('—');
-            expect(dial.getAttribute('aria-label')).toBe('rate unknown');
+    const cell = () => document.getElementById('discogs-graphinator-artists-cell');
+    // 40 readings 2 s apart (78 s), all with the given rates.
+    const run = (rates) => {
+        for (let i = 0; i < 40; i++) {
+            const queues = [queueOf(NAME, { messages: 5000, messages_unacknowledged: 200, ...rates })];
+            dashboard.updateDashboard({ timestamp: new Date(1e12 + i * 2000).toISOString(), pipelines: { discogs: { services: [], queues, queues_available: true } } });
         }
+    };
+
+    it('never reports a stall from null ack rates, and shows the lag as unknown', () => {
+        run({ message_rate: null, ack_rate: null });
+        expect(cell().dataset.state).toBe('ok');
+        expect(cell().querySelector('.mx-flag').textContent).toBe('');
+        expect(cell().querySelector('.mx-meta').textContent).toBe('lag unknown');
+        expect(cell().className).toBe('mx-cell mx-lag-unknown');
     });
 
-    it('keeps a computed zero as 0.0 and drops the unknown label once a rate returns', () => {
-        update({ message_rate: null, ack_rate: null });
-        update({ message_rate: 0, ack_rate: 4.5 });
-        expect(publish().textContent).toBe('0.0');
-        expect(publish().hasAttribute('aria-label')).toBe(false);
-        expect(ack().textContent).toBe('4.5');
-        expect(ack().hasAttribute('aria-label')).toBe(false);
+    it('reports a stall from a computed zero ack rate held for 60 s', () => {
+        run({ message_rate: 3, ack_rate: 0 });
+        expect(cell().dataset).toMatchObject({ state: 'crit', kind: 'stalled' });
+        expect(cell().querySelector('.mx-flag').textContent).toBe('◆ STALLED · no acks 1m');
+    });
+
+    it('labels unknown rates as unknown in the drawer, never 0', () => {
+        run({ message_rate: null, ack_rate: null });
+        dashboard.openQueueDrawer(cell());
+        const values = Object.fromEntries([...document.querySelectorAll('#queue-drawer-numbers dt')].map((dt) => [dt.textContent, dt.nextElementSibling.textContent]));
+        expect(values).toMatchObject({ 'Publish rate': 'unknown', 'Ack rate': 'unknown', 'Mean ack rate (5 min)': 'unknown', 'No acks for': '—' });
     });
 });

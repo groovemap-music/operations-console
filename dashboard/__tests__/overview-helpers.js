@@ -7,12 +7,22 @@ import vm from 'node:vm';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DASHBOARD_JS_PATH = resolve(__dirname, '..', 'static', 'dashboard.js');
 
-export function loadDashboardClass() {
+function loadDashboardScript() {
     const code = readFileSync(DASHBOARD_JS_PATH, 'utf-8');
     const withoutAutoInit = code.replace(/document\.addEventListener\(\s*['"]DOMContentLoaded['"][\s\S]*$/, '');
-    const wrapped = `(function() {\n${withoutAutoInit}\nglobalThis.__Dashboard = Dashboard;\n})();`;
+    const wrapped = `(function() {\n${withoutAutoInit}\nglobalThis.__Dashboard = Dashboard;\nglobalThis.__QueueHealth = QueueHealth;\nglobalThis.__matrixLayout = matrixLayout;\n})();`;
     vm.runInThisContext(wrapped, { filename: DASHBOARD_JS_PATH });
+}
+
+export function loadDashboardClass() {
+    loadDashboardScript();
     return globalThis.__Dashboard;
+}
+
+/** The matrix's pure health rules and its layout choice, as dashboard.js defines them. */
+export function loadQueueHealth() {
+    loadDashboardScript();
+    return { QueueHealth: globalThis.__QueueHealth, matrixLayout: globalThis.__matrixLayout };
 }
 
 /** The shape /api/topology returns, built the way the server derives it. */
@@ -54,15 +64,25 @@ export const discogs = () =>
         entities: ['masters', 'releases', 'artists', 'labels'],
     });
 
-/** A dashboard with the live-view side effects stubbed and an empty `#pipelines` container. */
-export function makeDashboard() {
-    document.body.innerHTML = '<div id="pipelines"></div>';
+/** The shell's queue detail drawer, as index.html declares it. */
+export const DRAWER_MARKUP = `
+<dialog id="queue-drawer">
+  <h2 id="queue-drawer-title"></h2><p id="queue-drawer-subtitle"></p>
+  <button id="queue-drawer-close" type="button">Close</button>
+  <p id="queue-drawer-state"></p><dl id="queue-drawer-numbers"></dl>
+</dialog>`;
+
+/** A dashboard with the live-view side effects stubbed, an empty `#pipelines` container, and the drawer. */
+export function makeDashboard({ narrow = false } = {}) {
+    document.body.innerHTML = `<div id="pipelines"></div>${DRAWER_MARKUP}`;
     const Dashboard = loadDashboardClass();
     const dashboard = Object.create(Dashboard.prototype);
     Object.assign(dashboard, {
-        CIRCUMFERENCE: 176,
-        gaugeStats: {},
-        currentMaps: {},
+        narrowViewport: { matches: narrow },
+        history: new Map(),
+        healthKinds: {},
+        drawerQueue: null,
+        drawerReturnFocus: null,
         queuesUnavailable: {},
         activityLog: [],
         maxLogEntries: 50,

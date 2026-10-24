@@ -61,9 +61,13 @@ def test_every_tab_has_a_panel_and_only_the_overview_starts_visible() -> None:
 
 def test_the_overview_keeps_the_live_view_content() -> None:
     overview = SHELL[SHELL.index('id="tab-overview"') : SHELL.index("<!-- /tab-overview -->")]
-    for element_id in ("pipelines", "db-neo4j", "db-postgresql", "activityLog", "lastUpdated"):
+    for element_id in ("pipelines", "queue-drawer", "queue-drawer-numbers", "db-neo4j", "db-postgresql", "activityLog", "lastUpdated"):
         assert f'id="{element_id}"' in overview, element_id
-    assert 'id="dlq-toggle"' in SHELL
+
+
+def test_the_dlq_toggle_is_gone_now_that_every_matrix_cell_carries_its_dlq() -> None:
+    assert 'id="dlq-toggle"' not in SHELL
+    assert "DLQ Toggle" not in SHELL
 
 
 def test_the_overview_markup_names_no_pipeline_queue_consumer_or_entity() -> None:
