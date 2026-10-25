@@ -165,15 +165,16 @@ describe('the Ledger tab', () => {
     beforeEach(() => {
         setupLedgerDOM();
         localStorage.clear();
-        localStorage.setItem('admin_token', 'live-token');
         FakeChart.instances = [];
         globalThis.Chart = FakeChart;
         // jsdom has no 2D canvas; the hatch falls back to a translucent fill.
         vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
         const AdminDashboard = loadAdminDashboardClass();
         installFetch();
-        AdminDashboard.prototype.resumeSession = vi.fn();
+        // The session itself rides an HttpOnly cookie the browser sends; these tests start signed in.
+        AdminDashboard.prototype.start = vi.fn();
         app = new AdminDashboard();
+        app.signedIn = true;
     });
 
     afterEach(() => {
@@ -195,7 +196,8 @@ describe('the Ledger tab', () => {
             expect(urls.map((url) => url.pathname)).toEqual(['/admin/api/identity/ledger/density', '/admin/api/identity/ledger/works']);
             expect(urls[0].searchParams.get('kind')).toBe('release');
             expect(Object.fromEntries(urls[1].searchParams)).toEqual({ page: '1', page_size: '50' });
-            expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer live-token');
+            expect(fetchMock.mock.calls[0][1].headers['X-GrooveMap-Console']).toBe('1');
+            expect(fetchMock.mock.calls[0][1].headers.Authorization).toBeUndefined();
         });
 
         it('draws the chart only once its tab is visible, and resizes it instead of re-reading on return', async () => {
