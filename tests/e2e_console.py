@@ -1,6 +1,7 @@
 """Shared browser-suite helpers: where the console and its fake catalog-api listen, and sign-in."""
 
 import os
+import socket
 import time
 from typing import Any
 
@@ -10,8 +11,19 @@ from playwright.sync_api import Page, expect
 from tests.fake_catalog_api import ADMIN_EMAIL, ADMIN_PASSWORD
 
 
-CONSOLE_URL = "http://localhost:8003"
-CATALOG_URL = "http://127.0.0.1:18004"
+def free_port() -> int:
+    """A TCP port nothing is listening on, chosen by the OS."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+# Chosen once per run, when the suite is collected, so concurrent runs from different checkouts never share a port.
+CONSOLE_PORT = free_port()
+CATALOG_PORT = free_port()
+CONSOLE_URL = f"http://localhost:{CONSOLE_PORT}"
+WS_URL = f"ws://localhost:{CONSOLE_PORT}"
+CATALOG_URL = f"http://127.0.0.1:{CATALOG_PORT}"
 DATA_ROUTES = ["/api/metrics", "/api/services", "/api/queues", "/api/databases", "/api/queue-prefixes", "/api/topology", "/api/session"]
 # The console's session cookie is Secure by default, which Chromium and Firefox accept from
 # http://localhost. WebKit refuses a Secure cookie there, so only the WebKit projects run the
