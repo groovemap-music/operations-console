@@ -91,7 +91,16 @@ def _unavailable_response() -> Response:
 
 
 def _ok_response(resp: httpx.Response) -> Response:
-    return Response(content=resp.content, status_code=resp.status_code, media_type="application/json")
+    """Relay catalog-api's answer, with the one header its callers act on.
+
+    Retry-After says when to ask again: the Identity Ledger answers 503 with it until its
+    first refresh, and the Ledger tab waits that long.
+    """
+    headers: dict[str, str] = {}
+    retry_after = resp.headers.get("Retry-After")
+    if retry_after:
+        headers["Retry-After"] = retry_after
+    return Response(content=resp.content, status_code=resp.status_code, media_type="application/json", headers=headers)
 
 
 def _build_url(api_path: str) -> str:

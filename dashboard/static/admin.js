@@ -143,6 +143,12 @@ const LEDGER_STATE_BADGES = {
 const LEDGER_BACKFILL = 'musicbrainz_fullexport';
 const LEDGER_BACKFILL_LABEL = 'dated from the MusicBrainz full export';
 const LEDGER_PAGE_SIZE = 50;
+// What catalog-api answers (503, with Retry-After) from the works list and the density strip
+// until the ledger's first refresh. It is not an error: nothing is wrong, the views are being built.
+const LEDGER_NOT_REFRESHED = 'identity ledger not yet refreshed';
+const LEDGER_RETRY_DEFAULT_MS = 60000;
+const LEDGER_RETRY_MIN_MS = 1000;
+const LEDGER_RETRY_MAX_MS = 600000;
 
 // `YYYY-MM-DD HH:MM UTC` for an RFC 3339 instant, independent of the browser's locale and zone.
 function _ledgerTime(iso) {
@@ -151,6 +157,24 @@ function _ledgerTime(iso) {
     if (Number.isNaN(date.getTime())) return String(iso);
     const utc = date.toISOString();
     return `${utc.slice(0, 10)} ${utc.slice(11, 16)} UTC`;
+}
+
+// "Ledger as of <refreshed_at>", or that it has never been refreshed: refreshed_at is null on a
+// single work read before the first refresh.
+function _ledgerFreshness(refreshedAt) {
+    return refreshedAt ? `Ledger as of ${_ledgerTime(refreshedAt)}` : 'Ledger not yet refreshed';
+}
+
+// How long to wait before asking again: a Retry-After in seconds or as an HTTP date, kept within
+// bounds so a missing or absurd header neither hammers catalog-api nor parks the tab for good.
+function _ledgerRetryDelay(retryAfter) {
+    let delay = LEDGER_RETRY_DEFAULT_MS;
+    if (retryAfter) {
+        const seconds = Number(retryAfter);
+        if (Number.isFinite(seconds)) delay = seconds * 1000;
+        else if (!Number.isNaN(Date.parse(retryAfter))) delay = Date.parse(retryAfter) - Date.now();
+    }
+    return Math.min(Math.max(delay, LEDGER_RETRY_MIN_MS), LEDGER_RETRY_MAX_MS);
 }
 
 // The RFC 3339 instant that starts the UTC day a date input names, `days` later.
@@ -266,6 +290,9 @@ class AdminDashboardState {
         this.ledgerPage = 1;
         this.ledgerChart = null;
         this.ledgerWorkId = null;
+        // Per read ('density', 'works'): the retry timer, and whether catalog-api said it is still being built.
+        this.ledgerRetryTimers = {};
+        this.ledgerBuilding = {};
         this.eaVersions = [];
         this.eaSelectedRecords = new Map();
         this.eaParsingErrors = null;
@@ -559,6 +586,7 @@ class AdminInteractions {
         this.signedIn = false;
         this.stopSessionWatch();
         this.stopAutoRefresh();
+        this.stopLedgerRetries();
         const consoleView = document.getElementById('console-view');
         const loginView = document.getElementById('login-view');
         if (consoleView) consoleView.style.display = 'none';
@@ -2890,10 +2918,13 @@ class AdminLedger extends AdminContracts {
     }
 
     // Runs one ledger read, showing its spinner and error. A read superseded by a newer one of
-    // the same kind (a quick filter change) is dropped rather than drawn over it.
+    // the same kind (a quick filter change) is dropped rather than drawn over it. Until the
+    // ledger's first refresh the list and the strip answer 503 "not yet refreshed": that is shown
+    // as the ledger being built, and asked again after Retry-After, not as an error.
     async _ledgerRead(name, url, render) {
         const generation = (this.state[`${name}Generation`] || 0) + 1;
         this.state[`${name}Generation`] = generation;
+        this._ledgerStopRetry(name);
         const loading = document.getElementById(`ledger-${name}-loading`);
         const error = document.getElementById(`ledger-${name}-error`);
         const errorMsg = document.getElementById(`ledger-${name}-error-msg`);
@@ -2903,17 +2934,63 @@ class AdminLedger extends AdminContracts {
             const resp = await this.authFetch(url);
             if (!resp.ok) {
                 const body = await resp.json().catch(() => ({}));
+                if (name !== 'work' && resp.status === 503 && body.detail === LEDGER_NOT_REFRESHED) {
+                    if (this.state[`${name}Generation`] === generation) this._ledgerBuilding(name, resp.headers?.get('Retry-After'));
+                    return;
+                }
                 throw new Error(typeof body.detail === 'string' ? body.detail : `HTTP ${resp.status}`);
             }
             const data = await resp.json();
-            if (this.state[`${name}Generation`] === generation) render(data);
+            if (this.state[`${name}Generation`] === generation) {
+                this._ledgerSetBuilding(name, false);
+                render(data);
+            }
         } catch (err) {
             if (this.state[`${name}Generation`] !== generation) return;
+            this._ledgerSetBuilding(name, false);
             if (errorMsg) errorMsg.textContent = err.message;
             if (error) error.style.display = '';
         } finally {
             if (loading && this.state[`${name}Generation`] === generation) loading.style.display = 'none';
         }
+    }
+
+    // The ledger has no views to read yet: say so in place of the strip and the list, and read
+    // again once catalog-api says to.
+    _ledgerBuilding(name, retryAfter) {
+        this._ledgerSetBuilding(name, true);
+        if (name === 'density') {
+            this.renderLedgerDensity({ buckets: [], refreshed_at: null }, { building: true });
+        } else {
+            this.renderLedgerWorks({ works: [], total: 0 }, { building: true });
+        }
+        const retry = name === 'density' ? () => this.fetchLedgerDensity() : () => this.fetchLedgerWorks();
+        this.state.ledgerRetryTimers[name] = setTimeout(retry, _ledgerRetryDelay(retryAfter));
+    }
+
+    _ledgerSetBuilding(name, building) {
+        this.state.ledgerBuilding[name] = building;
+        const notice = document.getElementById('ledger-building');
+        if (notice) notice.style.display = Object.values(this.state.ledgerBuilding).some(Boolean) ? '' : 'none';
+    }
+
+    _ledgerStopRetry(name) {
+        clearTimeout(this.state.ledgerRetryTimers[name]);
+        delete this.state.ledgerRetryTimers[name];
+    }
+
+    stopLedgerRetries() {
+        Object.keys(this.state.ledgerRetryTimers).forEach(name => this._ledgerStopRetry(name));
+        this.state.ledgerBuilding = {};
+        this._ledgerSetBuilding('density', false);
+        this._ledgerSetBuilding('works', false);
+    }
+
+    _ledgerShowFreshness(id, refreshedAt) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = _ledgerFreshness(refreshedAt);
+        el.title = refreshedAt || '';
     }
 
     fetchLedgerDensity() {
@@ -2957,7 +3034,8 @@ class AdminLedger extends AdminContracts {
         return this._ledgerRead('work', `/admin/api/identity/ledger/works/${encodeURIComponent(workId)}${query}`, data => this.renderLedgerWork(data));
     }
 
-    renderLedgerDensity(data) {
+    renderLedgerDensity(data, { building = false } = {}) {
+        this._ledgerShowFreshness('ledger-density-asof', data?.refreshed_at);
         const series = _ledgerDensitySeries(data?.buckets);
         if (this.state.ledgerChart) {
             this.state.ledgerChart.destroy();
@@ -2965,7 +3043,7 @@ class AdminLedger extends AdminContracts {
         }
 
         const empty = document.getElementById('ledger-density-empty');
-        if (empty) empty.style.display = series.months.length ? 'none' : '';
+        if (empty) empty.style.display = series.months.length || building ? 'none' : '';
 
         const legend = document.getElementById('ledger-density-legend');
         if (legend) legend.replaceChildren(...series.datasets.map(dataset => this._ledgerLegendItem(dataset)));
@@ -3041,11 +3119,14 @@ class AdminLedger extends AdminContracts {
         return item;
     }
 
-    renderLedgerWorks(data) {
+    renderLedgerWorks(data, { building = false } = {}) {
+        this._ledgerShowFreshness('ledger-works-asof', data.refreshed_at);
         const tbody = document.getElementById('ledger-works-body');
         if (!tbody) return;
         const works = data.works || [];
-        if (works.length === 0) {
+        if (building) {
+            tbody.replaceChildren(_emptyRow(8, 'No works to list until the ledger is built'));
+        } else if (works.length === 0) {
             tbody.replaceChildren(_emptyRow(8, 'No works carry identity events for these filters'));
         } else {
             tbody.replaceChildren(...works.map(work => this._ledgerWorkRow(work)));
@@ -3100,6 +3181,7 @@ class AdminLedger extends AdminContracts {
         const idEl = document.getElementById('ledger-work-id');
         if (idEl) idEl.textContent = work.gm_id || '';
 
+        this._ledgerShowFreshness('ledger-work-asof', data.refreshed_at);
         const status = document.getElementById('ledger-work-status');
         if (status) {
             const parts = [`Read at ${data.as_of ? _ledgerTime(data.as_of) : 'now'}`];

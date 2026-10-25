@@ -413,10 +413,16 @@ The proxy rejects a malformed request before it reaches `catalog-api`. That cove
 event or kind, a `page_size` above 100, an `edition_limit` outside 1 to 500, an `as_of`, `since`
 or `until` that is not an RFC 3339 instant with an offset, and an unsafe `work_id` path segment.
 
-The tab reads nothing until you open it, because the strip and the list each scan the alias
-table at catalog scale. After that it re-reads only when you press **Refresh** or change a
-filter. It does not auto-refresh.
+The tab reads nothing until you open it. After that it re-reads only when you press **Refresh**
+or change a filter. It does not auto-refresh, except to ask again while the ledger is being built
+(see below).
 
+- **How fresh it is.** The works list and the strip read views `catalog-api` refreshes after
+  loads and identity runs, not live. Under the strip, above the works table and under the
+  drill-down, the tab says **Ledger as of** the UTC time the last refresh started. Hover over it
+  for the full instant. The drill-down reads one work live, so its time names the list it was
+  reached from. It reads **Ledger not yet refreshed** when no refresh has run. Writes after that
+  time appear at the next refresh.
 - **Identity events per month.** A stacked bar per UTC month for the chosen kind (releases,
   masters, artists, or labels), split by event type. Empty months stay on the axis, so it reads
   as time.
@@ -433,6 +439,18 @@ filter. It does not auto-refresh.
   disagreement** marks an edition whose Discogs master and MusicBrainz release group resolve to
   different works; the Discogs side is listed first as the primary work. Choosing the other
   work opens it.
+
+### A ledger that is still being built
+
+On a new deployment nothing has refreshed the ledger yet. Until the first refresh, the works
+list and the strip answer `503` with `{"detail": "identity ledger not yet refreshed"}` and a
+`Retry-After` header, never an empty list, and the console's proxy passes both on. The tab
+shows that as a state, not an error: **The ledger is being built; it refreshes after loads and
+identity runs.** The strip and the table stay empty, and the tab reads them again after the
+`Retry-After` time (one minute from `catalog-api`, never less than one second and never more
+than ten minutes here). The notice goes away by itself once the ledger is built. You can still
+open a work meanwhile, because it reads live; its time reads **Ledger not yet refreshed**. Any
+other `503`, or a `503` with a different message, is still shown as an error and is not retried.
 
 ### The two provenances
 

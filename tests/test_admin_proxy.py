@@ -13,18 +13,21 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from dashboard.admin_proxy import _auth_headers, _validate_path_segment, _validated_json_body, configure, public_router, router
-from tests.fake_catalog_api import FakeCatalogApi
+from tests.fake_catalog_api import LEDGER_REFRESHED_AT, FakeCatalogApi
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
-def _mock_httpx(method: str = "post", status: int = 200, content: bytes = b"{}") -> tuple[AsyncMock, AsyncMock]:
+def _mock_httpx(
+    method: str = "post", status: int = 200, content: bytes = b"{}", headers: dict[str, str] | None = None
+) -> tuple[AsyncMock, AsyncMock]:
     """Return (mock_cls, mock_instance) for patching httpx.AsyncClient."""
     mock_resp = AsyncMock()
     mock_resp.status_code = status
     mock_resp.content = content
+    mock_resp.headers = headers or {}
 
     mock_instance = AsyncMock()
     setattr(mock_instance, method, AsyncMock(return_value=mock_resp))
@@ -523,6 +526,7 @@ class TestAuditLogProxy:
         mock_resp = MagicMock()
         mock_resp.content = b'{"entries":[],"total":0,"page":1,"page_size":50}'
         mock_resp.status_code = 200
+        mock_resp.headers = {}
         mock_instance = AsyncMock()
         mock_instance.get = AsyncMock(return_value=mock_resp)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
@@ -541,6 +545,7 @@ class TestAuditLogProxy:
         mock_resp = MagicMock()
         mock_resp.content = b'{"entries":[],"total":0,"page":2,"page_size":25}'
         mock_resp.status_code = 200
+        mock_resp.headers = {}
         mock_instance = AsyncMock()
         mock_instance.get = AsyncMock(return_value=mock_resp)
         mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
@@ -698,6 +703,25 @@ class TestIdentityLedgerProxy:
         assert proxy_client.get("/admin/api/identity/ledger/density", params={"kind": kind}).status_code == 422
         mock_cls_patch.assert_not_called()
 
+    @pytest.mark.parametrize("path", ["/admin/api/identity/ledger/works", "/admin/api/identity/ledger/density"])
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_retry_after_is_forwarded_with_the_not_yet_refreshed_503(self, mock_cls_patch: AsyncMock, proxy_client: TestClient, path: str) -> None:
+        _, mock_instance = _mock_httpx("get", 503, b'{"detail":"identity ledger not yet refreshed"}', {"Retry-After": "60"})
+        mock_cls_patch.return_value = mock_instance
+
+        resp = proxy_client.get(path)
+
+        assert resp.status_code == 503
+        assert resp.json() == {"detail": "identity ledger not yet refreshed"}
+        assert resp.headers["Retry-After"] == "60"
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_no_retry_after_is_invented_when_catalog_api_sends_none(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        _, mock_instance = _mock_httpx("get", 200, b'{"works":[]}')
+        mock_cls_patch.return_value = mock_instance
+
+        assert "Retry-After" not in proxy_client.get("/admin/api/identity/ledger/works").headers
+
     @pytest.mark.parametrize(
         "path", ["/admin/api/identity/ledger/works", f"/admin/api/identity/ledger/works/{LEDGER_WORK}", "/admin/api/identity/ledger/density"]
     )
@@ -753,12 +777,43 @@ class TestIdentityLedgerProxyAgainstTheFakeCatalogApi:
         release = client.get("/admin/api/identity/ledger/density", headers=headers).json()
         assert release["kind"] == "release"
         assert {bucket["dated_from"] for bucket in release["buckets"]} == {"groovemap", "musicbrainz_fullexport"}
-        assert client.get("/admin/api/identity/ledger/density?kind=label", headers=headers).json() == {"kind": "label", "buckets": []}
+        assert client.get("/admin/api/identity/ledger/density?kind=label", headers=headers).json() == {
+            "kind": "label",
+            "buckets": [],
+            "refreshed_at": LEDGER_REFRESHED_AT,
+        }
 
         bucket = {"month": "2026-01", "type": "promoted", "dated_from": "groovemap", "events": 1}
         replaced = TestClient(fake.app).post("/__fake__/ledger", json={"density": {"master": [bucket]}})
         assert replaced.status_code == 200
         assert client.get("/admin/api/identity/ledger/density?kind=master", headers=headers).json()["buckets"] == [bucket]
+
+    def test_every_ledger_payload_carries_refreshed_at(self, fake_client: tuple[TestClient, FakeCatalogApi, str]) -> None:
+        client, _fake, token = fake_client
+        headers = {"Authorization": f"Bearer {token}"}
+        assert client.get("/admin/api/identity/ledger/works", headers=headers).json()["refreshed_at"] == LEDGER_REFRESHED_AT
+        assert client.get("/admin/api/identity/ledger/density", headers=headers).json()["refreshed_at"] == LEDGER_REFRESHED_AT
+        assert client.get(f"/admin/api/identity/ledger/works/{LEDGER_WORK}", headers=headers).json()["refreshed_at"] == LEDGER_REFRESHED_AT
+
+    def test_before_the_first_refresh_the_list_and_strip_answer_503_with_retry_after(
+        self, fake_client: tuple[TestClient, FakeCatalogApi, str]
+    ) -> None:
+        client, fake, token = fake_client
+        headers = {"Authorization": f"Bearer {token}"}
+        TestClient(fake.app).post("/__fake__/ledger-building", json={"enabled": True, "retry_after": 7})
+
+        for path in ("/admin/api/identity/ledger/works", "/admin/api/identity/ledger/density"):
+            resp = client.get(path, headers=headers)
+            assert resp.status_code == 503
+            assert resp.json() == {"detail": "identity ledger not yet refreshed"}
+            assert resp.headers["Retry-After"] == "7"
+        # One work is read live, so it answers, with refreshed_at null.
+        work = client.get(f"/admin/api/identity/ledger/works/{LEDGER_WORK}", headers=headers)
+        assert work.status_code == 200
+        assert work.json()["refreshed_at"] is None
+
+        TestClient(fake.app).post("/__fake__/ledger-building", json={"enabled": False})
+        assert client.get("/admin/api/identity/ledger/works", headers=headers).status_code == 200
 
     def test_the_fake_refuses_a_caller_without_a_session(self, fake_client: tuple[TestClient, FakeCatalogApi, str]) -> None:
         client, _fake, _token = fake_client
