@@ -18,23 +18,19 @@
     <meta property="og:image:height" content="630">
     <style>
         :root {
-            --bg-void: #060a12;
-            --bg-deep: #0a1018;
+            --bg-void: #071211;
+            --bg-deep: #0a1514;
             --card-bg: #0f1a2e;
             --inner-bg: #162540;
-            --border-color: #1e3050;
-            --inner-border: #1e3050;
+            --border-color: #1e3533;
+            --inner-border: #1e3533;
             --bg-hover: #2a3d58;
-            --text-high: #f0f4f8;
+            --text-high: #e8f4f1;
             --text-mid: #b0bec5;
             --text-dim: #7a8ba3;
-            --text-muted: #4a5e78;
-            --cyan-500: #00bcd4;
-            --cyan-glow: #00e5ff;
-            --purple-500: #7c4dff;
-            --purple-300: #b388ff;
-            --blue-accent: #00bcd4;
-            --purple-accent: #7c4dff;
+            --text-muted: #8aa5a0;
+            --accent-mint: #a8fff2;
+            --accent-lagoon: #0d353f;
             --accent-green: #00e676;
             --accent-yellow: #ffab00;
             --accent-red: #ff5252;
@@ -88,15 +84,15 @@
         .badge-error {
             background: rgba(239,68,68,0.1); color: #EF4444; border: 1px solid rgba(239,68,68,0.2);
         }
-        .btn-purple {
-            background: var(--purple-accent);
-            color: #fff;
+        .btn-accent {
+            background: var(--accent-mint);
+            color: var(--accent-lagoon);
             border: none;
             cursor: pointer;
             transition: opacity 0.15s;
         }
-        .btn-purple:hover { opacity: 0.85; }
-        .btn-purple:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-accent:hover { opacity: 0.85; }
+        .btn-accent:disabled { opacity: 0.5; cursor: not-allowed; }
 
         /* Tab navigation */
         .tab-btn {
@@ -117,14 +113,14 @@
         }
         .tab-btn:hover { background: var(--inner-bg); color: var(--text-high); }
         .tab-btn.active {
-            background: var(--purple-accent);
-            color: #fff;
+            background: var(--accent-mint);
+            color: var(--accent-lagoon);
         }
 
         /* Extraction Analysis sub-view toggle buttons */
         .ea-view-btn { color: var(--text-dim); background: transparent; border: 1px solid var(--border-color); cursor: pointer; display: inline-flex; align-items: center; gap: 0.25rem; min-width: 6rem; justify-content: center; }
         .ea-view-btn:hover { color: var(--text-high); }
-        .ea-view-btn.active { background: var(--purple-accent); color: #fff; border-color: var(--purple-accent); }
+        .ea-view-btn.active { background: var(--accent-mint); color: var(--accent-lagoon); border-color: var(--accent-mint); }
 
         /* Collapsible section */
         .collapsible-header {
@@ -144,9 +140,9 @@
         }
         .range-btn:hover { background: var(--inner-bg); color: var(--text-high); }
         .range-btn.active {
-            background: var(--purple-accent);
-            color: #fff;
-            border-color: var(--purple-accent);
+            background: var(--accent-mint);
+            color: var(--accent-lagoon);
+            border-color: var(--accent-mint);
         }
 
         /* Summary stat cards */
@@ -180,11 +176,11 @@
            bins stay apart under every colour-vision simulation. */
         :root, [data-theme="dark"] {
             --mx-surface: #0f1a2e;
-            --mx-border: #1e3050;
-            --mx-text-high: #f0f4f8;
+            --mx-border: #1e3533;
+            --mx-text-high: #e8f4f1;
             --mx-text-mid: #b0bec5;
             --mx-text-dim: #8a9bb3;
-            --mx-accent: #00bcd4;
+            --mx-accent: #a8fff2;
             --mx-warn: #ffab00;
             --mx-ok: #3ddc97;
             --mx-crit: #ff5c8a;
@@ -195,15 +191,15 @@
             --mx-ramp-3: #8c8de6;
             --mx-ramp-3-text: #0d1b2a;
             --mx-edge: #2f6f8f;
-            --mx-backdrop: rgba(6, 10, 18, 0.7);
+            --mx-backdrop: rgba(7, 18, 17, 0.7);
         }
         [data-theme="light"] {
             --mx-surface: #ffffff;
             --mx-border: #c3d0de;
-            --mx-text-high: #0d1b2a;
+            --mx-text-high: #0b1716;
             --mx-text-mid: #2c3e55;
-            --mx-text-dim: #4a5e78;
-            --mx-accent: #00798a;
+            --mx-text-dim: #4e6461;
+            --mx-accent: #0d353f;
             --mx-warn: #6d4600;
             --mx-ok: #0b6b3a;
             --mx-crit: #c2185b;
@@ -441,9 +437,10 @@
         .tp-edge { fill: none; stroke: var(--mx-edge); }
         .tp-edge-idle { stroke-dasharray: 3 4; }
         .tp-edge-unknown { stroke-dasharray: 1 5; stroke-linecap: round; }
+        .badge-active { background: rgba(168,255,242,0.1); color: var(--accent-mint); border: 1px solid rgba(168,255,242,0.2); }
     </style>
 </head>
-<body class="p-4 sm:p-8" style="background:#060a12;">
+<body class="p-4 sm:p-8" style="background:var(--bg-void);">
 <div class="max-w-[1440px] mx-auto">
 
     <!-- ================================================================
@@ -452,7 +449,7 @@
     <div id="login-view" class="flex items-center justify-center min-h-[80vh]" style="display:none">
         <div class="dashboard-card p-8 w-full max-w-md space-y-6">
             <div class="text-center space-y-2">
-                <span class="material-symbols-outlined text-4xl" style="color:var(--purple-accent)">admin_panel_settings</span>
+                <span class="material-symbols-outlined text-4xl" style="color:var(--accent-mint)">admin_panel_settings</span>
                 <h2 class="text-xl font-semibold">GrooveMap Operations</h2>
                 <p class="text-xs t-muted">Sign in with your catalog-api admin account</p>
             </div>
@@ -464,17 +461,17 @@
                 <div>
                     <label for="login-email" class="block text-[10px] font-bold uppercase tracking-wider t-dim mb-1">Email</label>
                     <input id="login-email" type="email" autocomplete="email"
-                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high focus:outline-none focus:ring-2 focus:ring-[#a8fff2]/50"
                            placeholder="admin@example.com"/>
                 </div>
                 <div>
                     <label for="login-password" class="block text-[10px] font-bold uppercase tracking-wider t-dim mb-1">Password</label>
                     <input id="login-password" type="password" autocomplete="current-password"
-                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high focus:outline-none focus:ring-2 focus:ring-purple-500/50"
+                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high focus:outline-none focus:ring-2 focus:ring-[#a8fff2]/50"
                            placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;"/>
                 </div>
                 <button id="login-btn"
-                        class="btn-purple w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2">
+                        class="btn-accent w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2">
                     <span class="material-symbols-outlined text-sm">login</span> Sign In
                 </button>
             </div>
@@ -742,14 +739,14 @@
                 </div>
                 <div class="flex items-center gap-4">
                     <button id="trigger-discogs-btn"
-                            class="btn-purple px-6 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2">
+                            class="btn-accent px-6 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2">
                         <span class="material-symbols-outlined text-sm">play_arrow</span> Trigger Discogs
                     </button>
                     <button id="trigger-musicbrainz-btn"
-                            class="btn-purple px-6 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2">
+                            class="btn-accent px-6 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2">
                         <span class="material-symbols-outlined text-sm">play_arrow</span> Trigger MusicBrainz
                     </button>
-                    <span id="trigger-spinner" class="material-symbols-outlined text-lg animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                    <span id="trigger-spinner" class="material-symbols-outlined text-lg animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
                 </div>
             </section>
 
@@ -807,7 +804,7 @@
                         <span class="material-symbols-outlined text-sm t-dim">group</span> User Activity
                     </h3>
                     <div class="flex items-center gap-3">
-                        <span id="users-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                        <span id="users-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
                         <span id="users-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span> <span id="users-error-msg"></span>
                         </span>
@@ -896,7 +893,7 @@
                         <span class="material-symbols-outlined text-sm t-dim">database</span> Storage Utilization
                     </h3>
                     <div class="flex items-center gap-3">
-                        <span id="storage-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                        <span id="storage-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
                         <span id="storage-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span> <span id="storage-error-msg"></span>
                         </span>
@@ -1048,7 +1045,7 @@
                     </h3>
                     <div class="flex items-center gap-3 sh-head-controls">
                         <span class="text-[10px] t-muted">Auto-refresh 60s</span>
-                        <span id="qt-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                        <span id="qt-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
                         <span id="qt-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span> <span id="qt-error-msg"></span>
                         </span>
@@ -1096,7 +1093,7 @@
                     </h3>
                     <div class="flex items-center gap-3">
                         <span class="text-[10px] t-muted">Auto-refresh 60s</span>
-                        <span id="sh-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                        <span id="sh-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
                         <span id="sh-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span> <span id="sh-error-msg"></span>
                         </span>
@@ -1168,7 +1165,7 @@
                             <option value="dlq.purge">DLQ Purge</option>
                         </select>
                         <span class="text-[10px] t-muted">Auto-refresh 60s</span>
-                        <span id="al-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                        <span id="al-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
                         <span id="al-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span>
                             <span id="al-error-msg"></span>
@@ -1232,7 +1229,7 @@
                             <option value="">— select —</option>
                         </select>
                         <span id="ea-source-badge" class="text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-idle" style="display:none">source</span>
-                        <span id="ea-loading-spinner" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--purple-accent)">progress_activity</span>
+                        <span id="ea-loading-spinner" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
                         <button id="ea-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim flex items-center gap-1">
                             <span class="material-symbols-outlined text-sm">refresh</span> Refresh
                         </button>
@@ -1400,7 +1397,7 @@
                                 <option value="">— select —</option>
                             </select>
                         </div>
-                        <button id="ea-compare-btn" class="btn-purple px-4 py-1.5 rounded text-xs font-semibold flex items-center gap-1">
+                        <button id="ea-compare-btn" class="btn-accent px-4 py-1.5 rounded text-xs font-semibold flex items-center gap-1">
                             <span class="material-symbols-outlined text-sm">compare_arrows</span> Compare
                         </button>
                     </div>
@@ -1431,7 +1428,7 @@
                         </h3>
                         <div class="flex items-center gap-3">
                             <span id="ea-prompt-count" class="text-xs t-dim">0 rules selected</span>
-                            <button id="ea-generate-btn" class="btn-purple px-4 py-1.5 rounded text-xs font-semibold flex items-center gap-1">
+                            <button id="ea-generate-btn" class="btn-accent px-4 py-1.5 rounded text-xs font-semibold flex items-center gap-1">
                                 <span class="material-symbols-outlined text-sm">auto_awesome</span> Generate
                             </button>
                             <button id="ea-ai-generate-btn" class="px-4 py-1.5 rounded text-xs font-semibold flex items-center gap-1" style="background:#10B981;color:#fff;border:none;cursor:pointer;transition:opacity 0.15s" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
