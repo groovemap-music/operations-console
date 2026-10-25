@@ -1,18 +1,18 @@
 {
   "assets": {
-    "app-icon-192.svg": "48585bd9c04a3e2aabfecd57f3119a87fedf4b66e21dfb29aab20803fb704429",
-    "app-icon-512.svg": "6250aed267b6ad0ebfa6200e688b7c424a999fc2a2a464448c451a5d4522b6cd",
-    "avatar.svg": "c81fef638629fb797f1c4f0062a1eaaed67724ee40c22a918ef9eea0a74296ca",
-    "banner-dark.svg": "427ff6042d9b16640b6a73f0950de995190393b996214bb6bbcc0daa81e6c4a4",
-    "banner-light.svg": "0f09674457b44d6bc4268f6bfc36ddcf9d85b5f343dd63d3b75ec8802620f80b",
-    "favicon.svg": "33fb91b68f74e5bca9ccd4e63e865dd1becfff95ac2d46053e41f5c92a38bca6",
-    "icon-dark.svg": "33c13f6a25d127b1b81dbce3a8053230a2ffc4cf70bec3afc09ee83a0b120680",
-    "icon-light.svg": "ae8bba577aeed39c8305c602f2f15b5f3e7485751bb9e014ff5352ca2f86c41d",
-    "og-image.svg": "e4bec1252275341ba7bf0a2da8f02f98f3c7bb0f2308947967e4996ef6bc01cf",
-    "site.webmanifest": "5ad2c96f0cfcc98417381342ce364ad581bb495ce0437110c50effcc531898f9",
-    "social-banner.svg": "7d358faa9462f4e1f6b1f6ce6e6cf051c456c315d519671ecc0cab9a26edd798",
-    "tokens.css": "94eeb3b70ecdb01abde8983e28bb9a30e8677aed3c2c7025efe0968812463455"
+    "app-icon-192.svg": "8f3dead165a94360282342d0ec5ce3671f6cea8c0e49f9064d940178d7602603",
+    "app-icon-512.svg": "1bb627718ba623a1ff0caf4db09a2b71d3e949d10a43d34ba7367a205edccf9a",
+    "avatar.svg": "23b34addaad63303baed0885ec03df9082d34f4f0ae1fbef8f1e53ffe0c15d91",
+    "banner-dark.svg": "aec92eaa515d12845d4c9e9b95283aaaf36620d67398fce2a09a4b6b7659e865",
+    "banner-light.svg": "29f22ed97da51400b8f45d9e6376b691908f3bf0e2e6ccccc84d9477df79df71",
+    "favicon.svg": "f3d8bf527b210a08f1bc37f94b3cff638f7702313c57829dc4eeb59c166af7d0",
+    "icon-dark.svg": "fcd12a4254be11fa0968a08b364baad06b2473c62f839d9416254bf793383b72",
+    "icon-light.svg": "6ff4bfda3163e5e0c66b4b339715eb661b70fe718dfff406ec76d8a582780de6",
+    "og-image.svg": "57e52bdf2e94a0e760c46cd3265fb9869572d19b1ae727f7d95aea42c67c3d31",
+    "site.webmanifest": "bbb5a3a8484e898bc964bdcda33a5c174a678cd1029728405ec3445cf55bf4f1",
+    "social-banner.svg": "9625126e6e29b0b60c8d2a6c542e423568141747502966ccfe11e6b35ec77c06",
+    "tokens.css": "beb1fa2357e884cc702a0cf19176203de88f614f3ae10ce983699bea5353a92c"
   },
-  "producer_commit": "7abe13ad3e22e81b5437eb92acb8db998730e11a",
+  "producer_commit": "41be7cbe738f40df0c75ad7065475e91d6cc2aa4",
   "producer_repository": "https://github.com/groovemap-music/design"
 }

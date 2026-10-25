@@ -18,19 +18,20 @@
     <meta property="og:image:height" content="630">
     <style>
         :root {
-            --bg-void: #071211;
-            --bg-deep: #0a1514;
+            --bg-void: #0e0d0b;
+            --bg-deep: #141310;
             --card-bg: #0f1a2e;
             --inner-bg: #162540;
-            --border-color: #1e3533;
-            --inner-border: #1e3533;
+            --border-color: #2e2a24;
+            --inner-border: #2e2a24;
             --bg-hover: #2a3d58;
-            --text-high: #e8f4f1;
+            --text-high: #f2ede4;
             --text-mid: #b0bec5;
             --text-dim: #7a8ba3;
-            --text-muted: #8aa5a0;
-            --accent-mint: #a8fff2;
-            --accent-lagoon: #0d353f;
+            --text-muted: #a89f91;
+            --accent-brass: #b8962a;
+            --accent-oxblood: #4d0018;
+            --on-brass: #0e0d0b;
             --accent-green: #00e676;
             --accent-yellow: #ffab00;
             --accent-red: #ff5252;
@@ -85,8 +86,8 @@
             background: rgba(239,68,68,0.1); color: #EF4444; border: 1px solid rgba(239,68,68,0.2);
         }
         .btn-accent {
-            background: var(--accent-mint);
-            color: var(--accent-lagoon);
+            background: var(--accent-brass);
+            color: var(--on-brass);
             border: none;
             cursor: pointer;
             transition: opacity 0.15s;
@@ -113,14 +114,14 @@
         }
         .tab-btn:hover { background: var(--inner-bg); color: var(--text-high); }
         .tab-btn.active {
-            background: var(--accent-mint);
-            color: var(--accent-lagoon);
+            background: var(--accent-brass);
+            color: var(--on-brass);
         }
 
         /* Extraction Analysis sub-view toggle buttons */
         .ea-view-btn { color: var(--text-dim); background: transparent; border: 1px solid var(--border-color); cursor: pointer; display: inline-flex; align-items: center; gap: 0.25rem; min-width: 6rem; justify-content: center; }
         .ea-view-btn:hover { color: var(--text-high); }
-        .ea-view-btn.active { background: var(--accent-mint); color: var(--accent-lagoon); border-color: var(--accent-mint); }
+        .ea-view-btn.active { background: var(--accent-brass); color: var(--on-brass); border-color: var(--accent-brass); }
 
         /* Collapsible section */
         .collapsible-header {
@@ -140,9 +141,9 @@
         }
         .range-btn:hover { background: var(--inner-bg); color: var(--text-high); }
         .range-btn.active {
-            background: var(--accent-mint);
-            color: var(--accent-lagoon);
-            border-color: var(--accent-mint);
+            background: var(--accent-brass);
+            color: var(--on-brass);
+            border-color: var(--accent-brass);
         }
 
         /* Summary stat cards */
@@ -176,11 +177,11 @@
            bins stay apart under every colour-vision simulation. */
         :root, [data-theme="dark"] {
             --mx-surface: #0f1a2e;
-            --mx-border: #1e3533;
-            --mx-text-high: #e8f4f1;
+            --mx-border: #2e2a24;
+            --mx-text-high: #f2ede4;
             --mx-text-mid: #b0bec5;
             --mx-text-dim: #8a9bb3;
-            --mx-accent: #a8fff2;
+            --mx-accent: #b8962a;
             --mx-warn: #ffab00;
             --mx-ok: #3ddc97;
             --mx-crit: #ff5c8a;
@@ -191,15 +192,15 @@
             --mx-ramp-3: #8c8de6;
             --mx-ramp-3-text: #0d1b2a;
             --mx-edge: #2f6f8f;
-            --mx-backdrop: rgba(7, 18, 17, 0.7);
+            --mx-backdrop: rgba(14,13,11, 0.7);
         }
         [data-theme="light"] {
             --mx-surface: #ffffff;
             --mx-border: #c3d0de;
-            --mx-text-high: #0b1716;
+            --mx-text-high: #1a1714;
             --mx-text-mid: #2c3e55;
-            --mx-text-dim: #4e6461;
-            --mx-accent: #0d353f;
+            --mx-text-dim: #5d564b;
+            --mx-accent: #6b1027;
             --mx-warn: #6d4600;
             --mx-ok: #0b6b3a;
             --mx-crit: #c2185b;
@@ -437,7 +438,7 @@
         .tp-edge { fill: none; stroke: var(--mx-edge); }
         .tp-edge-idle { stroke-dasharray: 3 4; }
         .tp-edge-unknown { stroke-dasharray: 1 5; stroke-linecap: round; }
-        .badge-active { background: rgba(168,255,242,0.1); color: var(--accent-mint); border: 1px solid rgba(168,255,242,0.2); }
+        .badge-active { background: rgba(184,150,42,0.1); color: var(--accent-brass); border: 1px solid rgba(184,150,42,0.2); }
         /* Identity Ledger tab (design ADR 0016 section 7, concept D): a per-month density strip, a
            paged works table, and one work's drill-down. Backfilled events are hatched in the strip and
            labelled in the drill-down: they are dated from the MusicBrainz full export, not recorded. */
@@ -453,9 +454,9 @@
         .ledger-swatch { display: inline-block; width: 12px; height: 10px; border-radius: 2px; }
         .ledger-swatch-backfill { background-image: repeating-linear-gradient(135deg, rgba(255,255,255,0.75) 0 2px, transparent 2px 4px); border: 1px solid; }
         .ledger-id { font-family: 'JetBrains Mono', monospace; overflow-wrap: anywhere; }
-        .ledger-work-link { color: var(--accent-mint); background: none; border: none; padding: 0; cursor: pointer; text-align: left; font: inherit; }
+        .ledger-work-link { color: var(--accent-brass); background: none; border: none; padding: 0; cursor: pointer; text-align: left; font: inherit; }
         .ledger-work-link:hover { text-decoration: underline; }
-        .ledger-work-link:focus-visible { outline: 2px solid var(--accent-mint); outline-offset: 2px; }
+        .ledger-work-link:focus-visible { outline: 2px solid var(--accent-brass); outline-offset: 2px; }
         .ledger-badge { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; white-space: nowrap; background: var(--inner-bg); color: var(--text-mid); }
         .ledger-backfill { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; color: var(--accent-yellow); border: 1px dashed var(--accent-yellow); }
         .ledger-recorded { font-size: 10px; color: var(--text-muted); }
@@ -484,7 +485,7 @@
     <div id="login-view" class="flex items-center justify-center min-h-[80vh]" style="display:none">
         <div class="dashboard-card p-8 w-full max-w-md space-y-6">
             <div class="text-center space-y-2">
-                <span class="material-symbols-outlined text-4xl" style="color:var(--accent-mint)">admin_panel_settings</span>
+                <span class="material-symbols-outlined text-4xl" style="color:var(--accent-brass)">admin_panel_settings</span>
                 <h2 class="text-xl font-semibold">GrooveMap Operations</h2>
                 <p class="text-xs t-muted">Sign in with your catalog-api admin account</p>
             </div>
@@ -496,13 +497,13 @@
                 <div>
                     <label for="login-email" class="block text-[10px] font-bold uppercase tracking-wider t-dim mb-1">Email</label>
                     <input id="login-email" type="email" autocomplete="email"
-                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high focus:outline-none focus:ring-2 focus:ring-[#a8fff2]/50"
+                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high focus:outline-none focus:ring-2 focus:ring-[#b8962a]/50"
                            placeholder="admin@example.com"/>
                 </div>
                 <div>
                     <label for="login-password" class="block text-[10px] font-bold uppercase tracking-wider t-dim mb-1">Password</label>
                     <input id="login-password" type="password" autocomplete="current-password"
-                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high focus:outline-none focus:ring-2 focus:ring-[#a8fff2]/50"
+                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high focus:outline-none focus:ring-2 focus:ring-[#b8962a]/50"
                            placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;"/>
                 </div>
                 <button id="login-btn"
@@ -784,7 +785,7 @@
                             class="btn-accent px-6 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2">
                         <span class="material-symbols-outlined text-sm">play_arrow</span> Trigger MusicBrainz
                     </button>
-                    <span id="trigger-spinner" class="material-symbols-outlined text-lg animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
+                    <span id="trigger-spinner" class="material-symbols-outlined text-lg animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
                 </div>
             </section>
 
@@ -842,7 +843,7 @@
                         <span class="material-symbols-outlined text-sm t-dim">group</span> User Activity
                     </h3>
                     <div class="flex items-center gap-3">
-                        <span id="users-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
+                        <span id="users-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
                         <span id="users-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span> <span id="users-error-msg"></span>
                         </span>
@@ -931,7 +932,7 @@
                         <span class="material-symbols-outlined text-sm t-dim">database</span> Storage Utilization
                     </h3>
                     <div class="flex items-center gap-3">
-                        <span id="storage-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
+                        <span id="storage-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
                         <span id="storage-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span> <span id="storage-error-msg"></span>
                         </span>
@@ -1083,7 +1084,7 @@
                     </h3>
                     <div class="flex items-center gap-3 sh-head-controls">
                         <span class="text-[10px] t-muted">Auto-refresh 60s</span>
-                        <span id="qt-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
+                        <span id="qt-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
                         <span id="qt-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span> <span id="qt-error-msg"></span>
                         </span>
@@ -1131,7 +1132,7 @@
                     </h3>
                     <div class="flex items-center gap-3">
                         <span class="text-[10px] t-muted">Auto-refresh 60s</span>
-                        <span id="sh-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
+                        <span id="sh-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
                         <span id="sh-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span> <span id="sh-error-msg"></span>
                         </span>
@@ -1203,7 +1204,7 @@
                             <option value="dlq.purge">DLQ Purge</option>
                         </select>
                         <span class="text-[10px] t-muted">Auto-refresh 60s</span>
-                        <span id="al-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
+                        <span id="al-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
                         <span id="al-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span>
                             <span id="al-error-msg"></span>
@@ -1267,7 +1268,7 @@
                             <option value="">— select —</option>
                         </select>
                         <span id="ea-source-badge" class="text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-idle" style="display:none">source</span>
-                        <span id="ea-loading-spinner" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
+                        <span id="ea-loading-spinner" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
                         <button id="ea-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim flex items-center gap-1">
                             <span class="material-symbols-outlined text-sm">refresh</span> Refresh
                         </button>
@@ -1493,7 +1494,7 @@
 
             <!-- Until the ledger's first refresh catalog-api answers 503; the tab waits and asks again -->
             <p id="ledger-building" class="dashboard-card p-4 text-xs flex items-center gap-2" role="status" style="display:none">
-                <span class="material-symbols-outlined text-sm animate-spin" style="color:var(--accent-mint)">progress_activity</span>
+                <span class="material-symbols-outlined text-sm animate-spin" style="color:var(--accent-brass)">progress_activity</span>
                 The ledger is being built; it refreshes after loads and identity runs.
             </p>
 
@@ -1512,7 +1513,7 @@
                                 <option value="label">Labels</option>
                             </select>
                         </label>
-                        <span id="ledger-density-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
+                        <span id="ledger-density-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
                         <span id="ledger-density-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span>
                             <span id="ledger-density-error-msg"></span>
@@ -1555,7 +1556,7 @@
                         <label for="ledger-until">Until (UTC)
                             <input type="date" id="ledger-until" class="border b-theme rounded px-2 py-1">
                         </label>
-                        <span id="ledger-works-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
+                        <span id="ledger-works-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
                         <span id="ledger-works-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span>
                             <span id="ledger-works-error-msg"></span>
@@ -1606,7 +1607,7 @@
                         </label>
                         <button id="ledger-as-of-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded">Read</button>
                         <button id="ledger-now-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded">Now</button>
-                        <span id="ledger-work-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-mint)">progress_activity</span>
+                        <span id="ledger-work-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
                         <span id="ledger-work-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span>
                             <span id="ledger-work-error-msg"></span>
