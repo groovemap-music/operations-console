@@ -111,8 +111,8 @@ class TestTopologyDrillDown:
     @pytest.mark.parametrize(
         ("theme", "text", "edge", "crit"),
         [
-            ("dark", "rgb(232, 244, 241)", "rgb(47, 111, 143)", "rgb(255, 92, 138)"),
-            ("light", "rgb(11, 23, 22)", "rgb(95, 151, 170)", "rgb(194, 24, 91)"),
+            ("dark", "rgb(242, 237, 228)", "rgb(47, 111, 143)", "rgb(255, 92, 138)"),
+            ("light", "rgb(26, 23, 20)", "rgb(95, 151, 170)", "rgb(194, 24, 91)"),
         ],
     )
     def test_the_flow_draws_with_the_theme_tokens(self, page: Page, theme: str, text: str, edge: str, crit: str) -> None:
