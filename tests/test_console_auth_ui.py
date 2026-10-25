@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 import pytest
 from playwright.sync_api import Page, expect
 
-from tests.e2e_console import CONSOLE_HEADERS, CONSOLE_URL, DATA_ROUTES, SECURE_COOKIE, fake_catalog, session_cookie, sign_in
+from tests.e2e_console import CONSOLE_HEADERS, CONSOLE_URL, DATA_ROUTES, SECURE_COOKIE, WS_URL, fake_catalog, session_cookie, sign_in
 from tests.fake_catalog_api import ADMIN_EMAIL, ADMIN_PASSWORD, SHORT_LIVED_EMAIL
 
 
@@ -95,7 +95,7 @@ class TestAnonymousBrowser:
     @pytest.mark.parametrize("query", ["", "?ticket=forged"])
     def test_an_anonymous_websocket_is_closed_with_4401(self, page: Page, query: str) -> None:
         page.goto(CONSOLE_URL, wait_until="domcontentloaded")
-        assert page.evaluate(_OPEN_FEED, f"ws://localhost:8003/ws{query}") == 4401
+        assert page.evaluate(_OPEN_FEED, f"{WS_URL}/ws{query}") == 4401
 
     @pytest.mark.parametrize("path", ["/admin", "/admin.html"])
     def test_the_old_admin_page_redirects_to_the_shell(self, page: Page, path: str) -> None:
@@ -137,7 +137,7 @@ class TestSignedInShell:
         # The context's request API carries the browser's session cookie, as the page's fetch does.
         response = page.request.post(f"{CONSOLE_URL}/api/ws-ticket", headers=CONSOLE_HEADERS)
         assert response.ok
-        url = f"ws://localhost:8003/ws?ticket={response.json()['ticket']}"
+        url = f"{WS_URL}/ws?ticket={response.json()['ticket']}"
 
         assert page.evaluate(_OPEN_FEED, url) == "message"
         assert page.evaluate(_OPEN_FEED, url) == 4401
