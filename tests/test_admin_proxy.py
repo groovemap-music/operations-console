@@ -157,7 +157,8 @@ class TestLoginProxy:
 
         resp = proxy_client.post("/admin/api/login", json={"email": "a@b.com", "password": "testtest"})
         assert resp.status_code == 200
-        assert "access_token" in resp.json()
+        assert resp.json() == {"expires_in": 1800}, "the bearer goes into the cookie, never the body"
+        assert "__Host-groovemap_console_session=tok;" in resp.headers["set-cookie"]
         mock_instance.post.assert_called_once()
 
     @patch("dashboard.admin_proxy.httpx.AsyncClient")

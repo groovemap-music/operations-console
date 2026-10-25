@@ -29,6 +29,7 @@ unless `NEO4J_TLS_VERIFY` is explicitly `false`, `0`, or `no`.
 | `API_HOST` | `api` | Internal `catalog-api` host used by the constrained admin proxy and to validate admin sessions. |
 | `API_PORT` | `8004` | Internal `catalog-api` port. |
 | `SESSION_CACHE_SECONDS` | `30` | How long a confirmed admin session is trusted before the console asks `catalog-api` again. Must be a finite number: `nan`, `inf`, or a non-number fails startup. Clamped to 0–30; `0` validates every request. Only positive answers are cached, and never past the session's own expiry. |
+| `SESSION_COOKIE_SECURE` | `true` | Whether the admin [session cookie](#admin-session-cookie-and-reverse-proxies) is `Secure`. The default fails closed: the cookie is `Secure` whatever scheme the console itself sees, so a TLS-terminating proxy in front of it needs no setting. Set `false` only when browsers reach the console over plain HTTP on a host other than `localhost`, such as `http://<host>:8003`; the cookie then travels unencrypted. `true`/`1`/`yes` and `false`/`0`/`no` are accepted; any other value fails startup. |
 
 The Platform Health section ([admin guide](admin-guide.md#platform-health)) checks the services on their compose ports; no variable is needed for the defaults. It reuses `RABBITMQ_PROMETHEUS_URL`, `VICTORIA_METRICS_URL` and `GRAFANA_API_URL` (server-side only; `GRAFANA_URL` is browser-facing and is not used), and these optional overrides exist for a deployment that moves a target:
 
@@ -100,11 +101,69 @@ shared time range as `from=now-<range>&to=now` (24h when none is chosen).
 | PostgreSQL card | Grafana | `groovemap-infrastructure`: PostgreSQL has no dashboard of its own, its panels sit beside RabbitMQ and Valkey |
 | Attention item for a queue or a service | the matching links above | as above |
 
+## Admin session cookie and reverse proxies
+
+The browser never holds the admin bearer where page script can read it. When you sign in, the
+console takes the bearer `catalog-api` issues and sets it as a cookie. Page script cannot read
+the cookie, and the browser sends it only to the console itself:
+
+- `HttpOnly`, so neither `document.cookie` nor any other script can read it;
+- `Secure`, so the browser sends it only over HTTPS (or to `http://localhost`, which Chromium
+  and Firefox treat as secure; WebKit does not);
+- `SameSite=Strict`, so the browser does not send it on a request that starts on another site;
+- `Path=/` and host-only (no `Domain`);
+- `Max-Age` set to the session's lifetime from `catalog-api`, so the browser drops it when the
+  session expires.
+
+The cookie is named `__Host-groovemap_console_session`. Browsers accept that name only on a
+`Secure`, host-only, `Path=/` cookie, so a sibling subdomain or a plain-HTTP response cannot
+plant one, and the console reads no other name. Only with `SESSION_COOKIE_SECURE=false` is the
+cookie plain `groovemap_console_session`, without `Secure`.
+
+The console reads the bearer back from the cookie for its data routes, `POST /api/ws-ticket`,
+and the admin proxy, which sends it to `catalog-api` as `Authorization: Bearer`. An explicit
+`Authorization` header still works for clients that are not a browser, and it takes precedence:
+a request that sends one is never also authenticated by the cookie.
+
+A browser attaches the cookie by itself, so a state-changing request (`POST`, `PUT`, `PATCH`,
+`DELETE`) authenticated by the cookie must come from the console's own origin and carry
+`X-GrooveMap-Console: 1`. Otherwise the console refuses it with `403` before it asks
+`catalog-api` anything. The origin check reads `Sec-Fetch-Site`, which must be `same-origin`
+(`same-site` is refused: another port on the same host, such as Grafana on `localhost:3000`, is
+the same site); a browser too old to send it is checked by `Origin`, whose host must be the
+`Host` the request was sent to. A cross-site form cannot set the custom header, and no other
+origin, not even one in `CORS_ORIGINS`, passes the origin check. Login and logout are covered
+too. A request with its own `Authorization` header is exempt, because no other page can attach
+one. The WebSocket never accepts the cookie: it authenticates only with a ticket from
+`POST /api/ws-ticket`.
+
+The console clears the cookie when you sign out, whatever `catalog-api` answers. It also clears
+it when `catalog-api` calls the session invalid: a `401` from the session gate, or a `401` from
+`catalog-api` behind the proxy. When `catalog-api` cannot answer (`503`), the cookie is kept, so
+a reload resumes the session once `catalog-api` is back.
+
+Behind a reverse proxy:
+
+- **HTTPS.** A proxy that terminates TLS needs no console setting: the cookie is `Secure` by
+  default. Reaching the console over plain HTTP on any host but `localhost` needs
+  `SESSION_COOKIE_SECURE=false`. Without it the browser drops the cookie, so sign-in seems to
+  work, then the login form comes straight back.
+- **Headers.** Pass `Cookie` and `Set-Cookie` through unchanged: do not rename the cookie or
+  rewrite its path or attributes. Also pass the `X-GrooveMap-Console`, `Sec-Fetch-Site`,
+  `Origin` and `Authorization` request headers, and keep the browser's `Host` (or the origin
+  fallback refuses older browsers). A proxy that strips `X-GrooveMap-Console` or
+  `Sec-Fetch-Site` makes every sign-in, sign-out, trigger, and purge answer `403`.
+- **Path.** Serve the console at the root of its own host name. The cookie is set on `Path=/`,
+  and the page calls absolute `/api` and `/admin/api` paths, so a path prefix is not supported.
+- **WebSocket.** Forward `/ws` with its `Upgrade` headers, and do not log its query string (see
+  the [admin guide](admin-guide.md#signing-in-to-the-console)).
+
 ## HTTP, logging, source, and telemetry
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `CORS_ORIGINS` | `http://localhost:3000,http://localhost:8003` | Comma-separated allowed origins. |
+| `CORS_ORIGINS` | unset (no CORS) | Comma-separated origins allowed read-only, cross-origin access: `GET` with an `Authorization` header only, never credentials (the session cookie) or the `X-GrooveMap-Console` header. The console's own pages are same-origin and need none of it. |
+| `FORWARDED_ALLOW_IPS` | `127.0.0.1` | uvicorn's own setting: the proxy addresses whose `X-Forwarded-Proto` and `X-Forwarded-For` it trusts, which the admin proxy forwards to `catalog-api`. |
 | `LOG_LEVEL` | `INFO` | Uvicorn log level. |
 | `LOG_FILE_MAX_BYTES` | `104857600` (100 MiB) | Size, in bytes, at which the `/logs/dashboard.log` file sink rolls over. Read by the shared runtime's `setup_logging` at handler-construction time; a non-numeric or non-positive override falls back to the default. |
 | `LOG_FILE_BACKUP_COUNT` | `5` | Number of rotated `/logs/dashboard.log` backups the shared runtime retains. Same override rules as `LOG_FILE_MAX_BYTES`. |

@@ -66,8 +66,12 @@ from dashboard.session_auth import (
     AdminSession,
     SessionRejected,
     cache_seconds_from_env,
+    cookie_secure_from_env,
     install_ticket_redaction,
+    request_authorization,
+    require_console_request,
     require_session,
+    session_cookie,
     session_rejected_handler,
     take_ws_ticket,
 )
@@ -116,8 +120,11 @@ _WS_SEND_TIMEOUT_SECONDS = 5.0
 # minute even when no browser tab is left polling to notice.
 _WS_SESSION_RECHECK_SECONDS = 30.0
 
+# A state-changing request must come from the console's own pages, never a cross-site form; the
+# check runs first, so a forged request costs no catalog-api call. Safe methods skip it.
+_CONSOLE_REQUEST = [Depends(require_console_request)]
 # Every route that returns pipeline, queue, or datastore data requires a live admin session.
-_SESSION_REQUIRED = [Depends(require_session)]
+_SESSION_REQUIRED = [*_CONSOLE_REQUEST, Depends(require_session)]
 
 
 class ServiceStatus(BaseModel):
@@ -771,14 +778,19 @@ app = ConsoleApp(
 )
 app.add_exception_handler(SessionRejected, session_rejected_handler)
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_cors_origins or ["http://localhost:3000", "http://localhost:8003"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
+def install_cors(target: FastAPI, origins: list[str] | None) -> None:
+    """Open read-only, bearer-header access to ``origins``; none (the default) installs nothing.
+
+    The console's own pages are same-origin and need no CORS. Other origins never get
+    credentials (the session cookie) or the X-GrooveMap-Console header, so none of them can act
+    with a signed-in browser's session; ``require_console_request`` refuses them regardless.
+    """
+    if origins:
+        target.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False, allow_methods=["GET"], allow_headers=["Authorization"])
+
+
+install_cors(app, _cors_origins)
 
 
 @app.get("/health")
@@ -874,10 +886,14 @@ async def get_session(session: AdminSession = Depends(require_session)) -> JSONR
     )
 
 
-@app.post("/api/ws-ticket")
+@app.post("/api/ws-ticket", dependencies=_CONSOLE_REQUEST)
 async def issue_ws_ticket(request: Request) -> JSONResponse:
-    """Mint a single-use ticket, valid for 30 seconds, that opens one live WebSocket."""
-    session, token = await session_gate.validate(request.headers.get("authorization"))
+    """Mint a single-use ticket, valid for 30 seconds, that opens one live WebSocket.
+
+    The socket itself authenticates with the ticket only, never the cookie, so a cross-site
+    page cannot open it: it would first need a ticket, which only a console page can request.
+    """
+    session, token = await session_gate.validate(request_authorization(request))
     ticket, lifetime = session_gate.tickets.issue(session, token)
     return JSONResponse(content={"ticket": ticket, "expires_in": int(lifetime)}, headers={"Cache-Control": "no-store"})
 
@@ -980,10 +996,12 @@ _admin_api_host = os.getenv("API_HOST", "api")
 _admin_api_port = int(os.getenv("API_PORT", "8004"))
 configure_admin_proxy(_admin_api_host, _admin_api_port)
 session_gate.configure(_admin_api_host, _admin_api_port, cache_seconds=cache_seconds_from_env(os.getenv("SESSION_CACHE_SECONDS")))
+session_cookie.secure = cookie_secure_from_env(os.getenv("SESSION_COOKIE_SECURE"))
 # Login and logout are mounted without the console's gate: catalog-api validates both itself, and
 # logout must reach it even when the console cannot confirm the session. Every other admin route
 # also needs a live session here, so an anonymous request is refused before it reaches catalog-api.
-app.include_router(admin_public_router)
+# Login and logout are still refused when forged cross-site.
+app.include_router(admin_public_router, dependencies=_CONSOLE_REQUEST)
 app.include_router(admin_router, dependencies=_SESSION_REQUIRED)
 app.include_router(history_router, dependencies=_SESSION_REQUIRED)
 configure_progress(build_topology(PIPELINE_CONFIGS)["pipelines"])

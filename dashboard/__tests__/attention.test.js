@@ -206,7 +206,7 @@ describe('the attention bar and the header status', () => {
 
     describe('Grafana alerts', () => {
         const respond = (status, body) => vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: status === 200, status, json: async () => body }));
-        beforeEach(() => Object.assign(dashboard, { active: true, token: 't', _authHeaders: () => ({ Authorization: 'Bearer t' }), requestSessionCheck: vi.fn() }));
+        beforeEach(() => Object.assign(dashboard, { active: true, session: 1, requestSessionCheck: vi.fn() }));
 
         it('adds firing alerts as links to Grafana', async () => {
             respond(200, { configured: true, available: true, note: null, alerts: [{ name: 'HighLag', severity: 'crit', summary: 'lag', url: 'https://grafana.test/a' }] });

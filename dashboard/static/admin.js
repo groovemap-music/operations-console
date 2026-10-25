@@ -40,12 +40,25 @@ let DLQ_ITEMS = buildDlqItems(DLQ_SOURCE_PREFIXES);
 
 let DLQ_NAMES = DLQ_ITEMS.map(item => item.queue);
 
+// The admin bearer lives in an HttpOnly session cookie the console sets at sign-in, so no
+// script here can read it; the browser attaches it to every console request by itself. Every
+// request also carries this header, without which the console refuses a state-changing one, so
+// a cross-site page cannot ride the cookie.
+const CONSOLE_REQUEST_HEADERS = { 'X-GrooveMap-Console': '1' };
+
+// Older consoles kept the bearer in localStorage. It is signed out and removed on load.
+const LEGACY_TOKEN_KEY = 'admin_token';
+const LEGACY_EMAIL_KEY = 'admin_email';
+// Set when a sign-out never reached the console, which then could not clear the cookie; the
+// next load signs out again before resuming anything.
+const SIGNOUT_PENDING_KEY = 'console_signout_pending';
+
 // Replace the compiled-in defaults with the server's env-derived prefixes. Best effort:
 // on any failure the defaults stand, which is exactly the pre-existing behavior. The route
-// is session-gated like every console data route, so it needs the bearer.
-async function loadQueuePrefixes(token) {
+// is session-gated like every console data route.
+async function loadQueuePrefixes() {
     try {
-        const response = await fetch('/api/queue-prefixes', { headers: { Authorization: `Bearer ${token}` } });
+        const response = await fetch('/api/queue-prefixes', { headers: CONSOLE_REQUEST_HEADERS });
         if (!response.ok) return;
         const prefixes = await response.json();
         if (!prefixes || !prefixes.discogs || !prefixes.musicbrainz) return;
@@ -72,9 +85,9 @@ const SESSION_END_MESSAGES = {
     'console-unreachable': 'The operations console could not be reached. Sign in again once it is back.',
 };
 
-// Reasons after which the stored bearer is worthless and is discarded. After an outage the
-// bearer may still be live, so it is kept and a reload resumes the session once the
-// dependency is back.
+// Reasons after which the session is over: the console has cleared its cookie (or is retried
+// until it does). After an outage the session may still be live, so the cookie is kept and a
+// reload resumes the session once the dependency is back.
 const SESSION_DISCARD_REASONS = new Set(['signed-out', 'signed-out-unconfirmed', 'missing', 'invalid']);
 
 // One time range, shared by every history view, persisted across reloads.
@@ -109,7 +122,8 @@ function _emptyRow(colSpan, message) {
 
 class AdminDashboardState {
     constructor() {
-        this.token = localStorage.getItem('admin_token');
+        // Bumped whenever a session starts or ends, so an answer about an earlier one is ignored.
+        this.sessionGeneration = 1;
         this.activeTab = 'overview';
         this.signedIn = false;
         this.sessionWatch = null;
@@ -149,15 +163,11 @@ class AdminInteractions {
         this.state = new AdminDashboardState();
         this.refreshSubscription = new RefreshSubscription();
         this.bindEvents();
-        if (this.token) {
-            this.resumeSession();
-        } else {
-            this.showLogin();
-        }
+        this.start();
     }
 
-    get token() { return this.state.token; }
-    set token(value) { this.state.token = value; }
+    get sessionGeneration() { return this.state.sessionGeneration; }
+    set sessionGeneration(value) { this.state.sessionGeneration = value; }
     get refreshInterval() { return this.refreshSubscription.handle; }
     set refreshInterval(value) { this.refreshSubscription.handle = value; }
     get activeTab() { return this.state.activeTab; }
@@ -402,32 +412,55 @@ class AdminInteractions {
         this.switchTab('overview');
         // Refresh the prefixes first so the rendered DLQ names match the backend's
         // env-derived _VALID_DLQ_NAMES; re-render once they land.
-        loadQueuePrefixes(this.token).then(() => this.renderDlqList());
+        loadQueuePrefixes().then(() => this.renderDlqList());
         this.renderDlqList();
         this.loadExtractions();
         this.startAutoRefresh();
         this.startSessionWatch(session);
 
-        const email = session?.email || localStorage.getItem('admin_email');
+        const email = session?.email;
         const emailEl = document.getElementById('admin-email');
         if (emailEl && email) {
             emailEl.textContent = email;
         }
-        document.dispatchEvent(new CustomEvent('console:authenticated', { detail: { token: this.token } }));
+        document.dispatchEvent(new CustomEvent('console:authenticated', { detail: { session: this.sessionGeneration } }));
     }
 
     // ─── Session ─────────────────────────────────────────────────────────────
 
-    // Ask the console whether the stored bearer is still a live admin session. The console
-    // answers from catalog-api (cached for at most 30 seconds); a 401 means expired or
-    // revoked, a 503 means catalog-api could not answer.
-    async checkSession() {
-        if (!this.token) return { ok: false, reason: 'missing' };
+    // The page cannot see whether it holds a session cookie, so every load asks the console.
+    // A bearer an older console left in localStorage is retired first, and a sign-out that
+    // never reached the console is finished before anything is resumed.
+    async start() {
+        await this.retireLegacyBearer();
+        if (localStorage.getItem(SIGNOUT_PENDING_KEY)) {
+            await this.logout();
+            return;
+        }
+        await this.resumeSession(true);
+    }
+
+    // Remove the bearer an older console kept in script-readable storage, and sign it out at
+    // catalog-api so a copy taken from there is dead too. Best effort: it is gone from this
+    // browser either way. The explicit header leaves any cookie session alone.
+    async retireLegacyBearer() {
+        const legacy = localStorage.getItem(LEGACY_TOKEN_KEY);
+        localStorage.removeItem(LEGACY_TOKEN_KEY);
+        localStorage.removeItem(LEGACY_EMAIL_KEY);
+        if (!legacy) return;
         try {
-            const response = await fetch('/api/session', {
-                headers: { Authorization: `Bearer ${this.token}` },
-                cache: 'no-store',
-            });
+            await fetch('/admin/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${legacy}` } });
+        } catch {
+            // Unreachable now; catalog-api still ends the session at its own expiry.
+        }
+    }
+
+    // Ask the console whether the session cookie still carries a live admin session. The
+    // console answers from catalog-api (cached for at most 30 seconds); a 401 means none,
+    // expired, or revoked (and clears the cookie), a 503 means catalog-api could not answer.
+    async checkSession() {
+        try {
+            const response = await fetch('/api/session', { headers: CONSOLE_REQUEST_HEADERS, cache: 'no-store' });
             if (response.ok) return { ok: true, session: await response.json() };
             const body = await response.json().catch(() => ({}));
             return { ok: false, reason: body.reason || (response.status === 503 ? 'unavailable' : 'invalid') };
@@ -436,22 +469,27 @@ class AdminInteractions {
         }
     }
 
-    async resumeSession() {
-        const token = this.token;
+    // On first load no session at all is not an ending: the login form shows without a reason.
+    async resumeSession(initial = false) {
+        const generation = this.sessionGeneration;
         const result = await this.checkSession();
-        if (token !== this.token) return;
+        if (generation !== this.sessionGeneration) return;
         if (result.ok) {
             this.showPanel(result.session);
+        } else if (initial && result.reason === 'missing') {
+            this.showLogin();
         } else {
             this.endSession(result.reason);
         }
     }
 
+    // Mid-session, no cookie at all means the session ended: the browser dropped it at its
+    // expiry, or the console cleared it when catalog-api called it invalid.
     async verifySession() {
-        const token = this.token;
+        const generation = this.sessionGeneration;
         const result = await this.checkSession();
-        if (token !== this.token || !this.signedIn) return result;
-        if (!result.ok) this.endSession(result.reason);
+        if (generation !== this.sessionGeneration || !this.signedIn) return result;
+        if (!result.ok) this.endSession(result.reason === 'missing' ? 'invalid' : result.reason);
         return result;
     }
 
@@ -459,15 +497,13 @@ class AdminInteractions {
         if (!this.signedIn) return;
         const result = await this.verifySession();
         if (result.ok && this.signedIn) {
-            document.dispatchEvent(new CustomEvent('console:authenticated', { detail: { token: this.token } }));
+            document.dispatchEvent(new CustomEvent('console:authenticated', { detail: { session: this.sessionGeneration } }));
         }
     }
 
     endSession(reason) {
         if (SESSION_DISCARD_REASONS.has(reason)) {
-            this.token = null;
-            localStorage.removeItem('admin_token');
-            localStorage.removeItem('admin_email');
+            this.sessionGeneration += 1;
         }
         this.showLogin(reason);
     }
@@ -512,15 +548,14 @@ class AdminInteractions {
         try {
             const response = await fetch('/admin/api/login', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { ...CONSOLE_REQUEST_HEADERS, 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email, password }),
             });
 
             if (response.ok) {
-                const data = await response.json();
-                this.token = data.access_token;
-                localStorage.setItem('admin_token', data.access_token);
-                localStorage.setItem('admin_email', email);
+                // The console set the session cookie; the body carries no bearer.
+                this.sessionGeneration += 1;
+                localStorage.removeItem(SIGNOUT_PENDING_KEY);
                 document.getElementById('login-password').value = '';
                 await this.resumeSession();
             } else {
@@ -537,31 +572,33 @@ class AdminInteractions {
     }
 
     // Only a 2xx (revoked) or a 401 (already dead) proves the session can no longer be used;
-    // anything else, including no answer, is reported as unconfirmed. The bearer is discarded
-    // locally either way.
+    // anything else, including no answer, is reported as unconfirmed. Any answer from the
+    // console clears the cookie; with none, the sign-out is retried on the next load.
     async logout() {
         let status = null;
         try {
-            const response = await fetch('/admin/api/logout', {
-                method: 'POST',
-                headers: { Authorization: `Bearer ${this.token}` },
-            });
+            const response = await fetch('/admin/api/logout', { method: 'POST', headers: CONSOLE_REQUEST_HEADERS });
             status = response.status;
         } catch {
             status = null;
+        }
+        if (status === null) {
+            localStorage.setItem(SIGNOUT_PENDING_KEY, '1');
+        } else {
+            localStorage.removeItem(SIGNOUT_PENDING_KEY);
         }
         const confirmed = status !== null && ((status >= 200 && status < 300) || status === 401);
         this.endSession(confirmed ? 'signed-out' : 'signed-out-unconfirmed');
     }
 
+    // A 401 ends the session it was asked for, never a later one, and never overrides a
+    // sign-out that already ended it.
     async authFetch(url, options = {}) {
-        const headers = { ...options.headers };
-        if (this.token) {
-            headers['Authorization'] = `Bearer ${this.token}`;
-        }
+        const generation = this.sessionGeneration;
+        const headers = { ...CONSOLE_REQUEST_HEADERS, ...options.headers };
         const response = await fetch(url, { ...options, headers });
         if (response.status === 401) {
-            this.endSession('invalid');
+            if (generation === this.sessionGeneration && this.signedIn) this.endSession('invalid');
             throw new Error('Session expired');
         }
         return response;

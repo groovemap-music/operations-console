@@ -20,6 +20,7 @@ from playwright.sync_api import Browser, Page, sync_playwright
 from psycopg import AsyncConnection, AsyncCursor
 
 from dashboard.config import DashboardConfig
+from tests.e2e_console import SECURE_COOKIE
 from tests.fake_catalog_api import FakeCatalogApi
 
 
@@ -125,7 +126,8 @@ def test_server() -> Any:
     The console reaches the fake over a real socket, exactly as it reaches catalog-api, and
     validates every session against it with the positive cache disabled
     (``SESSION_CACHE_SECONDS=0``), so a revocation or outage the suite triggers takes effect on
-    the next request instead of up to 30 seconds later.
+    the next request instead of up to 30 seconds later. The session cookie stays Secure, its
+    default, except in the WebKit projects (see ``tests.e2e_console.SECURE_COOKIE``).
     """
     project_root = str(Path(__file__).resolve().parents[1])
     env = os.environ.copy()
@@ -135,6 +137,7 @@ def test_server() -> Any:
     env["API_HOST"] = "127.0.0.1"
     env["API_PORT"] = str(E2E_CATALOG_PORT)
     env["SESSION_CACHE_SECONDS"] = "0"
+    env["SESSION_COOKIE_SECURE"] = "true" if SECURE_COOKIE else "false"
 
     catalog = _start_server("tests.fake_catalog_api:create_app", E2E_CATALOG_PORT, env, project_root)
     try:

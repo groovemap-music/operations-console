@@ -324,7 +324,7 @@ describe('Dashboard.fetchRunProgress', () => {
         dashboard = makeDashboard();
         document.body.insertAdjacentHTML('beforeend', '<div id="run-progress" hidden></div>');
         dashboard.renderTopology({ pipelines: [discogs()], datastores: DATASTORES });
-        Object.assign(dashboard, { active: true, token: 'tok', requestSessionCheck: vi.fn() });
+        Object.assign(dashboard, { active: true, session: 1, requestSessionCheck: vi.fn() });
     });
 
     afterEach(() => vi.unstubAllGlobals());
@@ -338,7 +338,7 @@ describe('Dashboard.fetchRunProgress', () => {
         vi.stubGlobal('fetch', fetch);
         await dashboard.fetchRunProgress();
         expect(fetch.mock.calls.map(([url]) => url)).toEqual(['/admin/api/extractions', '/api/progress/discogs?start=2026-10-24T06%3A00%3A00Z']);
-        expect(fetch.mock.calls[1][1].headers).toEqual({ Authorization: 'Bearer tok' });
+        expect(fetch.mock.calls[1][1].headers).toEqual({ 'X-GrooveMap-Console': '1' });
         expect(dashboard.runProgress.discogs.data.pipeline).toBe('discogs');
     });
 
