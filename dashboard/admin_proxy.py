@@ -345,6 +345,86 @@ async def proxy_audit_log(
 
 
 # ---------------------------------------------------------------------------
+# Identity Ledger proxy routes (design ADR 0016 section 7, concept D)
+# ---------------------------------------------------------------------------
+
+# The promoted contract's `events` and `kinds` for the ledger operations. catalog-api rejects
+# anything else with 422; matching them here keeps a malformed value from leaving the console.
+LEDGER_EVENTS = (
+    "linked_at_ingest",
+    "reattached",
+    "promoted",
+    "reverted",
+    "evidence_attached",
+    "alias_closed",
+    "link_added",
+    "link_changed",
+    "link_removed",
+)
+LEDGER_KINDS = ("release", "master", "artist", "label")
+# catalog-api's MAX_EDITION_LIMIT for one work.
+LEDGER_MAX_EDITION_LIMIT = 500
+
+# An RFC 3339 instant with an explicit offset, as catalog-api's AwareDatetime requires.
+_RFC3339 = r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])T([01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,6})?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$"
+
+
+@router.get("/admin/api/identity/ledger/works")
+async def proxy_identity_ledger_works(
+    request: Request,
+    page: int | None = Query(default=None, ge=1),
+    page_size: int | None = Query(default=None, ge=1, le=100),
+    event: str | None = Query(default=None, pattern=f"^({'|'.join(LEDGER_EVENTS)})$"),
+    since: str | None = Query(default=None, pattern=_RFC3339),
+    until: str | None = Query(default=None, pattern=_RFC3339),
+) -> Response:
+    """Proxy the Identity Ledger works list to the API service."""
+    params: dict[str, str] = {}
+    if page is not None:
+        params["page"] = str(page)
+    if page_size is not None:
+        params["page_size"] = str(page_size)
+    if event is not None:
+        params["event"] = event
+    if since is not None:
+        params["since"] = since
+    if until is not None:
+        params["until"] = until
+    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_IDENTITY_LEDGER_WORKS_PATH, params=params)
+
+
+@router.get("/admin/api/identity/ledger/works/{work_id}")
+async def proxy_identity_ledger_work(
+    work_id: str,
+    request: Request,
+    as_of: str | None = Query(default=None, pattern=_RFC3339),
+    edition_limit: int | None = Query(default=None, ge=1, le=LEDGER_MAX_EDITION_LIMIT),
+) -> Response:
+    """Proxy one work's Identity Ledger, read at ``as_of``, to the API service."""
+    if not _validate_path_segment(work_id):
+        return Response(content=b'{"detail":"Invalid work ID"}', status_code=400, media_type="application/json")
+    path = catalog_admin_contract.ADMIN_IDENTITY_LEDGER_WORK_PATH.format(work_id=work_id)
+    params: dict[str, str] = {}
+    if as_of is not None:
+        params["as_of"] = as_of
+    if edition_limit is not None:
+        params["edition_limit"] = str(edition_limit)
+    return await _proxy_request(request, "GET", path, params=params)
+
+
+@router.get("/admin/api/identity/ledger/density")
+async def proxy_identity_ledger_density(
+    request: Request,
+    kind: str | None = Query(default=None, pattern=f"^({'|'.join(LEDGER_KINDS)})$"),
+) -> Response:
+    """Proxy the Identity Ledger's per-month event density to the API service."""
+    params: dict[str, str] = {}
+    if kind is not None:
+        params["kind"] = kind
+    return await _proxy_request(request, "GET", catalog_admin_contract.ADMIN_IDENTITY_LEDGER_DENSITY_PATH, params=params)
+
+
+# ---------------------------------------------------------------------------
 # Phase 5 — Extraction Analysis proxy routes
 # ---------------------------------------------------------------------------
 

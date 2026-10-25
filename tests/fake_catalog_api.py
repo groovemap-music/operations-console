@@ -3,13 +3,16 @@
 It answers the promoted operations the console's session gate and login flow call
 (``admin_login``, ``admin_session``, ``admin_logout``, ``admin_extractions``) with
 catalog-api's documented statuses: 401 for missing, unknown, expired, or revoked tokens and
-403 for an authenticated non-admin. Unit tests mount it in-process through
+403 for an authenticated non-admin. It also serves the audit log and the three Identity Ledger
+operations (``admin_identity_ledger_works``, ``admin_identity_ledger_work``,
+``admin_identity_ledger_density``) from fixtures a test can replace. Unit tests mount it in-process through
 ``httpx.ASGITransport``; the browser suite runs it as its own server (``create_app``) and drives
 it through the ``/__fake__`` control routes, so the console reaches it over a real socket.
 """
 
 from __future__ import annotations
 
+import copy
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -27,6 +30,151 @@ ADMIN_PASSWORD = "correct-horse-battery"  # Test-only credential for the in-memo
 # suite can watch a session expire mid-use without waiting out a real lifetime.
 SHORT_LIVED_EMAIL = "short-lived@example.com"
 SHORT_LIVED_SECONDS = 6
+
+
+LEDGER_WORK = "00000000-0000-4000-8000-000000000101"
+LEDGER_OTHER_WORK = "00000000-0000-4000-8000-000000000102"
+LEDGER_EDITION = "00000000-0000-4000-8000-000000000001"
+LEDGER_SPLIT_EDITION = "00000000-0000-4000-8000-000000000002"
+LEDGER_FORMER_ITEM = "00000000-0000-4000-8000-000000000009"
+LEDGER_MBID = "00000000-9000-4000-8000-000000000001"
+_RULE = "fake rule"
+
+
+def _event(at: str, event_type: str, dated_from: str = "groovemap", **fields: Any) -> dict[str, Any]:
+    return {"at": at, "type": event_type, **fields, "dated_from": dated_from, "rule": _RULE}
+
+
+def default_ledger() -> dict[str, Any]:
+    """A small Identity Ledger in catalog-api's payload shapes, with both provenances.
+
+    ``density`` is keyed by catalog kind, ``works`` is the whole works list (paged on read), and
+    ``work`` maps a work id to its payload read now. A work read ``as_of`` drops the events and
+    former items recorded after it.
+    """
+    link_added = _event(
+        "2025-11-14T00:00:00Z",
+        "link_added",
+        "musicbrainz_fullexport",
+        provider="musicbrainz",
+        external_id=LEDGER_MBID,
+        discogs_id_before=None,
+        discogs_id_after="900001",
+        source_ref="20261024-001001",
+        decision_ref="backfill-1",
+    )
+    return {
+        "density": {
+            "release": [
+                {"month": "2025-11", "type": "link_added", "dated_from": "musicbrainz_fullexport", "events": 40},
+                {"month": "2025-12", "type": "link_added", "dated_from": "musicbrainz_fullexport", "events": 25},
+                {"month": "2026-02", "type": "link_changed", "dated_from": "musicbrainz_fullexport", "events": 3},
+                {"month": "2026-08", "type": "linked_at_ingest", "dated_from": "groovemap", "events": 60},
+                {"month": "2026-08", "type": "minted", "dated_from": "groovemap", "events": 120},
+                {"month": "2026-09", "type": "link_changed", "dated_from": "groovemap", "events": 2},
+                {"month": "2026-09", "type": "reattached", "dated_from": "groovemap", "events": 4},
+            ],
+        },
+        "works": [
+            {
+                "gm_id": LEDGER_WORK,
+                "providers": [{"provider": "discogs", "external_id": "900101"}],
+                "editions": 2,
+                "evented_editions": 2,
+                "repaired_editions": 1,
+                "work_disagreements": 1,
+                "first_event": "2025-11-14T00:00:00Z",
+                "last_event": "2026-09-03T12:00:00Z",
+            },
+            {
+                "gm_id": LEDGER_OTHER_WORK,
+                "providers": [{"provider": "musicbrainz", "external_id": "00000000-9000-4000-8000-000000000102"}],
+                "editions": 1,
+                "evented_editions": 1,
+                "repaired_editions": 0,
+                "work_disagreements": 0,
+                "first_event": "2026-08-01T02:00:00Z",
+                "last_event": "2026-08-01T02:00:00Z",
+            },
+        ],
+        "work": {
+            LEDGER_WORK: {
+                "work": {
+                    "gm_id": LEDGER_WORK,
+                    "state": "linked",
+                    "providers": [{"provider": "discogs", "external_id": "900101", "valid_from": "2026-08-01T02:00:00Z", "valid_to": None}],
+                    "events": [_event("2026-08-01T02:00:00Z", "minted", item=LEDGER_WORK, providers=["discogs"])],
+                },
+                "as_of": None,
+                "editions": [
+                    {
+                        "gm_id": LEDGER_EDITION,
+                        "state": "linked",
+                        "primary_work": LEDGER_WORK,
+                        "works": [LEDGER_WORK],
+                        "work_disagreement": False,
+                        "provider_rows": [
+                            {"provider": "discogs", "external_id": "900001"},
+                            {"provider": "musicbrainz", "external_id": LEDGER_MBID, "names_discogs_release": "900001"},
+                        ],
+                        "former_items": [
+                            {
+                                "gm_id": LEDGER_FORMER_ITEM,
+                                "superseded_at": "2026-09-03T12:00:00Z",
+                                "cause": "catalog_reattachment",
+                                "decision_ref": "audit-7",
+                            }
+                        ],
+                        "evidence": [],
+                        "events": [
+                            link_added,
+                            _event("2026-08-01T02:00:00Z", "minted", item=LEDGER_EDITION, providers=["discogs"]),
+                            _event(
+                                "2026-09-03T12:00:00Z",
+                                "reattached",
+                                superseded=LEDGER_FORMER_ITEM,
+                                survivor=LEDGER_EDITION,
+                                decision_ref="audit-7",
+                                compressed=False,
+                                moves={"collection_items": 2},
+                            ),
+                        ],
+                    },
+                    {
+                        "gm_id": LEDGER_SPLIT_EDITION,
+                        "state": "split",
+                        "primary_work": LEDGER_WORK,
+                        "works": [LEDGER_WORK, LEDGER_OTHER_WORK],
+                        "work_disagreement": True,
+                        "provider_rows": [{"provider": "discogs", "external_id": "900002"}],
+                        "former_items": [],
+                        "evidence": [],
+                        "events": [_event("2026-08-01T02:00:00Z", "minted", item=LEDGER_SPLIT_EDITION, providers=["discogs"])],
+                    },
+                ],
+                "edition_count": 2,
+                "truncated": False,
+            },
+        },
+    }
+
+
+def _ledger_work_as_of(payload: dict[str, Any], as_of: str | None) -> dict[str, Any]:
+    """One work's payload with what was recorded after ``as_of`` dropped, as catalog-api reads it."""
+    work = copy.deepcopy(payload)
+    work["as_of"] = as_of
+    if as_of is None:
+        return work
+    cutoff = datetime.fromisoformat(as_of)
+
+    def recorded(at: str | None) -> bool:
+        return at is not None and datetime.fromisoformat(at) <= cutoff
+
+    work["work"]["events"] = [event for event in work["work"]["events"] if recorded(event["at"])]
+    for edition in work["editions"]:
+        edition["events"] = [event for event in edition["events"] if recorded(event["at"])]
+        edition["former_items"] = [item for item in edition["former_items"] if recorded(item["superseded_at"])]
+    return work
 
 
 @dataclass
@@ -49,6 +197,7 @@ class FakeCatalogApi:
         self.outage = False
         self.session_calls = 0
         self.audit_entries: list[dict[str, Any]] = []
+        self.ledger = default_ledger()
         self.app = self._build_app()
 
     def mint(self, email: str = ADMIN_EMAIL, *, lifetime_seconds: float = 3600, is_admin: bool = True) -> str:
@@ -122,6 +271,42 @@ class FakeCatalogApi:
             action = request.query_params.get("action")
             entries = [entry for entry in self.audit_entries if action in (None, entry["action"])]
             return JSONResponse({"entries": entries, "total": len(entries), "page": 1, "page_size": 50})
+
+        @app.get(catalog_admin_contract.ADMIN_IDENTITY_LEDGER_WORKS_PATH)
+        async def ledger_works(request: Request) -> JSONResponse:
+            record = self._live(request)
+            if isinstance(record, JSONResponse):
+                return record
+            page = max(int(request.query_params.get("page", "1")), 1)
+            page_size = min(max(int(request.query_params.get("page_size", "50")), 1), 100)
+            works = self.ledger["works"]
+            listed = works[(page - 1) * page_size : page * page_size]
+            return JSONResponse({"works": listed, "total": len(works), "page": page, "page_size": page_size})
+
+        @app.get(catalog_admin_contract.ADMIN_IDENTITY_LEDGER_WORK_PATH)
+        async def ledger_work(work_id: str, request: Request) -> JSONResponse:
+            record = self._live(request)
+            if isinstance(record, JSONResponse):
+                return record
+            payload = self.ledger["work"].get(work_id)
+            if payload is None:
+                return JSONResponse({"detail": "Work not found"}, status_code=404)
+            return JSONResponse(_ledger_work_as_of(payload, request.query_params.get("as_of")))
+
+        @app.get(catalog_admin_contract.ADMIN_IDENTITY_LEDGER_DENSITY_PATH)
+        async def ledger_density(request: Request) -> JSONResponse:
+            record = self._live(request)
+            if isinstance(record, JSONResponse):
+                return record
+            kind = request.query_params.get("kind", "release")
+            return JSONResponse({"kind": kind, "buckets": self.ledger["density"].get(kind, [])})
+
+        @app.post("/__fake__/ledger")
+        async def set_ledger(request: Request) -> JSONResponse:
+            """Replace the ledger fixtures; an empty body restores the defaults."""
+            body: dict[str, Any] = await request.json()
+            self.ledger = {**default_ledger(), **body}
+            return JSONResponse({"works": len(self.ledger["works"])})
 
         @app.post("/__fake__/audit")
         async def set_audit(request: Request) -> JSONResponse:

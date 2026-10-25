@@ -100,6 +100,137 @@ const QUEUE_CHART_COLORS = [
     '#a78bfa', '#38bdf8', '#fb923c', '#e879f9',
 ];
 
+// Identity Ledger (design ADR 0016 section 7, concept D), in the order the density strip stacks
+// event types. The strip also counts `minted`, which the works list cannot filter on.
+const LEDGER_EVENT_LABELS = {
+    minted: 'Minted',
+    linked_at_ingest: 'Linked at ingest',
+    evidence_attached: 'Evidence attached',
+    alias_closed: 'Alias closed',
+    reattached: 'Re-attached',
+    promoted: 'Promoted',
+    reverted: 'Reverted',
+    link_added: 'Link added',
+    link_changed: 'Link changed',
+    link_removed: 'Link removed',
+};
+
+const LEDGER_EVENT_COLORS = {
+    minted: '#64748b',
+    linked_at_ingest: '#34d399',
+    evidence_attached: '#38bdf8',
+    alias_closed: '#94a3b8',
+    reattached: '#f59e0b',
+    promoted: '#a78bfa',
+    reverted: '#f87171',
+    link_added: '#818cf8',
+    link_changed: '#e879f9',
+    link_removed: '#fb923c',
+};
+
+const LEDGER_STATE_BADGES = {
+    linked: 'badge-ok',
+    discogs_only: 'badge-waiting',
+    musicbrainz_only: 'badge-waiting',
+    unresolved: 'badge-running',
+    split: 'badge-error',
+    not_recorded: 'badge-idle',
+};
+
+// `dated_from` of a link change the one-time backfill dated from the MusicBrainz full export.
+// About 9% of those dates belong to an older link MusicBrainz replaced, so such an event is
+// always labelled as dated, never shown as recorded.
+const LEDGER_BACKFILL = 'musicbrainz_fullexport';
+const LEDGER_BACKFILL_LABEL = 'dated from the MusicBrainz full export';
+const LEDGER_PAGE_SIZE = 50;
+
+// `YYYY-MM-DD HH:MM UTC` for an RFC 3339 instant, independent of the browser's locale and zone.
+function _ledgerTime(iso) {
+    if (!iso) return '—';
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return String(iso);
+    const utc = date.toISOString();
+    return `${utc.slice(0, 10)} ${utc.slice(11, 16)} UTC`;
+}
+
+// The RFC 3339 instant that starts the UTC day a date input names, `days` later.
+function _ledgerDayStart(value, days = 0) {
+    const [year, month, day] = value.split('-').map(Number);
+    return new Date(Date.UTC(year, month - 1, day + days)).toISOString().replace('.000Z', 'Z');
+}
+
+// A datetime-local input's value read as UTC, as an RFC 3339 instant; empty means now.
+function _ledgerAsOf(value) {
+    if (!value) return null;
+    return value.length === 16 ? `${value}:00Z` : `${value}Z`;
+}
+
+// The strip's series: every UTC month from the first bucket to the last, empty months included
+// so the axis is time, and one dataset per event type and provenance.
+function _ledgerDensitySeries(buckets) {
+    const counted = (buckets || []).filter(bucket => /^\d{4}-\d{2}$/.test(bucket.month));
+    if (counted.length === 0) return { months: [], datasets: [], backfilledMonths: [] };
+    const sorted = counted.map(bucket => bucket.month).sort();
+    const last = sorted[sorted.length - 1];
+    let [year, month] = sorted[0].split('-').map(Number);
+    const months = [];
+    for (;;) {
+        const label = `${year}-${String(month).padStart(2, '0')}`;
+        months.push(label);
+        if (label >= last) break;
+        month += 1;
+        if (month > 12) { month = 1; year += 1; }
+    }
+    const index = new Map(months.map((label, i) => [label, i]));
+    const series = new Map();
+    for (const bucket of counted) {
+        const key = `${bucket.type}|${bucket.dated_from}`;
+        if (!series.has(key)) series.set(key, { type: bucket.type, datedFrom: bucket.dated_from, counts: months.map(() => 0) });
+        series.get(key).counts[index.get(bucket.month)] += Number(bucket.events) || 0;
+    }
+    const order = Object.keys(LEDGER_EVENT_LABELS);
+    const rank = type => (order.includes(type) ? order.indexOf(type) : order.length);
+    const datasets = [...series.values()].sort((a, b) =>
+        rank(a.type) - rank(b.type)
+        || a.type.localeCompare(b.type)
+        || Number(a.datedFrom === LEDGER_BACKFILL) - Number(b.datedFrom === LEDGER_BACKFILL));
+    const backfilledMonths = months.filter((_, i) => datasets.some(d => d.datedFrom === LEDGER_BACKFILL && d.counts[i] > 0));
+    return { months, datasets, backfilledMonths };
+}
+
+// A diagonal hatch in `color` for backfilled segments, or a translucent fill without a 2D canvas.
+function _ledgerHatch(color) {
+    const tile = document.createElement('canvas');
+    tile.width = 6;
+    tile.height = 6;
+    const context = tile.getContext('2d');
+    if (!context) return `${color}66`;
+    context.fillStyle = `${color}33`;
+    context.fillRect(0, 0, 6, 6);
+    context.strokeStyle = color;
+    context.lineWidth = 1.5;
+    context.beginPath();
+    context.moveTo(0, 6);
+    context.lineTo(6, 0);
+    context.moveTo(-1, 1);
+    context.lineTo(1, -1);
+    context.moveTo(5, 7);
+    context.lineTo(7, 5);
+    context.stroke();
+    return context.createPattern(tile, 'repeat') || `${color}66`;
+}
+
+function _ledgerEventLabel(type) {
+    return LEDGER_EVENT_LABELS[type] || type;
+}
+
+function _el(tag, className, text) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text !== undefined && text !== null) element.textContent = String(text);
+    return element;
+}
+
 function _esc(str) {
     const div = document.createElement('div');
     div.textContent = String(str ?? '');
@@ -131,6 +262,10 @@ class AdminDashboardState {
         this.queueDepthChart = null;
         this.responseTimeChart = null;
         this.auditLogPage = 1;
+        this.ledgerLoaded = false;
+        this.ledgerPage = 1;
+        this.ledgerChart = null;
+        this.ledgerWorkId = null;
         this.eaVersions = [];
         this.eaSelectedRecords = new Map();
         this.eaParsingErrors = null;
@@ -287,6 +422,40 @@ class AdminInteractions {
         const alNextBtn = document.getElementById('al-next-btn');
         if (alNextBtn) alNextBtn.addEventListener('click', () => { this._auditLogPage++; this.fetchAuditLog(); });
 
+        const ledgerKind = document.getElementById('ledger-kind');
+        if (ledgerKind) ledgerKind.addEventListener('change', () => this.fetchLedgerDensity());
+
+        ['ledger-event-filter', 'ledger-since', 'ledger-until'].forEach(id => {
+            const filter = document.getElementById(id);
+            if (filter) filter.addEventListener('change', () => { this.state.ledgerPage = 1; this.fetchLedgerWorks(); });
+        });
+
+        const ledgerRefreshBtn = document.getElementById('ledger-refresh-btn');
+        if (ledgerRefreshBtn) ledgerRefreshBtn.addEventListener('click', () => this.loadLedger());
+
+        const ledgerPrevBtn = document.getElementById('ledger-prev-btn');
+        if (ledgerPrevBtn) ledgerPrevBtn.addEventListener('click', () => { if (this.state.ledgerPage > 1) { this.state.ledgerPage--; this.fetchLedgerWorks(); } });
+
+        const ledgerNextBtn = document.getElementById('ledger-next-btn');
+        if (ledgerNextBtn) ledgerNextBtn.addEventListener('click', () => { this.state.ledgerPage++; this.fetchLedgerWorks(); });
+
+        const ledgerAsOfBtn = document.getElementById('ledger-as-of-btn');
+        if (ledgerAsOfBtn) ledgerAsOfBtn.addEventListener('click', () => this.fetchLedgerWork());
+
+        const ledgerNowBtn = document.getElementById('ledger-now-btn');
+        if (ledgerNowBtn) ledgerNowBtn.addEventListener('click', () => {
+            const asOf = document.getElementById('ledger-as-of');
+            if (asOf) asOf.value = '';
+            this.fetchLedgerWork();
+        });
+
+        const ledgerWorkClose = document.getElementById('ledger-work-close');
+        if (ledgerWorkClose) ledgerWorkClose.addEventListener('click', () => {
+            this.state.ledgerWorkId = null;
+            const section = document.getElementById('ledger-work');
+            if (section) section.style.display = 'none';
+        });
+
         // One time range for every history view; the buttons live in the shared range bar.
         this._syncRangeButtons();
         document.querySelectorAll('.range-btn').forEach(btn => {
@@ -358,7 +527,7 @@ class AdminInteractions {
             btn.classList.toggle('active', btn.dataset.tab === tabName);
         });
 
-        const panels = ['overview', 'extractions', 'dlq', 'users', 'storage', 'queue-trends', 'system-health', 'audit-log', 'extraction-analysis'];
+        const panels = ['overview', 'extractions', 'dlq', 'users', 'storage', 'queue-trends', 'system-health', 'audit-log', 'extraction-analysis', 'ledger'];
         panels.forEach(name => {
             const el = document.getElementById(`tab-${name}`);
             if (el) el.style.display = name === tabName ? 'block' : 'none';
@@ -378,6 +547,8 @@ class AdminInteractions {
             this.fetchAuditLog();
         } else if (tabName === 'extraction-analysis') {
             this.fetchExtractionAnalysisVersions();
+        } else if (tabName === 'ledger') {
+            this.showLedger();
         }
     }
 
@@ -407,6 +578,7 @@ class AdminInteractions {
 
     showPanel(session) {
         this.signedIn = true;
+        this.state.ledgerLoaded = false;
         document.getElementById('login-view').style.display = 'none';
         document.getElementById('console-view').style.display = 'block';
         this.switchTab('overview');
@@ -2698,7 +2870,393 @@ class AdminContracts extends AdminServiceHealth {
     }
 }
 
-class AdminDashboard extends AdminContracts {}
+class AdminLedger extends AdminContracts {
+
+    // ─── Identity Ledger ─────────────────────────────────────────────────────
+
+    // Read the first time the tab is shown, not at load: the strip and the list each cost a scan
+    // at catalog scale, and a canvas drawn inside a hidden tab measures 0 x 0. Refresh re-reads.
+    showLedger() {
+        if (!this.state.ledgerLoaded) return this.loadLedger();
+        if (this.state.ledgerChart) this.state.ledgerChart.resize();
+        return Promise.resolve();
+    }
+
+    loadLedger() {
+        this.state.ledgerLoaded = true;
+        const reads = [this.fetchLedgerDensity(), this.fetchLedgerWorks()];
+        if (this.state.ledgerWorkId) reads.push(this.fetchLedgerWork());
+        return Promise.all(reads);
+    }
+
+    // Runs one ledger read, showing its spinner and error. A read superseded by a newer one of
+    // the same kind (a quick filter change) is dropped rather than drawn over it.
+    async _ledgerRead(name, url, render) {
+        const generation = (this.state[`${name}Generation`] || 0) + 1;
+        this.state[`${name}Generation`] = generation;
+        const loading = document.getElementById(`ledger-${name}-loading`);
+        const error = document.getElementById(`ledger-${name}-error`);
+        const errorMsg = document.getElementById(`ledger-${name}-error-msg`);
+        if (loading) loading.style.display = '';
+        if (error) error.style.display = 'none';
+        try {
+            const resp = await this.authFetch(url);
+            if (!resp.ok) {
+                const body = await resp.json().catch(() => ({}));
+                throw new Error(typeof body.detail === 'string' ? body.detail : `HTTP ${resp.status}`);
+            }
+            const data = await resp.json();
+            if (this.state[`${name}Generation`] === generation) render(data);
+        } catch (err) {
+            if (this.state[`${name}Generation`] !== generation) return;
+            if (errorMsg) errorMsg.textContent = err.message;
+            if (error) error.style.display = '';
+        } finally {
+            if (loading && this.state[`${name}Generation`] === generation) loading.style.display = 'none';
+        }
+    }
+
+    fetchLedgerDensity() {
+        const kind = document.getElementById('ledger-kind')?.value || 'release';
+        return this._ledgerRead('density', `/admin/api/identity/ledger/density?kind=${encodeURIComponent(kind)}`, data => this.renderLedgerDensity(data));
+    }
+
+    _ledgerWorksUrl() {
+        const params = new URLSearchParams({ page: String(this.state.ledgerPage), page_size: String(LEDGER_PAGE_SIZE) });
+        const event = document.getElementById('ledger-event-filter')?.value;
+        const since = document.getElementById('ledger-since')?.value;
+        const until = document.getElementById('ledger-until')?.value;
+        if (event) params.set('event', event);
+        if (since) params.set('since', _ledgerDayStart(since));
+        // Until names the last day included; catalog-api's `until` is exclusive.
+        if (until) params.set('until', _ledgerDayStart(until, 1));
+        return `/admin/api/identity/ledger/works?${params}`;
+    }
+
+    fetchLedgerWorks() {
+        return this._ledgerRead('works', this._ledgerWorksUrl(), data => this.renderLedgerWorks(data));
+    }
+
+    openLedgerWork(workId) {
+        this.state.ledgerWorkId = workId;
+        const asOf = document.getElementById('ledger-as-of');
+        if (asOf) asOf.value = '';
+        const section = document.getElementById('ledger-work');
+        if (section) {
+            section.style.display = '';
+            if (typeof section.scrollIntoView === 'function') section.scrollIntoView({ block: 'start' });
+        }
+        return this.fetchLedgerWork();
+    }
+
+    fetchLedgerWork() {
+        const workId = this.state.ledgerWorkId;
+        if (!workId) return Promise.resolve();
+        const asOf = _ledgerAsOf(document.getElementById('ledger-as-of')?.value);
+        const query = asOf ? `?${new URLSearchParams({ as_of: asOf })}` : '';
+        return this._ledgerRead('work', `/admin/api/identity/ledger/works/${encodeURIComponent(workId)}${query}`, data => this.renderLedgerWork(data));
+    }
+
+    renderLedgerDensity(data) {
+        const series = _ledgerDensitySeries(data?.buckets);
+        if (this.state.ledgerChart) {
+            this.state.ledgerChart.destroy();
+            this.state.ledgerChart = null;
+        }
+
+        const empty = document.getElementById('ledger-density-empty');
+        if (empty) empty.style.display = series.months.length ? 'none' : '';
+
+        const legend = document.getElementById('ledger-density-legend');
+        if (legend) legend.replaceChildren(...series.datasets.map(dataset => this._ledgerLegendItem(dataset)));
+
+        const note = document.getElementById('ledger-density-backfill');
+        if (note) {
+            const months = series.backfilledMonths;
+            note.textContent = months.length
+                ? `Hatched segments and highlighted months hold link changes ${LEDGER_BACKFILL_LABEL}, not recorded by GrooveMap: ${months.join(', ')}.`
+                : '';
+            note.style.display = months.length ? '' : 'none';
+        }
+
+        const canvas = document.getElementById('ledger-density-chart');
+        if (!canvas || series.months.length === 0 || typeof Chart === 'undefined') return;
+        const backfilled = new Set(series.backfilledMonths);
+        this.state.ledgerChart = new Chart(canvas, {
+            type: 'bar',
+            data: {
+                labels: series.months,
+                datasets: series.datasets.map(dataset => {
+                    const color = LEDGER_EVENT_COLORS[dataset.type] || '#94a3b8';
+                    const isBackfill = dataset.datedFrom === LEDGER_BACKFILL;
+                    return {
+                        label: isBackfill ? `${_ledgerEventLabel(dataset.type)}, ${LEDGER_BACKFILL_LABEL}` : _ledgerEventLabel(dataset.type),
+                        data: dataset.counts,
+                        backgroundColor: isBackfill ? _ledgerHatch(color) : color,
+                        borderColor: color,
+                        borderWidth: isBackfill ? 1 : 0,
+                        stack: 'events',
+                        datedFrom: dataset.datedFrom,
+                    };
+                }),
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: { enabled: true },
+                },
+                scales: {
+                    x: {
+                        stacked: true,
+                        grid: { display: false },
+                        ticks: {
+                            color: context => (backfilled.has(series.months[context.index]) ? '#ffab00' : '#94a3b8'),
+                            maxRotation: 0,
+                            autoSkip: true,
+                        },
+                    },
+                    y: {
+                        stacked: true,
+                        beginAtZero: true,
+                        grid: { color: '#334155' },
+                        ticks: { color: '#94a3b8', precision: 0 },
+                    },
+                },
+            },
+        });
+    }
+
+    _ledgerLegendItem(dataset) {
+        const color = LEDGER_EVENT_COLORS[dataset.type] || '#94a3b8';
+        const isBackfill = dataset.datedFrom === LEDGER_BACKFILL;
+        const item = _el('span');
+        item.dataset.datedFrom = dataset.datedFrom;
+        const swatch = _el('span', isBackfill ? 'ledger-swatch ledger-swatch-backfill' : 'ledger-swatch');
+        swatch.style.backgroundColor = isBackfill ? `${color}55` : color;
+        swatch.style.borderColor = color;
+        item.append(swatch, _el('span', null, isBackfill ? `${_ledgerEventLabel(dataset.type)}, ${LEDGER_BACKFILL_LABEL}` : _ledgerEventLabel(dataset.type)));
+        return item;
+    }
+
+    renderLedgerWorks(data) {
+        const tbody = document.getElementById('ledger-works-body');
+        if (!tbody) return;
+        const works = data.works || [];
+        if (works.length === 0) {
+            tbody.replaceChildren(_emptyRow(8, 'No works carry identity events for these filters'));
+        } else {
+            tbody.replaceChildren(...works.map(work => this._ledgerWorkRow(work)));
+        }
+
+        const pagination = document.getElementById('ledger-pagination');
+        const pageInfo = document.getElementById('ledger-page-info');
+        const prevBtn = document.getElementById('ledger-prev-btn');
+        const nextBtn = document.getElementById('ledger-next-btn');
+        if (pagination && data.total > 0) {
+            pagination.style.display = '';
+            const totalPages = Math.ceil(data.total / data.page_size);
+            if (pageInfo) pageInfo.textContent = `Page ${data.page} of ${totalPages} (${data.total} works)`;
+            if (prevBtn) prevBtn.disabled = data.page <= 1;
+            if (nextBtn) nextBtn.disabled = data.page >= totalPages;
+        } else if (pagination) {
+            pagination.style.display = 'none';
+        }
+    }
+
+    _ledgerWorkRow(work) {
+        const tr = _el('tr', 'border-b b-theme hover:bg-white/5 transition-colors');
+        tr.dataset.work = work.gm_id;
+
+        const tdWork = _el('td', 'py-2 px-3');
+        const link = _el('button', 'ledger-work-link ledger-id', work.gm_id);
+        link.type = 'button';
+        link.addEventListener('click', () => this.openLedgerWork(work.gm_id));
+        tdWork.appendChild(link);
+
+        const tdProviders = _el('td', 'py-2 px-3 t-muted');
+        const providers = work.providers || [];
+        if (providers.length === 0) tdProviders.textContent = '—';
+        providers.forEach(provider => tdProviders.appendChild(_el('div', 'whitespace-nowrap', `${provider.provider} ${provider.external_id}`)));
+
+        const counts = [work.editions, work.evented_editions, work.repaired_editions, work.work_disagreements]
+            .map(count => _el('td', 'py-2 px-3 text-right mono', count ?? 0));
+
+        tr.append(
+            tdWork,
+            tdProviders,
+            ...counts,
+            _el('td', 'py-2 px-3 t-muted whitespace-nowrap', _ledgerTime(work.first_event)),
+            _el('td', 'py-2 px-3 t-muted whitespace-nowrap', _ledgerTime(work.last_event)),
+        );
+        return tr;
+    }
+
+    renderLedgerWork(data) {
+        const work = data.work || {};
+        const editions = data.editions || [];
+        const idEl = document.getElementById('ledger-work-id');
+        if (idEl) idEl.textContent = work.gm_id || '';
+
+        const status = document.getElementById('ledger-work-status');
+        if (status) {
+            const parts = [`Read at ${data.as_of ? _ledgerTime(data.as_of) : 'now'}`];
+            parts.push(`${editions.length} of ${data.edition_count ?? editions.length} editions${data.truncated ? ' (truncated)' : ''}`);
+            if (work.requested_id) parts.push(`${work.requested_id} was superseded into this work`);
+            status.textContent = parts.join(' · ');
+        }
+
+        const summary = document.getElementById('ledger-work-summary');
+        if (summary) {
+            const providers = (work.providers || []).map(provider =>
+                `${provider.provider} ${provider.external_id} from ${_ledgerTime(provider.valid_from)}${provider.valid_to ? ` to ${_ledgerTime(provider.valid_to)}` : ''}`);
+            const fields = this._ledgerFields([
+                ['State', this._ledgerStateBadge(work.state)],
+                ['Providers', providers.length ? providers.join('; ') : '—'],
+            ]);
+            summary.replaceChildren(fields, this._ledgerEvents(work.events, 'Work events'));
+        }
+
+        const container = document.getElementById('ledger-editions');
+        if (container) {
+            if (editions.length === 0) {
+                container.replaceChildren(_el('p', 'text-xs t-muted', 'No editions are recorded for this work at this time.'));
+            } else {
+                container.replaceChildren(...editions.map(edition => this._ledgerEdition(edition, work.gm_id)));
+            }
+        }
+    }
+
+    _ledgerEdition(edition, workId) {
+        const article = _el('article', 'ledger-edition');
+        article.dataset.edition = edition.gm_id;
+
+        const header = _el('div', 'flex flex-wrap items-center gap-2');
+        header.append(_el('span', 'ledger-id text-xs font-semibold', edition.gm_id), this._ledgerStateBadge(edition.state));
+        if (edition.work_disagreement) {
+            const badge = _el('span', 'ledger-badge badge-running ledger-disagreement', 'Work disagreement');
+            badge.title = 'Its Discogs master and MusicBrainz release group resolve to different works; the Discogs side is primary.';
+            header.appendChild(badge);
+        }
+
+        const primary = edition.primary_work
+            ? this._ledgerWorkRef(edition.primary_work, workId)
+            : '—';
+        const others = (edition.works || []).filter(work => work !== edition.primary_work);
+        const otherWorks = others.length ? _el('span') : '—';
+        if (others.length) others.forEach((work, i) => otherWorks.append(...(i ? [', '] : []), this._ledgerWorkRef(work, workId)));
+
+        const rows = (edition.provider_rows || []).map(row =>
+            `${row.provider} ${row.external_id}${row.names_discogs_release ? ` (names Discogs ${row.names_discogs_release})` : ''}`);
+
+        const formerItems = edition.former_items || [];
+        let former = '—';
+        if (formerItems.length) {
+            former = _el('ul', 'ledger-former');
+            formerItems.forEach(item => {
+                const li = _el('li');
+                li.append(_el('span', 'ledger-id', item.gm_id), ` superseded ${_ledgerTime(item.superseded_at)} (${item.cause})`);
+                former.appendChild(li);
+            });
+        }
+
+        article.append(
+            header,
+            this._ledgerFields([
+                ['Primary work', primary],
+                ['Other works', otherWorks],
+                ['Provider rows', rows.length ? rows.join('; ') : '—'],
+                ['Former items', former],
+            ]),
+            this._ledgerEvents(edition.events, 'Events'),
+        );
+        return article;
+    }
+
+    // A work id; one other than the open work opens it.
+    _ledgerWorkRef(gmId, workId) {
+        if (gmId === workId) return _el('span', 'ledger-id', `${gmId} (this work)`);
+        const link = _el('button', 'ledger-work-link ledger-id', gmId);
+        link.type = 'button';
+        link.addEventListener('click', () => this.openLedgerWork(gmId));
+        return link;
+    }
+
+    _ledgerStateBadge(state) {
+        return _el('span', `ledger-badge ${LEDGER_STATE_BADGES[state] || 'badge-idle'}`, state || 'unknown');
+    }
+
+    _ledgerFields(entries) {
+        const dl = _el('dl', 'ledger-fields');
+        entries.forEach(([term, value]) => {
+            const dd = _el('dd');
+            dd.append(value);
+            dl.append(_el('dt', null, term), dd);
+        });
+        return dl;
+    }
+
+    _ledgerEvents(events, title) {
+        const wrap = _el('div');
+        wrap.appendChild(_el('h4', 'text-[10px] font-bold uppercase tracking-wider t-muted mt-2', title));
+        if (!events || events.length === 0) {
+            wrap.appendChild(_el('p', 'text-xs t-muted', 'No events at this time.'));
+            return wrap;
+        }
+        const list = _el('ol', 'ledger-events');
+        events.forEach(event => list.appendChild(this._ledgerEventItem(event)));
+        wrap.appendChild(list);
+        return wrap;
+    }
+
+    _ledgerEventItem(event) {
+        const li = _el('li');
+        li.dataset.type = event.type;
+        li.dataset.datedFrom = event.dated_from;
+        const type = _el('span', 'ledger-badge', _ledgerEventLabel(event.type));
+        if (event.rule) type.title = event.rule;
+        const provenance = event.dated_from === LEDGER_BACKFILL
+            ? _el('span', 'ledger-backfill', LEDGER_BACKFILL_LABEL)
+            : _el('span', 'ledger-recorded', event.dated_from === 'groovemap' ? 'recorded by GrooveMap' : event.dated_from);
+        li.append(
+            _el('span', 'mono t-dim', _ledgerTime(event.at)),
+            type,
+            _el('span', 'ledger-detail', this._ledgerEventDetail(event)),
+            provenance,
+        );
+        return li;
+    }
+
+    _ledgerEventDetail(event) {
+        switch (event.type) {
+        case 'minted':
+            return `${event.item}${event.providers?.length ? ` from ${event.providers.join(' and ')}` : ''}`;
+        case 'linked_at_ingest':
+            return event.item;
+        case 'evidence_attached':
+            return `${event.provider} alias from ${event.source}`;
+        case 'alias_closed':
+            return `${event.provider} alias closed`;
+        case 'reattached':
+        case 'promoted': {
+            const moves = Object.entries(event.moves || {}).map(([table, count]) => `${table} ${count}`);
+            return `${event.superseded} into ${event.survivor}${moves.length ? `; moved ${moves.join(', ')}` : ''}${event.compressed ? '; compressed' : ''}`;
+        }
+        case 'reverted':
+            return `${event.superseded} split back out of ${event.survivor}`;
+        case 'link_added':
+        case 'link_changed':
+        case 'link_removed':
+            return `${event.provider} ${event.external_id}: Discogs ${event.discogs_id_before ?? 'none'} to ${event.discogs_id_after ?? 'none'}`;
+        default:
+            return '';
+        }
+    }
+}
+
+class AdminDashboard extends AdminLedger {}
 
 document.addEventListener('DOMContentLoaded', () => {
     window.adminDashboard = new AdminDashboard();

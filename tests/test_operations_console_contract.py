@@ -16,7 +16,7 @@ import json
 from hashlib import sha256
 from pathlib import Path
 
-from dashboard import catalog_admin_contract
+from dashboard import admin_proxy, catalog_admin_contract
 
 
 ROOT = Path(__file__).parent.parent
@@ -63,6 +63,23 @@ class TestPromotedContractOperations:
             "path": "/api/admin/auth/session",
         }
         assert catalog_admin_contract.ADMIN_SESSION_PATH == "/api/admin/auth/session"
+
+    def test_identity_ledger_operations_are_promoted(self) -> None:
+        """The Ledger tab reads these three routes, through explicit proxy handlers."""
+        operations = ROUTES["operations"]
+        assert operations["admin_identity_ledger_works"]["path"] == "/api/admin/identity/ledger/works"
+        assert operations["admin_identity_ledger_works"]["query"] == ["event", "page", "page_size", "since", "until"]
+        assert operations["admin_identity_ledger_work"]["path"] == "/api/admin/identity/ledger/works/{work_id}"
+        assert operations["admin_identity_ledger_work"]["query"] == ["as_of", "edition_limit"]
+        assert operations["admin_identity_ledger_density"]["path"] == "/api/admin/identity/ledger/density"
+        assert operations["admin_identity_ledger_density"]["query"] == ["kind"]
+        for name in ("admin_identity_ledger_work", "admin_identity_ledger_density"):
+            assert operations[name]["dated_from"] == ["groovemap", "musicbrainz_fullexport"]
+
+    def test_the_proxy_accepts_exactly_the_promoted_ledger_vocabulary(self) -> None:
+        operations = ROUTES["operations"]
+        assert list(admin_proxy.LEDGER_EVENTS) == operations["admin_identity_ledger_works"]["events"]
+        assert list(admin_proxy.LEDGER_KINDS) == operations["admin_identity_ledger_density"]["kinds"]
 
     def test_binding_exposes_every_promoted_operation(self) -> None:
         for name, operation in ROUTES["operations"].items():

@@ -14,7 +14,7 @@ from pathlib import Path
 
 STATIC = Path(__file__).resolve().parents[1] / "dashboard" / "static"
 SHELL = (STATIC / "index.html").read_text()
-ADMIN_TABS = ["extractions", "dlq", "users", "storage", "queue-trends", "system-health", "audit-log", "extraction-analysis"]
+ADMIN_TABS = ["extractions", "dlq", "users", "storage", "queue-trends", "system-health", "audit-log", "extraction-analysis", "ledger"]
 
 
 class _Elements(HTMLParser):

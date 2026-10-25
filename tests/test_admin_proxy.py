@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx as httpx_mod
@@ -12,6 +13,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from dashboard.admin_proxy import _auth_headers, _validate_path_segment, _validated_json_body, configure, public_router, router
+from tests.fake_catalog_api import FakeCatalogApi
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 def _mock_httpx(method: str = "post", status: int = 200, content: bytes = b"{}") -> tuple[AsyncMock, AsyncMock]:
@@ -568,6 +574,195 @@ class TestAuditLogProxy:
             headers={"Authorization": "Bearer test-token"},
         )
         assert resp.status_code == 502
+
+
+# ---------------------------------------------------------------------------
+# Identity Ledger proxy routes
+# ---------------------------------------------------------------------------
+
+LEDGER_WORK = "00000000-0000-4000-8000-000000000101"
+
+
+class TestIdentityLedgerProxy:
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_works_forwards_every_parameter(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        _, mock_instance = _mock_httpx("get", 200, b'{"works":[],"total":0,"page":2,"page_size":25}')
+        mock_cls_patch.return_value = mock_instance
+
+        resp = proxy_client.get(
+            "/admin/api/identity/ledger/works",
+            params={"page": "2", "page_size": "25", "event": "link_changed", "since": "2025-11-01T00:00:00Z", "until": "2026-01-01T00:00:00+02:00"},
+            headers={"Authorization": "Bearer tok"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["page"] == 2
+        call = mock_instance.get.call_args
+        assert call.args[0] == "http://localhost:8004/api/admin/identity/ledger/works"
+        assert call.kwargs["params"] == {
+            "page": "2",
+            "page_size": "25",
+            "event": "link_changed",
+            "since": "2025-11-01T00:00:00Z",
+            "until": "2026-01-01T00:00:00+02:00",
+        }
+        assert call.kwargs["headers"]["Authorization"] == "Bearer tok"
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_works_forwards_no_parameter_it_was_not_given(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        _, mock_instance = _mock_httpx("get", 200, b'{"works":[]}')
+        mock_cls_patch.return_value = mock_instance
+
+        assert proxy_client.get("/admin/api/identity/ledger/works").status_code == 200
+        assert mock_instance.get.call_args.kwargs["params"] == {}
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "page=0",
+            "page_size=101",
+            "event=minted",
+            "event=link_added;drop",
+            "since=2025-11-01",
+            "since=2025-11-01T00:00:00",
+            "until=2025-13-01T00:00:00Z",
+            "until=yesterday",
+        ],
+    )
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_works_rejects_a_malformed_parameter_without_calling_upstream(
+        self, mock_cls_patch: AsyncMock, proxy_client: TestClient, query: str
+    ) -> None:
+        assert proxy_client.get(f"/admin/api/identity/ledger/works?{query}").status_code == 422
+        mock_cls_patch.assert_not_called()
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_work_forwards_as_of_and_edition_limit(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        _, mock_instance = _mock_httpx("get", 200, b'{"work":{},"editions":[]}')
+        mock_cls_patch.return_value = mock_instance
+
+        resp = proxy_client.get(f"/admin/api/identity/ledger/works/{LEDGER_WORK}", params={"as_of": "2026-09-03T00:00:00.5Z", "edition_limit": "500"})
+
+        assert resp.status_code == 200
+        call = mock_instance.get.call_args
+        assert call.args[0] == f"http://localhost:8004/api/admin/identity/ledger/works/{LEDGER_WORK}"
+        assert call.kwargs["params"] == {"as_of": "2026-09-03T00:00:00.5Z", "edition_limit": "500"}
+
+    @pytest.mark.parametrize(
+        "as_of", ["2026-09-03", "2026-09-03T00:00:00", "2026-09-03 00:00:00Z", "2026-09-31T25:00:00Z", "now", "2026-09-03T00:00:00Z&x=1"]
+    )
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_work_rejects_a_malformed_as_of(self, mock_cls_patch: AsyncMock, proxy_client: TestClient, as_of: str) -> None:
+        resp = proxy_client.get(f"/admin/api/identity/ledger/works/{LEDGER_WORK}", params={"as_of": as_of})
+        assert resp.status_code == 422
+        mock_cls_patch.assert_not_called()
+
+    @pytest.mark.parametrize("edition_limit", ["0", "501", "many"])
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_work_rejects_an_edition_limit_out_of_range(self, mock_cls_patch: AsyncMock, proxy_client: TestClient, edition_limit: str) -> None:
+        resp = proxy_client.get(f"/admin/api/identity/ledger/works/{LEDGER_WORK}", params={"edition_limit": edition_limit})
+        assert resp.status_code == 422
+        mock_cls_patch.assert_not_called()
+
+    @pytest.mark.parametrize("segment", ["%2e%2e", "%2e", "work%20id", "a%3Bb", "%24%7Bid%7D"])
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_work_rejects_an_unsafe_path_segment(self, mock_cls_patch: AsyncMock, proxy_client: TestClient, segment: str) -> None:
+        resp = proxy_client.get(f"/admin/api/identity/ledger/works/{segment}")
+        assert resp.status_code == 400
+        assert resp.json() == {"detail": "Invalid work ID"}
+        mock_cls_patch.assert_not_called()
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_work_passes_an_upstream_404_through(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        _, mock_instance = _mock_httpx("get", 404, b'{"detail":"Work not found"}')
+        mock_cls_patch.return_value = mock_instance
+
+        resp = proxy_client.get(f"/admin/api/identity/ledger/works/{LEDGER_WORK}")
+        assert resp.status_code == 404
+        assert resp.json() == {"detail": "Work not found"}
+
+    @pytest.mark.parametrize("kind", ["release", "master", "artist", "label"])
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_density_forwards_each_kind(self, mock_cls_patch: AsyncMock, proxy_client: TestClient, kind: str) -> None:
+        _, mock_instance = _mock_httpx("get", 200, b'{"kind":"release","buckets":[]}')
+        mock_cls_patch.return_value = mock_instance
+
+        assert proxy_client.get("/admin/api/identity/ledger/density", params={"kind": kind}).status_code == 200
+        call = mock_instance.get.call_args
+        assert call.args[0] == "http://localhost:8004/api/admin/identity/ledger/density"
+        assert call.kwargs["params"] == {"kind": kind}
+
+    @pytest.mark.parametrize("kind", ["releases", "work", "", "release&kind=master"])
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_density_rejects_an_unknown_kind(self, mock_cls_patch: AsyncMock, proxy_client: TestClient, kind: str) -> None:
+        assert proxy_client.get("/admin/api/identity/ledger/density", params={"kind": kind}).status_code == 422
+        mock_cls_patch.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "path", ["/admin/api/identity/ledger/works", f"/admin/api/identity/ledger/works/{LEDGER_WORK}", "/admin/api/identity/ledger/density"]
+    )
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_an_unreachable_api_answers_502(self, mock_cls_patch: AsyncMock, proxy_client: TestClient, path: str) -> None:
+        _, mock_instance = _mock_httpx_error("get")
+        mock_cls_patch.return_value = mock_instance
+
+        resp = proxy_client.get(path)
+        assert resp.status_code == 502
+        assert "unavailable" in resp.json()["detail"]
+
+
+class TestIdentityLedgerProxyAgainstTheFakeCatalogApi:
+    """The proxy and tests/fake_catalog_api.py agree on the three ledger routes, over ASGI."""
+
+    @pytest.fixture
+    def fake_client(self, proxy_client: TestClient) -> Iterator[tuple[TestClient, FakeCatalogApi, str]]:
+        fake = FakeCatalogApi()
+        token = fake.mint()
+        # The proxy's `httpx` is this module's, so the patch below replaces the class both see.
+        real_client = httpx_mod.AsyncClient
+
+        def client_for(*_args: object, **kwargs: object) -> httpx_mod.AsyncClient:
+            return real_client(transport=httpx_mod.ASGITransport(app=fake.app), timeout=kwargs.get("timeout"))
+
+        with patch("dashboard.admin_proxy.httpx.AsyncClient", side_effect=client_for):
+            yield proxy_client, fake, token
+
+    def test_the_works_list_pages(self, fake_client: tuple[TestClient, FakeCatalogApi, str]) -> None:
+        client, _fake, token = fake_client
+        body = client.get("/admin/api/identity/ledger/works?page=2&page_size=1", headers={"Authorization": f"Bearer {token}"}).json()
+        assert body["total"] == 2
+        assert body["page"] == 2
+        assert [work["gm_id"] for work in body["works"]] == ["00000000-0000-4000-8000-000000000102"]
+
+    def test_one_work_read_as_of_drops_later_events(self, fake_client: tuple[TestClient, FakeCatalogApi, str]) -> None:
+        client, _fake, token = fake_client
+        headers = {"Authorization": f"Bearer {token}"}
+        now = client.get(f"/admin/api/identity/ledger/works/{LEDGER_WORK}", headers=headers).json()
+        then = client.get(f"/admin/api/identity/ledger/works/{LEDGER_WORK}?as_of=2026-08-15T00:00:00Z", headers=headers).json()
+
+        assert now["as_of"] is None
+        assert [event["type"] for event in now["editions"][0]["events"]] == ["link_added", "minted", "reattached"]
+        assert then["as_of"] == "2026-08-15T00:00:00Z"
+        assert [event["type"] for event in then["editions"][0]["events"]] == ["link_added", "minted"]
+        assert then["editions"][0]["former_items"] == []
+        assert client.get("/admin/api/identity/ledger/works/00000000-0000-4000-8000-000000000999", headers=headers).status_code == 404
+
+    def test_the_density_strip_is_served_per_kind_and_can_be_replaced(self, fake_client: tuple[TestClient, FakeCatalogApi, str]) -> None:
+        client, fake, token = fake_client
+        headers = {"Authorization": f"Bearer {token}"}
+        release = client.get("/admin/api/identity/ledger/density", headers=headers).json()
+        assert release["kind"] == "release"
+        assert {bucket["dated_from"] for bucket in release["buckets"]} == {"groovemap", "musicbrainz_fullexport"}
+        assert client.get("/admin/api/identity/ledger/density?kind=label", headers=headers).json() == {"kind": "label", "buckets": []}
+
+        bucket = {"month": "2026-01", "type": "promoted", "dated_from": "groovemap", "events": 1}
+        replaced = TestClient(fake.app).post("/__fake__/ledger", json={"density": {"master": [bucket]}})
+        assert replaced.status_code == 200
+        assert client.get("/admin/api/identity/ledger/density?kind=master", headers=headers).json()["buckets"] == [bucket]
+
+    def test_the_fake_refuses_a_caller_without_a_session(self, fake_client: tuple[TestClient, FakeCatalogApi, str]) -> None:
+        client, _fake, _token = fake_client
+        assert client.get("/admin/api/identity/ledger/density").status_code == 401
 
 
 # ---------------------------------------------------------------------------

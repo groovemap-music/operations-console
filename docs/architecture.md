@@ -34,7 +34,7 @@ This repository consumes promoted, immutable copies of the catalog API, catalog-
 
 | Promoted authority | Producer revision | Local artifact |
 | --- | --- | --- |
-| `catalog-api` operations-console routes | `9066cb704d5ad20edbe7facacfaa1f7715dbb1b8` | [`contracts/catalog-api/operations-console/v1/routes.json`](../contracts/catalog-api/operations-console/v1/routes.json) |
+| `catalog-api` operations-console routes | `e4423d4b0c6c45bbde8e8e285373ce8dd5bbc6f6` | [`contracts/catalog-api/operations-console/v1/routes.json`](../contracts/catalog-api/operations-console/v1/routes.json) |
 | `discogs-ingestion` catalog events | `c1bf1b4ada3ee88e1e6768a0be7fa6ed1b921831` | [`contracts/catalog-events/v1/discogs/contract.json`](../contracts/catalog-events/v1/discogs/contract.json) |
 | `musicbrainz-ingestion` catalog events | `f0dae1037c809c6855863aebc35d0a7d21366482` | [`contracts/catalog-events/v1/musicbrainz/contract.json`](../contracts/catalog-events/v1/musicbrainz/contract.json) |
 | `database-schema` persistence compatibility | `9a50949b1810f3e61adae2f89b86acec2e20c4a3` | [`contracts/persistence/v1/compatibility.json`](../contracts/persistence/v1/compatibility.json) |
