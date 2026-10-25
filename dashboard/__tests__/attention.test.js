@@ -9,6 +9,9 @@ import { DATASTORES, discogs, loadAttention, makeDashboard, queue as queueOf } f
  */
 const WORK = 'groovemap-discogs-graphinator-artists';
 const DLQ = `${WORK}.dlq`;
+// The server's verdicts, which the matrix and the bar render as given.
+const STALLED = { kind: 'stalled', label: 'STALLED · no acks 1m' };
+const NO_CONSUMER = { kind: 'no-consumer', label: 'NO CONSUMER' };
 const SERVICE = (name, status) => ({ name, status });
 
 describe('Attention.derive and Attention.overall', () => {
@@ -130,16 +133,16 @@ describe('the attention bar and the header status', () => {
         expect(bar().hidden).toBe(true);
     });
 
-    it('lists a stalled queue from the matrix\'s rules, with a count, and Critical in the header', () => {
-        run({ ack_rate: 0, message_rate: 3 }, () => ({}));
+    it('lists a stalled queue from the server\'s condition, with a count, and Critical in the header', () => {
+        run({ ack_rate: 0, message_rate: 3, condition: STALLED }, () => ({}));
         expect(bar().hidden).toBe(false);
         expect(document.getElementById('attention-summary').textContent).toBe('1 item needs attention · 1 critical · 0 warning');
         expect(items()[0].textContent).toContain('Discogs Artists → Graphinator: STALLED · no acks 1m');
         expect(header().textContent).toBe('Critical');
     });
 
-    it('never lists a stall for null ack rates', () => {
-        run({ ack_rate: null, message_rate: null }, () => ({}));
+    it('computes no stall itself: zero acks and no consumer without a server condition raise nothing', () => {
+        run({ ack_rate: 0, message_rate: 3, consumers: 0 }, () => ({}));
         expect(bar().hidden).toBe(true);
     });
 
@@ -153,7 +156,7 @@ describe('the attention bar and the header status', () => {
     });
 
     it('lists a backlog with no consumer', () => {
-        run({ consumers: 0 }, () => ({}));
+        run({ consumers: 0, condition: NO_CONSUMER }, () => ({}));
         expect(items()[0].textContent).toContain('NO CONSUMER');
     });
 
@@ -172,7 +175,7 @@ describe('the attention bar and the header status', () => {
     });
 
     it('opens a cell\'s drawer from its item, and switches to the Overview first', () => {
-        run({ ack_rate: 0, message_rate: 3 }, () => ({}));
+        run({ ack_rate: 0, message_rate: 3, condition: STALLED }, () => ({}));
         const switchTab = vi.fn();
         window.adminDashboard = { switchTab };
         items()[0].querySelector('button').click();
@@ -191,7 +194,7 @@ describe('the attention bar and the header status', () => {
     });
 
     it('collapses on request and re-opens when a new item appears', () => {
-        run({ consumers: 0 }, () => ({}));
+        run({ consumers: 0, condition: NO_CONSUMER }, () => ({}));
         // makeDashboard skips the constructor, which wires the toggle.
         document.getElementById('attention-toggle').addEventListener('click', () => {
             dashboard.attentionCollapsed = !dashboard.attentionCollapsed;
@@ -200,7 +203,7 @@ describe('the attention bar and the header status', () => {
         document.getElementById('attention-toggle').click();
         expect(document.getElementById('attention-list').hidden).toBe(true);
         expect(document.getElementById('attention-toggle').getAttribute('aria-expanded')).toBe('false');
-        run({ consumers: 0 }, () => ({ messages: 5 }));
+        run({ consumers: 0, condition: NO_CONSUMER }, () => ({ messages: 5 }));
         expect(document.getElementById('attention-list').hidden).toBe(false);
     });
 
@@ -223,7 +226,7 @@ describe('the attention bar and the header status', () => {
         });
 
         it('keeps the derived items and shows a note when Grafana is unavailable', async () => {
-            run({ consumers: 0 }, () => ({}));
+            run({ consumers: 0, condition: NO_CONSUMER }, () => ({}));
             respond(200, { configured: true, available: false, alerts: [], note: 'Grafana alerts unavailable: showing the problems derived from the live feed only' });
             await dashboard.fetchAlerts();
             expect(items()).toHaveLength(1);

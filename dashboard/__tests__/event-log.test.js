@@ -45,6 +45,20 @@ describe('System Event Log', () => {
         expect(rows().map((r) => r[2])).toEqual(['three', 'two', 'one']);
     });
 
+    it('shows the server\'s stall, no-consumer and recovery events, from the backlog after a reconnect and live', () => {
+        const queue = 'groovemap-discogs-graphinator-artists';
+        dashboard.handleMessage({ type: 'event_backlog', data: [
+            { ...event(1, `${queue}: NO CONSUMER`, 'error', 0), kind: 'queue-no-consumer' },
+            { ...event(2, `${queue}: STALLED · no acks 1m`, 'error', 20), kind: 'queue-stalled' },
+        ] });
+        dashboard.handleMessage({ type: 'event', data: { ...event(3, `${queue} is flowing`, 'info', 40), kind: 'queue-recovered' } });
+        expect(rows().map((r) => [r[1], r[2]])).toEqual([
+            ['[INFO]', `${queue} is flowing`],
+            ['[ERR]', `${queue}: STALLED · no acks 1m`],
+            ['[ERR]', `${queue}: NO CONSUMER`],
+        ]);
+    });
+
     it('routes backlog and live events through the message handler, and ignores unknown types', () => {
         dashboard.handleMessage({ type: 'event_backlog', data: [event(1, 'one')] });
         dashboard.handleMessage({ type: 'event', data: event(2, 'two', 'info', 3) });

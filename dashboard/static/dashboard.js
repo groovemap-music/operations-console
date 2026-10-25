@@ -27,9 +27,12 @@ const AUDIT_POLL_MS = 60000;
 // Every rule reads a short in-browser history of one queue: samples of
 // `{ t, messages, messages_ready, messages_unacknowledged, consumers, message_rate, ack_rate }`,
 // oldest first, `t` in milliseconds of server time. A null rate is "not computable this interval"
-// (first poll, missed poll, counter reset): it is never a zero and never part of a stall.
+// (first poll, missed poll, counter reset): it is never a zero.
+//
+// The stalled and no-consumer verdicts are not decided here: the console server's EventDetector
+// decides them (dashboard/events.py) and sends each work queue's as `condition`, so every operator
+// sees the same one, and the same events, whichever browser is open.
 const QueueHealth = (() => {
-    const STALL_SECONDS = 60;       // backlog, consumers, and computed zero acks for this long: stalled
     const TREND_SECONDS = 300;      // the window for DLQ growth, the backlog trend, and the mean ack rate
     const GAP_SECONDS = 30;         // a longer silence between samples starts the history afresh
     const TREND_MIN_CHANGE = 1000;  // backlog changes smaller than a few prefetch windows read as steady
@@ -53,8 +56,9 @@ const QueueHealth = (() => {
     const latest = samples => samples[samples.length - 1];
     const seconds = (from, to) => (to.t - from.t) / 1000;
 
-    // Seconds of the current run of computed zero acks with a backlog, measured from its first
-    // sample: conservative by up to one poll, so a stall is never reported early.
+    // Seconds of the current run of computed zero acks with a backlog in this browser's history, for
+    // the drawer's "No acks for" figure. A display statistic only: whether the queue is stalled is
+    // the server's verdict (`condition`).
     function zeroAckSeconds(samples) {
         const last = latest(samples);
         let start = null;
@@ -101,17 +105,12 @@ const QueueHealth = (() => {
         return { direction: change > 0 ? 'rising' : 'falling', change };
     }
 
-    // A work queue: critical when stalled or without a consumer, otherwise ok and drawn quietly.
-    // A filling queue during an extraction is not an alarm.
+    // A work queue: critical when the server reports it stalled or without a consumer, otherwise ok
+    // and drawn quietly. A filling queue during an extraction is not an alarm.
     function assessQueue(samples) {
         const last = latest(samples);
         if (!last) return { state: 'unknown', kind: 'missing', label: 'not reported' };
-        if (last.messages > 0 && last.consumers === 0) return { state: 'crit', kind: 'no-consumer', label: 'NO CONSUMER' };
-        const zero = zeroAckSeconds(samples);
-        if (last.messages > 0 && last.consumers > 0 && zero >= STALL_SECONDS) {
-            const span = zero >= TREND_SECONDS ? `${formatDuration(TREND_SECONDS)}+` : formatDuration(zero);
-            return { state: 'crit', kind: 'stalled', label: `STALLED · no acks ${span}` };
-        }
+        if (last.condition) return { state: 'crit', kind: last.condition.kind, label: last.condition.label };
         if (last.messages === 0) return { state: 'ok', kind: 'drained', label: 'drained' };
         return { state: 'ok', kind: 'flowing', label: 'flowing' };
     }
@@ -146,7 +145,7 @@ const QueueHealth = (() => {
     }
 
     return {
-        STALL_SECONDS, TREND_SECONDS, GAP_SECONDS, TREND_MIN_CHANGE, LAG_BINS,
+        TREND_SECONDS, GAP_SECONDS, TREND_MIN_CHANGE, LAG_BINS,
         record, zeroAckSeconds, meanAckRate, lagSeconds, lagBin, depthChange, coverage, trend,
         assessQueue, assessDlq, worst, formatCount, formatDuration,
     };
@@ -570,8 +569,8 @@ class Dashboard {
         this.reconnectTimer = null;
         this.reconnectDelay = RECONNECT_BASE_MS;
         // The System Event Log, newest first: events the server detected and streamed (`server`),
-        // recent operator actions from the audit log (`audit`), and queue health changes the matrix
-        // derives in this browser (`local`). Connect and disconnect are the connection indicator's
+        // recent operator actions from the audit log (`audit`), and dead-letter queue health changes
+        // the matrix derives in this browser (`local`). Connect and disconnect are the connection indicator's
         // business, never log entries.
         this.activityLog = [];
         this.maxLogEntries = 100;
@@ -1461,6 +1460,7 @@ class Dashboard {
                         consumers: reading.consumers,
                         message_rate: reading.message_rate ?? null,
                         ack_rate: reading.ack_rate ?? null,
+                        condition: reading.condition ?? null,
                     });
                     this.history.set(name, samples);
                 }
@@ -1561,10 +1561,11 @@ class Dashboard {
         return label.join('; ');
     }
 
-    // Log a queue entering a critical or warning state, and leaving one, once per change.
+    // Log a dead-letter queue entering a critical or warning state, and leaving one, once per
+    // change. A work queue's stall and missing consumer are server events, streamed to every operator.
     _logHealthChange(model) {
         const where = `${this._entityLabel(model.entity)} → ${model.consumer.label}`;
-        for (const [name, health] of [[model.queue?.name, model.health], [model.queue?.dead_letter_queue, model.dlq]]) {
+        for (const [name, health] of [[model.queue?.dead_letter_queue, model.dlq]]) {
             if (!name || health.state === 'unknown') continue;
             const previous = this.healthKinds[name];
             this.healthKinds[name] = health.kind;

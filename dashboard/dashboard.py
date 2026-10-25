@@ -133,6 +133,13 @@ class ServiceStatus(BaseModel):
     last_extraction_time: dict[str, float | None] | None = None  # extractor only: seconds since last activity
 
 
+class QueueCondition(BaseModel):
+    """A work queue's standing problem, decided by the server's EventDetector."""
+
+    kind: str  # "no-consumer" or "stalled"
+    label: str  # what the matrix and the attention bar print, e.g. "STALLED · no acks 2m"
+
+
 class QueueInfo(BaseModel):
     """Model for RabbitMQ queue information.
 
@@ -147,6 +154,7 @@ class QueueInfo(BaseModel):
     consumers: int
     message_rate: float | None  # messages per second; None when not computable this interval
     ack_rate: float | None  # acknowledgments per second; None when not computable this interval
+    condition: QueueCondition | None = None  # set by EventDetector.observe for a work queue that is stalled or has no consumer
 
 
 class DatabaseInfo(BaseModel):
@@ -287,6 +295,11 @@ PIPELINE_CONFIGS: dict[str, dict] = {
 }
 
 
+def _topology_pipelines() -> list[dict[str, Any]]:
+    pipelines: list[dict[str, Any]] = build_topology(PIPELINE_CONFIGS)["pipelines"]
+    return pipelines
+
+
 class DashboardApp:
     """Main dashboard application."""
 
@@ -297,9 +310,10 @@ class DashboardApp:
         self.latest_metrics: SystemMetrics | None = None
         self._rate_trackers: dict[str, RateTracker] = {}
         self.events = EventDetector(
-            dead_letter_queues=frozenset(
-                queue for pipeline in build_topology(PIPELINE_CONFIGS)["pipelines"] for queue in pipeline["dead_letter_queues"]
-            )
+            dead_letter_queues=frozenset(queue for pipeline in _topology_pipelines() for queue in pipeline["dead_letter_queues"]),
+            work_queues=frozenset(
+                queue["name"] for pipeline in _topology_pipelines() for consumer in pipeline["consumers"] for queue in consumer["queues"]
+            ),
         )
         self.neo4j_driver: AsyncResilientNeo4jDriver | None = None
         self.postgres_conn: AsyncResilientPostgreSQL | None = None
@@ -386,12 +400,14 @@ class DashboardApp:
             loop_start = time.perf_counter()
             try:
                 metrics = await self.collect_all_metrics()
+                # Observing first, so the readings carry the queue conditions the detector decides.
+                events = self.events.observe(metrics)
                 self.latest_metrics = metrics
                 cycle_count += 1
 
                 # Broadcast to all connected websockets
                 await self.broadcast_metrics(metrics)
-                await self.broadcast_events(self.events.observe(metrics))
+                await self.broadcast_events(events)
 
                 # Log a summary every 50 cycles (~100s) instead of every request
                 if cycle_count % 50 == 0:

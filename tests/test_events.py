@@ -53,7 +53,7 @@ def _kinds(events: list[dict[str, Any]]) -> list[str]:
 
 
 def _detector() -> EventDetector:
-    return EventDetector(dead_letter_queues=frozenset({DLQ}))
+    return EventDetector(dead_letter_queues=frozenset({DLQ}), work_queues=frozenset({WORK}))
 
 
 class TestBaseline:
@@ -127,12 +127,110 @@ class TestDeadLetterQueues:
         assert _kinds(detector.observe(_reading(available=False))) == ["queues-unavailable"]
         assert _kinds(detector.observe(_reading(queues=[_queue(DLQ, 90)]))) == ["queues-available"]
 
-    def test_work_queue_depth_and_consumers_are_not_events(self) -> None:
-        """Queue stall and no-consumer rules live in the browser; the server never re-derives them."""
+
+class TestWorkQueueConditions:
+    """No consumer and stalled, with the thresholds the matrix has always used (60 s, 5m cap, 30 s gap)."""
+
+    def _stalled(self, detector: EventDetector, readings: int, **extra: Any) -> list[dict[str, Any]]:
+        events: list[dict[str, Any]] = []
+        for _ in range(readings):
+            events += detector.observe(_reading(queues=[_queue(WORK, 5000, ack_rate=0.0, **extra)]))
+        return events
+
+    def test_a_backlog_with_no_consumer_is_raised_and_cleared(self) -> None:
         detector = _detector()
         detector.observe(_reading(queues=[_queue(WORK, 5, consumers=1, ack_rate=3.0)]))
+        raised = detector.observe(_reading(queues=[_queue(WORK, 90_000, consumers=0, ack_rate=3.0)]))
+        assert [(e["kind"], e["level"], e["message"]) for e in raised] == [("queue-no-consumer", "error", f"{WORK}: NO CONSUMER")]
+        assert detector.observe(_reading(queues=[_queue(WORK, 90_000, consumers=0, ack_rate=3.0)])) == []  # once, not every poll
+        cleared = detector.observe(_reading(queues=[_queue(WORK, 90_000, consumers=1, ack_rate=3.0)]))
+        assert [(e["kind"], e["level"], e["message"]) for e in cleared] == [("queue-recovered", "info", f"{WORK} is flowing")]
+
+    def test_an_empty_queue_has_no_consumer_problem_and_a_drain_says_drained(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue(WORK, 0, consumers=0)]))
+        assert detector.observe(_reading(queues=[_queue(WORK, 0, consumers=0)])) == []
+        detector.observe(_reading(queues=[_queue(WORK, 4, consumers=0)]))
+        assert detector.observe(_reading(queues=[_queue(WORK, 0, consumers=0)]))[0]["message"] == f"{WORK} is drained"
+
+    def test_a_stall_needs_sixty_seconds_of_computed_zero_acks(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue(WORK, 5000, ack_rate=3.0)]))  # baseline
+        assert self._stalled(detector, 30) == []  # 29 intervals of 2 s: 58 s
+        raised = self._stalled(detector, 1)
+        assert [(e["kind"], e["level"], e["message"]) for e in raised] == [("queue-stalled", "error", f"{WORK}: STALLED · no acks 1m")]
+        assert self._stalled(detector, 5) == []
+
+    def test_the_stall_clears_when_acks_resume(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue(WORK, 5000, ack_rate=3.0)]))
+        self._stalled(detector, 31)
+        assert _kinds(detector.observe(_reading(queues=[_queue(WORK, 5000, ack_rate=4.0)]))) == ["queue-recovered"]
+
+    def test_an_unknown_ack_rate_is_never_a_zero_and_restarts_the_run(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue(WORK, 5000, ack_rate=3.0)]))
         for _ in range(60):
-            assert detector.observe(_reading(queues=[_queue(WORK, 90_000, consumers=0, ack_rate=0.0)])) == []
+            assert detector.observe(_reading(queues=[_queue(WORK, 5000, ack_rate=None)])) == []
+        self._stalled(detector, 20)
+        detector.observe(_reading(queues=[_queue(WORK, 5000, ack_rate=None)]))
+        assert self._stalled(detector, 30) == []  # the window started again after the unknown rate
+
+    def test_a_stall_needs_a_backlog_and_a_consumer(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue(WORK, 0, ack_rate=3.0)]))
+        for _ in range(40):
+            assert detector.observe(_reading(queues=[_queue(WORK, 0, ack_rate=0.0)])) == []
+
+    def test_the_label_counts_up_and_stops_at_five_minutes(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue(WORK, 5000, ack_rate=3.0)]))
+        self._stalled(detector, 31)
+        reading = _reading(queues=[_queue(WORK, 5000, ack_rate=0.0)])
+        for _ in range(200):
+            reading = _reading(queues=[_queue(WORK, 5000, ack_rate=0.0)])
+            detector.observe(reading)
+        assert reading.pipelines["discogs"].queues[0].condition.label == "STALLED · no acks 5m+"  # type: ignore[union-attr]
+
+    def test_a_gap_between_readings_starts_the_run_afresh(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue(WORK, 5000, ack_rate=3.0)]))
+        self._stalled(detector, 20)
+        _CLOCK[0] += timedelta(seconds=45)
+        assert self._stalled(detector, 20) == []  # 40 s since the gap, not 80 s
+
+    def test_a_broker_outage_ends_the_run_and_does_not_announce_a_recovery(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue(WORK, 5000, ack_rate=3.0)]))
+        self._stalled(detector, 31)
+        assert _kinds(detector.observe(_reading(available=False))) == ["queues-unavailable"]
+        assert _kinds(detector.observe(_reading(queues=[_queue(WORK, 5000, ack_rate=0.0)]))) == ["queues-available"]
+        assert self._stalled(detector, 20) == []
+
+    def test_the_first_reading_is_a_baseline_but_still_sets_the_condition(self) -> None:
+        detector = _detector()
+        reading = _reading(queues=[_queue(WORK, 5000, consumers=0)])
+        assert detector.observe(reading) == []
+        assert reading.pipelines["discogs"].queues[0].condition.kind == "no-consumer"  # type: ignore[union-attr]
+
+    def test_a_queue_that_is_not_a_work_queue_raises_nothing(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue("unrelated", 5, ack_rate=3.0)]))
+        assert detector.observe(_reading(queues=[_queue("unrelated", 9000, consumers=0)])) == []
+
+    def test_the_condition_is_part_of_the_reading_every_client_receives(self) -> None:
+        detector = _detector()
+        reading = _reading(queues=[_queue(WORK, 9, consumers=0), _queue(DLQ, 1)])
+        detector.observe(reading)
+        queues = reading.model_dump()["pipelines"]["discogs"]["queues"]
+        assert queues[0]["condition"] == {"kind": "no-consumer", "label": "NO CONSUMER"}
+        assert queues[1]["condition"] is None
+
+    def test_the_events_stay_in_the_ring_for_a_reconnecting_operator(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue(WORK, 5, ack_rate=3.0)]))
+        detector.observe(_reading(queues=[_queue(WORK, 9, consumers=0)]))
+        assert _kinds(detector.backlog()) == ["queue-no-consumer"]
 
 
 class TestRing:

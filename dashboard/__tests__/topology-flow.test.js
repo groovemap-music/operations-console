@@ -129,6 +129,7 @@ describe('Topology drill-down', () => {
                     queues.push(queueOf(q.name, {
                         messages: done ? 0 : 5000 + (stalled ? i * 1200 : 0),
                         message_rate: done ? 0 : 450, ack_rate: i === 0 ? null : ack,
+                        ...(stalled && i >= 30 ? { condition: { kind: 'stalled', label: 'STALLED · no acks 1m' } } : {}),
                     }));
                     const dlq = consumer.name === 'graphinator' && q.entity === 'artists' ? 12 : 0;
                     queues.push(queueOf(q.dead_letter_queue, { messages: dlq, consumers: 0, message_rate: 0, ack_rate: 0 }));

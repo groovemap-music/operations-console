@@ -2,9 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { loadQueueHealth } from './overview-helpers.js';
 
 /**
- * The matrix's health rules (spike gm-operations-console-2rf): stalled needs a computed zero ack
- * rate for at least 60 s with a backlog and a consumer, and a null rate is never part of a stall;
- * no consumer; a DLQ growing over 5 minutes is critical and a non-empty DLQ a warning; lag is
+ * The matrix's health rules (spike gm-operations-console-2rf): stalled and no consumer are the
+ * server's verdicts, rendered as given; a DLQ growing over 5 minutes is critical and a non-empty DLQ a warning; lag is
  * backlog over the 5-minute mean ack rate, in four bins.
  */
 const { QueueHealth, matrixLayout } = loadQueueHealth();
@@ -28,46 +27,31 @@ function history(count, { step = 2, at = () => ({}), base = {} } = {}) {
     return samples;
 }
 
-describe('stalled', () => {
-    it('needs a computed zero ack rate sustained for at least 60 s', () => {
-        // 31 samples 2 s apart: the zero run spans exactly 60 s.
-        expect(QueueHealth.assessQueue(history(31, { base: { ack_rate: 0 } }))).toMatchObject({ state: 'crit', kind: 'stalled', label: 'STALLED · no acks 1m' });
-        // 30 samples: 58 s, not yet.
-        expect(QueueHealth.assessQueue(history(30, { base: { ack_rate: 0 } }))).toMatchObject({ state: 'ok', kind: 'flowing' });
+describe('stalled and no consumer', () => {
+    // The verdicts are the server's (tests/test_events.py); the browser renders them as given.
+    it('renders the condition the server sent as critical, with its label', () => {
+        const stalled = history(3, { at: (i) => (i === 2 ? { condition: { kind: 'stalled', label: 'STALLED · no acks 5m+' } } : {}) });
+        expect(QueueHealth.assessQueue(stalled)).toMatchObject({ state: 'crit', kind: 'stalled', label: 'STALLED · no acks 5m+' });
+        const none = history(1, { base: { consumers: 0, condition: { kind: 'no-consumer', label: 'NO CONSUMER' } } });
+        expect(QueueHealth.assessQueue(none)).toMatchObject({ state: 'crit', kind: 'no-consumer', label: 'NO CONSUMER' });
     });
 
-    it('never counts a null (unknown) rate as a zero', () => {
-        expect(QueueHealth.assessQueue(history(60, { base: { ack_rate: null } }))).toMatchObject({ state: 'ok', kind: 'flowing' });
+    it('clears as soon as the server sends no condition', () => {
+        const samples = history(3, { base: { condition: { kind: 'stalled', label: 'STALLED · no acks 1m' } }, at: (i) => (i === 2 ? { condition: null } : {}) });
+        expect(QueueHealth.assessQueue(samples)).toMatchObject({ state: 'ok', kind: 'flowing' });
+    });
+
+    it('decides neither verdict itself from zero acks or a missing consumer', () => {
+        expect(QueueHealth.assessQueue(history(200, { base: { ack_rate: 0 } }))).toMatchObject({ state: 'ok', kind: 'flowing' });
+        expect(QueueHealth.assessQueue(history(1, { base: { consumers: 0 } }))).toMatchObject({ state: 'ok', kind: 'flowing' });
+        expect(QueueHealth.assessQueue(history(1, { base: { consumers: 0, messages: 0 } }))).toMatchObject({ state: 'ok', kind: 'drained' });
+    });
+
+    it('measures the drawer\'s "No acks for" from computed zeros only, never from a null rate', () => {
         expect(QueueHealth.zeroAckSeconds(history(60, { base: { ack_rate: null } }))).toBe(0);
-    });
-
-    it('restarts the 60 s window after an unknown rate in the run (counter reset, missed poll)', () => {
         const samples = history(40, { base: { ack_rate: 0 }, at: (i) => (i === 20 ? { ack_rate: null } : {}) });
         // Zero from sample 21 to 39: 18 intervals of 2 s.
         expect(QueueHealth.zeroAckSeconds(samples)).toBe(36);
-        expect(QueueHealth.assessQueue(samples).kind).toBe('flowing');
-    });
-
-    it('is not a stall without a backlog or without a consumer', () => {
-        expect(QueueHealth.assessQueue(history(40, { base: { ack_rate: 0, messages: 0 } }))).toMatchObject({ state: 'ok', kind: 'drained' });
-        expect(QueueHealth.assessQueue(history(40, { base: { ack_rate: 0, consumers: 0 } }))).toMatchObject({ state: 'crit', kind: 'no-consumer' });
-    });
-
-    it('clears as soon as acks resume', () => {
-        const samples = history(40, { base: { ack_rate: 0 }, at: (i) => (i === 39 ? { ack_rate: 4 } : {}) });
-        expect(QueueHealth.assessQueue(samples).state).toBe('ok');
-    });
-
-    it('caps the stated span at the 5-minute history it keeps', () => {
-        const samples = history(200, { base: { ack_rate: 0 } });
-        expect(QueueHealth.assessQueue(samples).label).toBe('STALLED · no acks 5m+');
-    });
-});
-
-describe('no consumer', () => {
-    it('is critical with a backlog and no consumer, and quiet when the queue is empty', () => {
-        expect(QueueHealth.assessQueue(history(1, { base: { consumers: 0 } }))).toMatchObject({ state: 'crit', kind: 'no-consumer', label: 'NO CONSUMER' });
-        expect(QueueHealth.assessQueue(history(1, { base: { consumers: 0, messages: 0 } }))).toMatchObject({ state: 'ok', kind: 'drained' });
     });
 
     it('reports an unreported queue as unknown, not ok', () => {
