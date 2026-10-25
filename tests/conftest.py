@@ -20,6 +20,7 @@ from playwright.sync_api import Browser, Page, sync_playwright
 from psycopg import AsyncConnection, AsyncCursor
 
 from dashboard.config import DashboardConfig
+from tests.e2e_console import SECURE_COOKIE
 from tests.fake_catalog_api import FakeCatalogApi
 
 
@@ -73,18 +74,30 @@ E2E_CATALOG_PORT = 18004
 E2E_CATALOG_URL = f"http://127.0.0.1:{E2E_CATALOG_PORT}"
 
 
+def _server_log(cwd: str, port: int) -> Path:
+    """The file one test server writes its output to.
+
+    Never an unread pipe: a pipe holds 64 KiB, and once a whole run's access log fills it the
+    server blocks on its next log line, so the last tests of the run hang or time out.
+    """
+    directory = Path(cwd) / "test-results" / os.environ.get("GROOVEMAP_E2E_PROJECT", "chromium")
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"server-{port}.log"
+
+
 def _start_server(module: str, port: int, env: dict[str, str], cwd: str) -> subprocess.Popen[str]:
-    return subprocess.Popen(  # noqa: S603  # Fixed test-server modules, never external input.
-        [sys.executable, "-m", "uvicorn", module, "--factory", "--host", "127.0.0.1", "--port", str(port), "--log-level", "info"],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=cwd,
-    )
+    with _server_log(cwd, port).open("w") as log:
+        return subprocess.Popen(  # noqa: S603  # Fixed test-server modules, never external input.
+            [sys.executable, "-m", "uvicorn", module, "--factory", "--host", "127.0.0.1", "--port", str(port), "--log-level", "info"],
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=cwd,
+        )
 
 
-def _wait_until_ready(process: subprocess.Popen[str], health_url: str, project_root: str) -> None:
+def _wait_until_ready(process: subprocess.Popen[str], health_url: str, project_root: str, log: Path) -> None:
     """Poll a public health route for up to 20 seconds, failing with the server's output."""
     for retry in range(40):
         try:
@@ -93,20 +106,19 @@ def _wait_until_ready(process: subprocess.Popen[str], health_url: str, project_r
         except Exception:  # noqa: S110
             pass  # Server might not be ready yet
         if process.poll() is not None:
-            stdout, stderr = process.communicate()
             raise RuntimeError(
                 f"Server for {health_url} died after {retry} retries.\n"
                 f"Working directory: {project_root}\nPython executable: {sys.executable}\n"
-                f"STDOUT:\n{stdout or '(empty)'}\nSTDERR:\n{stderr or '(empty)'}\n"
+                f"OUTPUT ({log}):\n{log.read_text() or '(empty)'}\n"
             )
         time.sleep(0.5)
     process.terminate()
     try:
-        stdout, stderr = process.communicate(timeout=2)
+        process.wait(timeout=2)
     except subprocess.TimeoutExpired as e:
         process.kill()
         raise RuntimeError(f"Server for {health_url} failed to start and didn't terminate cleanly") from e
-    raise RuntimeError(f"Server for {health_url} failed to start after 20 seconds.\nSTDOUT:\n{stdout or '(empty)'}\nSTDERR:\n{stderr or '(empty)'}\n")
+    raise RuntimeError(f"Server for {health_url} failed to start after 20 seconds.\nOUTPUT ({log}):\n{log.read_text() or '(empty)'}\n")
 
 
 def _stop_server(process: subprocess.Popen[str]) -> None:
@@ -125,7 +137,8 @@ def test_server() -> Any:
     The console reaches the fake over a real socket, exactly as it reaches catalog-api, and
     validates every session against it with the positive cache disabled
     (``SESSION_CACHE_SECONDS=0``), so a revocation or outage the suite triggers takes effect on
-    the next request instead of up to 30 seconds later.
+    the next request instead of up to 30 seconds later. The session cookie stays Secure, its
+    default, except in the WebKit projects (see ``tests.e2e_console.SECURE_COOKIE``).
     """
     project_root = str(Path(__file__).resolve().parents[1])
     env = os.environ.copy()
@@ -135,13 +148,14 @@ def test_server() -> Any:
     env["API_HOST"] = "127.0.0.1"
     env["API_PORT"] = str(E2E_CATALOG_PORT)
     env["SESSION_CACHE_SECONDS"] = "0"
+    env["SESSION_COOKIE_SECURE"] = "true" if SECURE_COOKIE else "false"
 
     catalog = _start_server("tests.fake_catalog_api:create_app", E2E_CATALOG_PORT, env, project_root)
     try:
-        _wait_until_ready(catalog, f"{E2E_CATALOG_URL}/__fake__/health", project_root)
+        _wait_until_ready(catalog, f"{E2E_CATALOG_URL}/__fake__/health", project_root, _server_log(project_root, E2E_CATALOG_PORT))
         console = _start_server("tests.dashboard_test_app:create_test_app", 8003, env, project_root)
         try:
-            _wait_until_ready(console, f"{E2E_CONSOLE_URL}/health", project_root)
+            _wait_until_ready(console, f"{E2E_CONSOLE_URL}/health", project_root, _server_log(project_root, 8003))
             yield
         finally:
             _stop_server(console)

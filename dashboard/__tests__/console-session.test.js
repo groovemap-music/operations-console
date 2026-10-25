@@ -7,8 +7,9 @@ import vm from 'node:vm';
 /**
  * The console shell's session boundary in the browser: admin.js owns the session and shows
  * either the login form or the console; dashboard.js reads nothing until it is told a session
- * is live, trades the bearer for a single-use WebSocket ticket, and hands any refusal back to
- * admin.js instead of retrying blind.
+ * is live, trades the cookie session for a single-use WebSocket ticket, and hands any refusal
+ * back to admin.js instead of retrying blind. The bearer itself is an HttpOnly cookie neither
+ * script can see, so nothing here ever stores or sends it.
  */
 const here = dirname(fileURLToPath(import.meta.url));
 const stripAutoInit = (code) => code.replace(/document\.addEventListener\(\s*['"]DOMContentLoaded['"][\s\S]*$/, '');
@@ -41,7 +42,9 @@ function installFetch(routes) {
 }
 
 const visible = (id) => document.getElementById(id).style.display !== 'none';
-const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+const CONSOLE_HEADER = { 'X-GrooveMap-Console': '1' };
+const NO_SESSION = () => jsonResponse(401, { reason: 'missing' });
 
 class FakeWebSocket {
     static CONNECTING = 0;
@@ -102,17 +105,17 @@ afterEach(() => {
 });
 
 describe('admin.js owns the session', () => {
-    it('shows only the login form and reads nothing without a stored bearer', () => {
-        const fetchMock = installFetch({});
+    it('asks the console once and shows only the login form, without a reason, when there is no session', async () => {
+        const fetchMock = installFetch({ '/api/session': NO_SESSION });
         new classes.AdminDashboard();
+        await flush();
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/api/session']);
         expect(visible('login-view')).toBe(true);
         expect(visible('console-view')).toBe(false);
         expect(document.getElementById('login-reason').style.display).toBe('none');
-        expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('opens the console on the Overview tab once catalog-api confirms the session', async () => {
-        localStorage.setItem('admin_token', 'live-token');
         const fetchMock = installFetch({
             '/api/session': () => jsonResponse(200, LIVE_SESSION),
             '/api/queue-prefixes': () => jsonResponse(200, { discogs: 'groovemap-discogs', musicbrainz: 'groovemap-musicbrainz' }),
@@ -122,7 +125,7 @@ describe('admin.js owns the session', () => {
         await flush();
 
         expect(fetchMock.mock.calls[0][0]).toBe('/api/session');
-        expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer live-token');
+        expect(fetchMock.mock.calls[0][1].headers).toEqual(CONSOLE_HEADER);
         expect(visible('console-view')).toBe(true);
         expect(visible('login-view')).toBe(false);
         expect(visible('tab-overview')).toBe(true);
@@ -132,14 +135,14 @@ describe('admin.js owns the session', () => {
         expect(tabs.slice(1)).toEqual(['extractions', 'dlq', 'users', 'storage', 'queue-trends', 'system-health', 'audit-log', 'extraction-analysis']);
         expect(document.querySelector('.tab-btn.active').dataset.tab).toBe('overview');
         expect(document.getElementById('admin-email').textContent).toBe('ops@example.com');
-        expect(events).toContainEqual({ name: 'console:authenticated', detail: { token: 'live-token' } });
+        expect(events).toContainEqual({ name: 'console:authenticated', detail: { session: 1 } });
+        expect(localStorage.length).toBe(0);
     });
 
     it.each([
-        [401, { reason: 'invalid' }, 'Your session expired or was revoked. Sign in again.', null],
-        [503, { reason: 'unavailable' }, 'catalog-api is unreachable, so your session could not be verified. Sign in again once it is back.', 'stale-token'],
-    ])('returns a stored session answered %i to the login form with its reason', async (status, body, message, kept) => {
-        localStorage.setItem('admin_token', 'stale-token');
+        [401, { reason: 'invalid' }, 'Your session expired or was revoked. Sign in again.'],
+        [503, { reason: 'unavailable' }, 'catalog-api is unreachable, so your session could not be verified. Sign in again once it is back.'],
+    ])('returns a cookie session answered %i to the login form with its reason', async (status, body, message) => {
         installFetch({ '/api/session': () => jsonResponse(status, body) });
         new classes.AdminDashboard();
         await flush();
@@ -148,11 +151,9 @@ describe('admin.js owns the session', () => {
         expect(visible('console-view')).toBe(false);
         expect(document.getElementById('login-reason').textContent).toBe(message);
         expect(document.getElementById('login-reason').style.display).toBe('block');
-        expect(localStorage.getItem('admin_token')).toBe(kept);
     });
 
     it('reports an unreachable console as its own reason', async () => {
-        localStorage.setItem('admin_token', 'token');
         globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'));
         new classes.AdminDashboard();
         await flush();
@@ -161,7 +162,6 @@ describe('admin.js owns the session', () => {
 
     it('returns to the login form with a reason when the session expires mid-use', async () => {
         vi.useFakeTimers();
-        localStorage.setItem('admin_token', 'live-token');
         let sessionStatus = 200;
         installFetch({
             '/api/session': () => (sessionStatus === 200 ? jsonResponse(200, LIVE_SESSION) : jsonResponse(401, { reason: 'invalid' })),
@@ -181,7 +181,6 @@ describe('admin.js owns the session', () => {
 
     it('re-checks the session just after its own expiry', async () => {
         vi.useFakeTimers();
-        localStorage.setItem('admin_token', 'short-token');
         const expiresAt = new Date(Date.now() + 5000).toISOString();
         let expired = false;
         installFetch({
@@ -205,8 +204,7 @@ describe('admin.js owns the session', () => {
         [502, 'You are signed out of this browser, but catalog-api did not confirm the sign-out, so the session may still be valid until it expires.'],
         [503, 'You are signed out of this browser, but catalog-api did not confirm the sign-out, so the session may still be valid until it expires.'],
         [null, 'You are signed out of this browser, but catalog-api did not confirm the sign-out, so the session may still be valid until it expires.'],
-    ])('reports a logout answered %s honestly and forgets the bearer either way', async (status, message) => {
-        localStorage.setItem('admin_token', 'live-token');
+    ])('reports a logout answered %s honestly and ends the session either way', async (status, message) => {
         const fetchMock = installFetch({
             '/api/session': () => jsonResponse(200, LIVE_SESSION),
             '/admin/api/extractions': () => jsonResponse(200, { extractions: [] }),
@@ -221,15 +219,103 @@ describe('admin.js owns the session', () => {
         await app.logout();
 
         const logoutCall = fetchMock.mock.calls.find(([url]) => url === '/admin/api/logout');
-        expect(logoutCall[1].headers.Authorization).toBe('Bearer live-token');
+        expect(logoutCall[1]).toEqual({ method: 'POST', headers: CONSOLE_HEADER });
         expect(visible('login-view')).toBe(true);
         expect(document.getElementById('login-reason').textContent).toBe(message);
-        expect(localStorage.getItem('admin_token')).toBeNull();
         expect(events.map((event) => event.name)).toContain('console:signed-out');
+        // Any answer means the console cleared the cookie; with none, the next load signs out again.
+        expect(localStorage.getItem('console_signout_pending')).toBe(status === null ? '1' : null);
+    });
+
+    it('finishes a sign-out that never reached the console before resuming anything', async () => {
+        localStorage.setItem('console_signout_pending', '1');
+        const fetchMock = installFetch({
+            '/api/session': () => jsonResponse(200, LIVE_SESSION),
+            '/admin/api/logout': () => jsonResponse(200, {}),
+        });
+        new classes.AdminDashboard();
+        await flush();
+
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/admin/api/logout']);
+        expect(visible('login-view')).toBe(true);
+        expect(document.getElementById('login-reason').textContent).toBe('You signed out.');
+        expect(localStorage.getItem('console_signout_pending')).toBeNull();
+    });
+
+    it('signs out and removes a bearer an older console left in localStorage', async () => {
+        localStorage.setItem('admin_token', 'legacy-token');
+        localStorage.setItem('admin_email', 'ops@example.com');
+        const fetchMock = installFetch({ '/api/session': NO_SESSION, '/admin/api/logout': () => jsonResponse(200, {}) });
+        new classes.AdminDashboard();
+        expect(localStorage.getItem('admin_token')).toBeNull();
+        await flush();
+
+        expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(['/admin/api/logout', '/api/session']);
+        expect(fetchMock.mock.calls[0][1].headers).toEqual({ Authorization: 'Bearer legacy-token' });
+        expect(localStorage.length).toBe(0);
+        expect(visible('login-view')).toBe(true);
+        expect(document.getElementById('login-reason').style.display).toBe('none');
+    });
+
+    it('signs in without keeping anything in script-readable storage', async () => {
+        let signedIn = false;
+        const fetchMock = installFetch({
+            '/api/session': () => (signedIn ? jsonResponse(200, LIVE_SESSION) : NO_SESSION()),
+            '/admin/api/login': () => { signedIn = true; return jsonResponse(200, { expires_in: 3600 }); },
+            '/admin/api/extractions': () => jsonResponse(200, { extractions: [] }),
+        });
+        const app = new classes.AdminDashboard();
+        await flush();
+        document.getElementById('login-email').value = 'ops@example.com';
+        document.getElementById('login-password').value = 'secret';
+
+        await app.login();
+        await flush();
+
+        const loginCall = fetchMock.mock.calls.find(([url]) => url === '/admin/api/login');
+        expect(loginCall[1].headers).toEqual({ ...CONSOLE_HEADER, 'Content-Type': 'application/json' });
+        expect(visible('console-view')).toBe(true);
+        expect(localStorage.length).toBe(0);
+        expect(events).toContainEqual({ name: 'console:authenticated', detail: { session: 2 } });
+    });
+
+    it('reports a mid-use check that finds no cookie at all as an ended session', async () => {
+        vi.useFakeTimers();
+        let sessionStatus = 200;
+        installFetch({
+            '/api/session': () => (sessionStatus === 200 ? jsonResponse(200, LIVE_SESSION) : NO_SESSION()),
+            '/admin/api/extractions': () => jsonResponse(200, { extractions: [] }),
+        });
+        new classes.AdminDashboard();
+        await flush();
+
+        sessionStatus = 401;  // the browser dropped the cookie at its Max-Age, or the console cleared it
+        await vi.advanceTimersByTimeAsync(15000);
+
+        expect(visible('login-view')).toBe(true);
+        expect(document.getElementById('login-reason').dataset.reason).toBe('invalid');
+    });
+
+    it('keeps the sign-out reason when an admin call answers 401 after it', async () => {
+        let answerStorage;
+        installFetch({
+            '/api/session': () => jsonResponse(200, LIVE_SESSION),
+            '/admin/api/extractions': () => jsonResponse(200, { extractions: [] }),
+            '/admin/api/logout': () => jsonResponse(200, {}),
+            '/admin/api/storage': () => new Promise((resolve) => { answerStorage = resolve; }),
+        });
+        const app = new classes.AdminDashboard();
+        await flush();
+
+        const inFlight = app.authFetch('/admin/api/storage');
+        await app.logout();
+        answerStorage(jsonResponse(401, { detail: 'Invalid or expired token' }));
+
+        await expect(inFlight).rejects.toThrow('Session expired');
+        expect(document.getElementById('login-reason').textContent).toBe('You signed out.');
     });
 
     it('treats a 401 from any admin call as an ended session', async () => {
-        localStorage.setItem('admin_token', 'live-token');
         installFetch({
             '/api/session': () => jsonResponse(200, LIVE_SESSION),
             '/admin/api/extractions': () => jsonResponse(200, { extractions: [] }),
@@ -244,7 +330,6 @@ describe('admin.js owns the session', () => {
     });
 
     it('answers a session check from the live view by re-announcing a live session', async () => {
-        localStorage.setItem('admin_token', 'live-token');
         installFetch({
             '/api/session': () => jsonResponse(200, LIVE_SESSION),
             '/admin/api/extractions': () => jsonResponse(200, { extractions: [] }),
@@ -273,18 +358,18 @@ describe('dashboard.js reads only inside a session', () => {
         expect(FakeWebSocket.instances).toHaveLength(0);
     });
 
-    it('trades the bearer for a ticket and opens the socket with it', async () => {
+    it('trades the cookie session for a ticket and opens the socket with it', async () => {
         const { fetchMock } = startedDashboard({
             '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [], timestamp: new Date().toISOString() }),
             '/api/ws-ticket': () => jsonResponse(200, { ticket: 'single-use', expires_in: 30 }),
         });
-        document.dispatchEvent(new CustomEvent('console:authenticated', { detail: { token: 'live-token' } }));
+        document.dispatchEvent(new CustomEvent('console:authenticated', { detail: { session: 1 } }));
         await flush();
 
         const ticketCall = fetchMock.mock.calls.find(([url]) => url === '/api/ws-ticket');
-        expect(ticketCall[1]).toMatchObject({ method: 'POST', headers: { Authorization: 'Bearer live-token' } });
+        expect(ticketCall[1]).toMatchObject({ method: 'POST', headers: CONSOLE_HEADER });
         const metricsCall = fetchMock.mock.calls.find(([url]) => url === '/api/metrics');
-        expect(metricsCall[1].headers.Authorization).toBe('Bearer live-token');
+        expect(metricsCall[1].headers).toEqual(CONSOLE_HEADER);
         expect(FakeWebSocket.instances).toHaveLength(1);
         expect(FakeWebSocket.instances[0].url).toMatch(/\/ws\?ticket=single-use$/);
     });
@@ -295,7 +380,7 @@ describe('dashboard.js reads only inside a session', () => {
             '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
             '/api/ws-ticket': () => jsonResponse(200, { ticket: 't1' }),
         });
-        dashboard.start('live-token');
+        dashboard.start(1);
         await vi.advanceTimersByTimeAsync(0);
 
         FakeWebSocket.instances[0].serverClose(4401);
@@ -313,7 +398,7 @@ describe('dashboard.js reads only inside a session', () => {
             '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
             '/api/ws-ticket': () => jsonResponse(200, { ticket: `t${++issued}` }),
         });
-        dashboard.start('live-token');
+        dashboard.start(1);
         await vi.advanceTimersByTimeAsync(0);
 
         FakeWebSocket.instances[0].serverClose(1006);
@@ -329,7 +414,7 @@ describe('dashboard.js reads only inside a session', () => {
             '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
             '/api/ws-ticket': () => jsonResponse(401, { reason: 'invalid' }),
         });
-        dashboard.start('stale-token');
+        dashboard.start(1);
         await flush();
 
         expect(FakeWebSocket.instances).toHaveLength(0);
@@ -343,7 +428,7 @@ describe('dashboard.js reads only inside a session', () => {
             '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
             '/api/ws-ticket': () => (ticketStatus === 503 ? jsonResponse(503, { reason: 'unavailable' }) : jsonResponse(200, { ticket: 't1' })),
         });
-        dashboard.start('live-token');
+        dashboard.start(1);
         await vi.advanceTimersByTimeAsync(0);
         expect(events.map((event) => event.name)).not.toContain('console:session-check');
 
@@ -361,7 +446,7 @@ describe('dashboard.js reads only inside a session', () => {
             '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
             '/api/ws-ticket': () => jsonResponse(200, { ticket: `t${++issued}` }),
         });
-        dashboard.start('live-token');
+        dashboard.start(1);
         await vi.advanceTimersByTimeAsync(0);
 
         const waits = [];
@@ -389,7 +474,7 @@ describe('dashboard.js reads only inside a session', () => {
             '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
             '/api/ws-ticket': () => jsonResponse(200, { ticket: `t${++issued}` }),
         });
-        dashboard.start('live-token');
+        dashboard.start(1);
         await vi.advanceTimersByTimeAsync(0);
         FakeWebSocket.instances[0].serverClose(4503);
         await vi.advanceTimersByTimeAsync(5000);
@@ -410,13 +495,13 @@ describe('dashboard.js reads only inside a session', () => {
             '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
             '/api/ws-ticket': () => jsonResponse(200, { ticket: `t${++issued}` }),
         });
-        dashboard.start('live-token');
+        dashboard.start(1);
         await vi.advanceTimersByTimeAsync(0);
 
         // The cache still vouches for the session, so admin.js re-announces it straight away.
         for (let round = 0; round < 3; round++) {
             FakeWebSocket.instances.at(-1).serverClose(4401);
-            document.dispatchEvent(new CustomEvent('console:authenticated', { detail: { token: 'live-token' } }));
+            document.dispatchEvent(new CustomEvent('console:authenticated', { detail: { session: 1 } }));
             await vi.advanceTimersByTimeAsync(0);
         }
         expect(FakeWebSocket.instances).toHaveLength(1);
@@ -430,7 +515,7 @@ describe('dashboard.js reads only inside a session', () => {
             '/api/metrics': () => jsonResponse(200, { pipelines: {}, databases: [] }),
             '/api/ws-ticket': () => jsonResponse(200, { ticket: 't1' }),
         });
-        dashboard.start('live-token');
+        dashboard.start(1);
         await vi.advanceTimersByTimeAsync(0);
         const socket = FakeWebSocket.instances[0];
         const callsBefore = fetchMock.mock.calls.length;

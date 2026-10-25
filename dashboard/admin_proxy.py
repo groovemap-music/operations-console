@@ -19,6 +19,7 @@ from fastapi import APIRouter, Query, Request, Response
 from starlette.responses import JSONResponse
 
 from dashboard import catalog_admin_contract
+from dashboard.session_auth import bearer_token, request_authorization, session_cookie
 from dashboard.session_auth import gate as session_gate
 
 
@@ -61,8 +62,12 @@ def _validate_path_segment(value: str) -> bool:
     return bool(_SAFE_PATH_SEGMENT.match(value))
 
 
-def _auth_headers(request: Request) -> dict[str, str]:
+def _auth_headers(request: Request, *, authenticate: bool = True) -> dict[str, str]:
     """Build headers for the proxied request: Authorization plus trustworthy forwarding info.
+
+    The Authorization header is the request's own, or else the bearer from the session cookie,
+    so catalog-api sees the same credential whichever way the browser presented it. Login
+    passes ``authenticate=False``: it starts a session and must not present an old one.
 
     X-Forwarded-For/-Proto are always set from what THIS service observed as the
     TCP peer and request scheme — never copied from the inbound request, which
@@ -72,7 +77,7 @@ def _auth_headers(request: Request) -> dict[str, str]:
     the trusted-forwarding regression.
     """
     headers: dict[str, str] = {}
-    auth = request.headers.get("authorization")
+    auth = request_authorization(request) if authenticate else None
     if auth:
         headers["Authorization"] = auth
     if request.client and request.client.host:
@@ -107,10 +112,15 @@ async def _proxy_request(
     content: bytes | None = None,
     timeout: float = 30.0,
     client: httpx.AsyncClient | None = None,
+    authenticate: bool = True,
 ) -> Response:
-    """Forward one request while keeping endpoint policy in the route handler."""
+    """Forward one request while keeping endpoint policy in the route handler.
+
+    A 401 from catalog-api for a cookie-authenticated request means the session behind the
+    cookie is gone: the console forgets it and the response clears the cookie.
+    """
     url = _build_url(api_path)
-    headers = _auth_headers(request)
+    headers = _auth_headers(request, authenticate=authenticate)
     if content:
         headers["Content-Type"] = "application/json"
 
@@ -133,7 +143,11 @@ async def _proxy_request(
     except (httpx.ConnectError, httpx.RequestError) as exc:
         logger.error("❌ API service unreachable", url=url, error=describe_exception(exc))
         return _unavailable_response()
-    return _ok_response(response)
+    result = _ok_response(response)
+    if authenticate and response.status_code == 401 and session_cookie.carried_by(request):
+        session_gate.forget(request_authorization(request))
+        session_cookie.clear(result)
+    return result
 
 
 async def _validated_json_body(request: Request) -> bytes | None:
@@ -166,14 +180,39 @@ async def _validated_json_body(request: Request) -> bytes | None:
 # ---------------------------------------------------------------------------
 
 
+def _signed_in_response(body: bytes) -> Response:
+    """Keep the bearer catalog-api issued in the session cookie; tell the browser only its lifetime."""
+    try:
+        issued: Any = json.loads(body)
+        raw_token, expires_in = issued["access_token"], issued.get("expires_in")
+    except ValueError, KeyError, TypeError:
+        raw_token, expires_in = None, None
+    token = bearer_token(f"Bearer {raw_token}") if isinstance(raw_token, str) else None
+    if token is None:
+        logger.warning("⚠️ catalog-api answered a login without a usable bearer")
+        return JSONResponse(content={"detail": "catalog-api returned no usable session"}, status_code=502)
+    max_age = expires_in if isinstance(expires_in, int) and not isinstance(expires_in, bool) and expires_in > 0 else None
+    response = JSONResponse(content={"expires_in": max_age}, headers={"Cache-Control": "no-store"})
+    session_cookie.set(response, token, max_age)
+    return response
+
+
 @public_router.post("/admin/api/login")
 async def proxy_login(request: Request) -> Response:
-    """Proxy login requests to the API service."""
+    """Proxy login requests to the API service and start a cookie session on success.
+
+    The bearer never reaches the browser's script: it goes into the HttpOnly session cookie,
+    which lives no longer than the session, and the body carries only ``expires_in``. Any
+    session cookie the browser already holds is not presented to catalog-api.
+    """
     try:
         sanitised_body = await _validated_json_body(request)
     except json.JSONDecodeError:
         return JSONResponse(content={"detail": "Malformed JSON in request body"}, status_code=400)
-    return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_LOGIN_PATH, content=sanitised_body)
+    response = await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_LOGIN_PATH, content=sanitised_body, authenticate=False)
+    if response.status_code != 200:
+        return response
+    return _signed_in_response(bytes(response.body))
 
 
 @public_router.post("/admin/api/logout")
@@ -182,12 +221,18 @@ async def proxy_logout(request: Request) -> Response:
 
     The console's cached session for this bearer is dropped whatever catalog-api answers, so the
     next gated request re-validates instead of riding the cache for up to 30 seconds after a
-    revocation.
+    revocation, and a session cookie is cleared with it, so the browser is signed out even
+    when catalog-api did not confirm.
     """
+    authorization = request_authorization(request)
+    from_cookie = session_cookie.carried_by(request)
     try:
-        return await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_LOGOUT_PATH)
+        response = await _proxy_request(request, "POST", catalog_admin_contract.ADMIN_LOGOUT_PATH)
     finally:
-        session_gate.forget(request.headers.get("authorization"))
+        session_gate.forget(authorization)
+    if from_cookie and response.status_code != 401:  # _proxy_request already cleared it on a 401.
+        session_cookie.clear(response)
+    return response
 
 
 @router.get("/admin/api/extractions")

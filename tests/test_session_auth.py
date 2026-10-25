@@ -25,6 +25,8 @@ import pytest
 import uvicorn
 import websockets
 from fastapi import FastAPI, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.trace import TracerProvider as SdkTracerProvider
@@ -33,7 +35,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from starlette.websockets import WebSocketDisconnect
 
 from dashboard import session_auth
-from dashboard.dashboard import ConsoleApp
+from dashboard.dashboard import ConsoleApp, install_cors
 from dashboard.session_auth import (
     WS_CLOSE_UNAUTHENTICATED,
     WS_TICKET_SCOPE_KEY,
@@ -45,6 +47,7 @@ from dashboard.session_auth import (
     take_ws_ticket,
 )
 from tests.dashboard_test_app import create_test_app
+from tests.fake_catalog_api import ADMIN_EMAIL, ADMIN_PASSWORD
 
 
 if TYPE_CHECKING:
@@ -66,6 +69,11 @@ DATA_ROUTES = [
 HISTORY_ROUTES = ["/api/history/queues", "/api/history/health", "/api/progress/discogs?start=2026-01-01T00:00:00Z"]
 
 
+# What the console's own pages send with every request; without it a state-changing request
+# that relies on the cookie is refused before the session gate runs.
+CONSOLE = {"X-GrooveMap-Console": "1"}
+
+
 def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -76,8 +84,12 @@ def _session(seconds: float = 3600) -> AdminSession:
 
 @pytest.fixture
 def client(fake_catalog: FakeCatalogApi) -> Iterator[TestClient]:
-    """The console's production routes over fixed metrics, with no session attached."""
-    with TestClient(create_test_app()) as test_client:
+    """The console's production routes over fixed metrics, with no session attached.
+
+    Over HTTPS, as a browser reaches a deployed console: the session cookie is Secure, so the
+    client's cookie jar sends it back only on an https URL.
+    """
+    with TestClient(create_test_app(), base_url="https://console.test") as test_client:
         yield test_client
 
 
@@ -87,7 +99,7 @@ def _assert_denied(client: TestClient, headers: dict[str, str], status: int, rea
         assert response.status_code == status, path
         assert response.json()["reason"] == reason, path
         assert "pipelines" not in response.text and "discogs" not in response.text, path
-    ticket = client.post("/api/ws-ticket", headers=headers)
+    ticket = client.post("/api/ws-ticket", headers={**CONSOLE, **headers})
     assert ticket.status_code == status
     assert "ticket" not in ticket.json()
 
@@ -573,7 +585,7 @@ class TestEveryRouteIsGated:
             if path in PUBLIC_ROUTES:
                 continue
             for method in sorted(route.methods - {"HEAD"}):
-                response = client.request(method, concrete)
+                response = client.request(method, concrete, headers=CONSOLE)
                 assert response.status_code == 401, f"{method} {path} answered {response.status_code}"
                 assert response.json()["reason"] == "missing", f"{method} {path}"
                 probed.append(f"{method} {path}")
@@ -601,7 +613,7 @@ class TestEveryRouteIsGated:
     def test_anonymous_gated_proxy_calls_never_reach_catalog_api(self, client: TestClient) -> None:
         with patch("dashboard.admin_proxy._proxy_request") as proxied:
             assert client.get("/admin/api/extractions").status_code == 401
-            assert client.post("/admin/api/dlq/purge/q").status_code == 401
+            assert client.post("/admin/api/dlq/purge/q", headers=CONSOLE).status_code == 401
         proxied.assert_not_called()
 
 
@@ -827,3 +839,316 @@ class TestUnavailableClosesWith4503:
         ticket = client.post("/api/ws-ticket", headers=_bearer(token)).json()["ticket"]
         fake_catalog.revoke(token)
         assert _close_code(client, f"/ws?ticket={ticket}") == WS_CLOSE_UNAUTHENTICATED
+
+
+# The default, Secure cookie; the plain name exists only for SESSION_COOKIE_SECURE=false.
+COOKIE = session_auth.SECURE_SESSION_COOKIE
+PLAIN_COOKIE = session_auth.SESSION_COOKIE
+
+
+@pytest.fixture
+def proxied_catalog(fake_catalog: FakeCatalogApi) -> Iterator[FakeCatalogApi]:
+    """Send the admin proxy's calls (login, logout, extractions) to the in-process fake too."""
+    real = httpx.AsyncClient
+
+    def client_for_fake(**kwargs: Any) -> httpx.AsyncClient:
+        return real(transport=httpx.ASGITransport(app=fake_catalog.app), timeout=kwargs.get("timeout"))
+
+    with patch("dashboard.admin_proxy.httpx.AsyncClient", side_effect=client_for_fake):
+        yield fake_catalog
+
+
+def _sign_in(client: TestClient) -> str:
+    """Sign in through the console as the browser does; return the bearer the cookie now holds."""
+    response = client.post("/admin/api/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, headers=CONSOLE)
+    assert response.status_code == 200, response.text
+    return client.cookies[COOKIE]
+
+
+def _set_cookies(response: httpx.Response) -> list[str]:
+    return response.headers.get_list("set-cookie")
+
+
+def _clears(response: httpx.Response, name: str = COOKIE) -> bool:
+    return any(header.startswith(f"{name}=") and "Max-Age=0" in header for header in _set_cookies(response))
+
+
+class TestCookieSession:
+    def test_login_keeps_the_bearer_in_an_httponly_strict_cookie_and_out_of_the_body(
+        self, client: TestClient, proxied_catalog: FakeCatalogApi
+    ) -> None:
+        response = client.post("/admin/api/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, headers=CONSOLE)
+
+        assert response.status_code == 200
+        assert response.json() == {"expires_in": 3600}
+        assert response.headers["cache-control"] == "no-store"
+        [cookie] = _set_cookies(response)
+        token = cookie.split(";", 1)[0].removeprefix(f"{COOKIE}=")
+        assert token in proxied_catalog.tokens, "the cookie carries the bearer catalog-api issued"
+        assert token not in response.text
+        attributes = {part.strip().lower() for part in cookie.split(";")[1:]}
+        assert {"httponly", "samesite=strict", "path=/", "max-age=3600", "secure"} <= attributes
+        assert not any(part.startswith("domain=") for part in attributes), "host-only, as __Host- requires"
+
+    def test_a_failed_login_sets_no_cookie_and_keeps_an_existing_session(self, client: TestClient, proxied_catalog: FakeCatalogApi) -> None:
+        token = _sign_in(client)
+        response = client.post("/admin/api/login", json={"email": ADMIN_EMAIL, "password": "wrong"}, headers=CONSOLE)
+        assert response.status_code == 401
+        assert not _set_cookies(response)
+        assert client.get("/api/session").status_code == 200
+        assert client.cookies[COOKIE] == token
+
+    def test_every_data_route_the_proxy_and_the_live_feed_work_from_the_cookie(self, client: TestClient, proxied_catalog: FakeCatalogApi) -> None:
+        _sign_in(client)
+        for path in DATA_ROUTES:
+            assert client.get(path).status_code == 200, path
+        # The fake answers 200 only for a live bearer, so this proves the proxy attached it.
+        assert client.get("/admin/api/extractions").json() == {"extractions": []}
+        ticket = client.post("/api/ws-ticket", headers=CONSOLE)
+        assert ticket.status_code == 200
+        with client.websocket_connect(f"/ws?ticket={ticket.json()['ticket']}") as websocket:
+            assert websocket.receive_json()["type"] == "metrics_update"
+
+    def test_the_websocket_ignores_the_cookie(self, client: TestClient, proxied_catalog: FakeCatalogApi) -> None:
+        _sign_in(client)
+        assert _close_code(client, "/ws") == WS_CLOSE_UNAUTHENTICATED
+
+    def test_an_explicit_header_wins_over_the_cookie(self, client: TestClient, proxied_catalog: FakeCatalogApi) -> None:
+        _sign_in(client)
+        revoked = proxied_catalog.mint()
+        proxied_catalog.revoke(revoked)
+        response = client.get("/api/session", headers=_bearer(revoked))
+        assert response.json()["reason"] == "invalid"
+        assert not _set_cookies(response), "a header-authenticated request never touches the cookie"
+        assert client.get("/api/session").status_code == 200
+
+    def test_a_session_catalog_api_calls_invalid_clears_the_cookie(self, client: TestClient, proxied_catalog: FakeCatalogApi) -> None:
+        token = _sign_in(client)
+        gate.cache.evict(session_auth.token_digest(token))
+        proxied_catalog.revoke(token)
+        response = client.get("/api/session")
+        assert response.json()["reason"] == "invalid"
+        assert _clears(response)
+        assert COOKIE not in client.cookies
+        assert client.get("/api/session").json()["reason"] == "missing"
+
+    def test_an_unanswered_session_keeps_the_cookie(self, client: TestClient, proxied_catalog: FakeCatalogApi) -> None:
+        token = _sign_in(client)
+        gate.cache.evict(session_auth.token_digest(token))
+        proxied_catalog.outage = True
+        response = client.get("/api/session")
+        assert response.status_code == 503
+        assert not _set_cookies(response)
+        proxied_catalog.outage = False
+        assert client.get("/api/session").status_code == 200
+
+    def test_a_401_from_catalog_api_behind_the_proxy_clears_the_cookie(self, client: TestClient, proxied_catalog: FakeCatalogApi) -> None:
+        token = _sign_in(client)
+        assert client.get("/api/session").status_code == 200  # cached for the next request
+        proxied_catalog.revoke(token)
+        response = client.get("/admin/api/extractions")
+        assert response.status_code == 401
+        assert _clears(response)
+        assert gate.cache.get(session_auth.token_digest(token)) is None
+
+    @pytest.mark.parametrize("outage", [False, True])
+    def test_logout_clears_the_cookie_whatever_catalog_api_answers(self, client: TestClient, proxied_catalog: FakeCatalogApi, outage: bool) -> None:
+        token = _sign_in(client)
+        proxied_catalog.outage = outage
+        response = client.post("/admin/api/logout", headers=CONSOLE)
+        assert response.status_code == (503 if outage else 200)
+        assert _clears(response)
+        assert len([header for header in _set_cookies(response) if header.startswith(f"{COOKIE}=")]) == 1
+        assert proxied_catalog.tokens[token].revoked is not outage
+        assert gate.cache.get(session_auth.token_digest(token)) is None
+
+    def test_signing_out_a_header_bearer_leaves_the_cookie_session_alone(self, client: TestClient, proxied_catalog: FakeCatalogApi) -> None:
+        _sign_in(client)
+        response = client.post("/admin/api/logout", headers=_bearer(proxied_catalog.mint()))
+        assert response.status_code == 200
+        assert not _set_cookies(response)
+        assert client.get("/api/session").status_code == 200
+
+    def test_a_login_answer_without_a_usable_bearer_is_refused(self, client: TestClient) -> None:
+        with patch("dashboard.admin_proxy._proxy_request", return_value=JSONResponse({"access_token": "not a token"})):
+            response = client.post("/admin/api/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, headers=CONSOLE)
+        assert response.status_code == 502
+        assert not _set_cookies(response)
+
+
+class TestSecureCookie:
+    @pytest.fixture(autouse=True)
+    def _restore_mode(self) -> Iterator[None]:
+        saved = session_auth.session_cookie.secure
+        yield
+        session_auth.session_cookie.secure = saved
+
+    def _login(self, client: TestClient) -> httpx.Response:
+        return client.post("/admin/api/login", json={"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}, headers=CONSOLE)
+
+    def test_the_cookie_is_secure_by_default_whatever_scheme_the_console_sees(self, proxied_catalog: FakeCatalogApi) -> None:
+        """Behind a TLS-terminating proxy the console sees plain HTTP; the cookie is Secure anyway."""
+        assert session_auth.SessionCookie().secure is True
+        with TestClient(create_test_app(), base_url="http://console.test") as plain:
+            [cookie] = _set_cookies(self._login(plain))
+        assert cookie.startswith(f"{COOKIE}=")
+        assert "secure" in {part.strip().lower() for part in cookie.split(";")}
+
+    def test_a_cookie_without_the_host_prefix_is_not_a_session(self, client: TestClient, proxied_catalog: FakeCatalogApi) -> None:
+        """A sibling subdomain or a plain-HTTP response could plant the plain name; only `__Host-` counts."""
+        client.cookies.set(PLAIN_COOKIE, proxied_catalog.mint())
+        assert client.get("/api/session").json()["reason"] == "missing"
+
+    def test_only_an_explicit_opt_out_drops_secure(self, proxied_catalog: FakeCatalogApi) -> None:
+        session_auth.session_cookie.secure = False
+        with TestClient(create_test_app(), base_url="http://console.test") as plain:
+            [cookie] = _set_cookies(self._login(plain))
+            assert cookie.startswith(f"{PLAIN_COOKIE}=")
+            assert "secure" not in {part.strip().lower() for part in cookie.split(";")}
+            assert plain.get("/api/session").status_code == 200
+            assert _clears(plain.post("/admin/api/logout", headers=CONSOLE), PLAIN_COOKIE)
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            (None, True),
+            ("", True),
+            (" ", True),
+            ("true", True),
+            ("1", True),
+            ("yes", True),
+            ("false", False),
+            (" FALSE ", False),
+            ("0", False),
+            ("no", False),
+        ],
+    )
+    def test_the_setting_parses_and_defaults_to_secure(self, raw: str | None, expected: bool) -> None:
+        assert session_auth.cookie_secure_from_env(raw) is expected
+
+    @pytest.mark.parametrize("raw", ["auto", "on", "secure", "maybe"])
+    def test_an_unknown_setting_fails_startup(self, raw: str) -> None:
+        with pytest.raises(ValueError):
+            session_auth.cookie_secure_from_env(raw)
+
+    def test_the_console_reads_the_setting(self) -> None:
+        source = (Path(__file__).resolve().parents[1] / "dashboard" / "dashboard.py").read_text()
+        assert 'session_cookie.secure = cookie_secure_from_env(os.getenv("SESSION_COOKIE_SECURE"))' in source
+
+
+def _unsafe_routes() -> list[tuple[str, str]]:
+    from fastapi.routing import APIRoute
+
+    from dashboard.dashboard import app as production
+
+    return [
+        (method, re.sub(r"\{[^}]+\}", "probe", path))
+        for path, route in _flat_routes(production.routes)
+        if isinstance(route, APIRoute)
+        for method in sorted(route.methods & {"POST", "PUT", "PATCH", "DELETE"})
+    ]
+
+
+class TestCrossSiteRequestsAreRefused:
+    def test_every_state_changing_route_is_probed(self) -> None:
+        probed = {path for _method, path in _unsafe_routes()}
+        assert {"/admin/api/login", "/admin/api/logout", "/api/ws-ticket", "/admin/api/dlq/purge/probe", "/admin/api/extractions/trigger"} <= probed
+
+    @pytest.mark.parametrize(
+        "headers",
+        [
+            {},  # a cross-site form: it cannot set a custom header
+            {"Sec-Fetch-Site": "cross-site", **CONSOLE},  # and the browser says where it came from
+        ],
+        ids=["no-console-header", "cross-site"],
+    )
+    def test_a_cookie_alone_never_authorizes_a_change(self, client: TestClient, proxied_catalog: FakeCatalogApi, headers: dict[str, str]) -> None:
+        _sign_in(client)
+        calls_before = proxied_catalog.session_calls
+        with patch("dashboard.admin_proxy._proxy_request") as proxied:
+            for method, path in _unsafe_routes():
+                response = client.request(method, path, headers=headers, content=b"source=discogs")
+                assert response.status_code == 403, f"{method} {path} answered {response.status_code}"
+        proxied.assert_not_called()
+        assert proxied_catalog.session_calls == calls_before, "refused before the session gate asks catalog-api"
+        assert client.get("/api/session").status_code == 200, "the refusal leaves the session alone"
+
+    def test_a_cross_site_form_post_cannot_purge_a_dlq(self, client: TestClient, proxied_catalog: FakeCatalogApi) -> None:
+        _sign_in(client)
+        form = {"Content-Type": "application/x-www-form-urlencoded", "Origin": "https://attacker.example", "Sec-Fetch-Site": "cross-site"}
+        with patch("dashboard.admin_proxy._proxy_request") as proxied:
+            response = client.post("/admin/api/dlq/purge/groovemap-discogs-graphinator-artists.dlq", headers=form, content=b"x=1")
+        assert response.status_code == 403
+        proxied.assert_not_called()
+
+    @pytest.mark.parametrize("site", [None, "same-origin"])
+    def test_the_consoles_own_requests_pass(self, client: TestClient, proxied_catalog: FakeCatalogApi, site: str | None) -> None:
+        _sign_in(client)
+        headers = {**CONSOLE, **({"Sec-Fetch-Site": site} if site else {})}
+        assert client.post("/api/ws-ticket", headers=headers).status_code == 200
+
+    def test_a_client_with_its_own_bearer_needs_no_console_header(self, client: TestClient, fake_catalog: FakeCatalogApi) -> None:
+        assert client.post("/api/ws-ticket", headers=_bearer(fake_catalog.mint())).status_code == 200
+
+
+GRAFANA = "http://localhost:3000"  # in development, the Grafana the console links to
+
+
+class TestOtherOriginsCannotActWithTheSession:
+    """Even an origin trusted in CORS_ORIGINS cannot make a signed-in browser change anything."""
+
+    @pytest.fixture
+    def cors_client(self, proxied_catalog: FakeCatalogApi) -> Iterator[TestClient]:
+        app = create_test_app()
+        install_cors(app, [GRAFANA])
+        with TestClient(app, base_url="https://console.test") as with_cors:
+            yield with_cors
+
+    @pytest.mark.parametrize(
+        "browser",
+        [
+            {"Origin": GRAFANA, "Sec-Fetch-Site": "same-site"},  # current browsers: another port on the same host
+            {"Origin": GRAFANA},  # a browser too old to send Sec-Fetch-Site
+            {"Origin": "null"},  # a sandboxed frame or a redirect chain
+        ],
+        ids=["same-site", "origin-only", "opaque-origin"],
+    )
+    def test_a_credentialed_request_from_an_allowed_cors_origin_is_refused(
+        self, cors_client: TestClient, proxied_catalog: FakeCatalogApi, browser: dict[str, str]
+    ) -> None:
+        _sign_in(cors_client)
+        with patch("dashboard.admin_proxy._proxy_request") as proxied:
+            for method, path in _unsafe_routes():
+                response = cors_client.request(method, path, headers={**CONSOLE, **browser})
+                assert response.status_code == 403, f"{method} {path} answered {response.status_code}"
+                assert "access-control-allow-credentials" not in response.headers
+        proxied.assert_not_called()
+
+    def test_the_preflight_admits_neither_credentials_nor_the_console_header(self, cors_client: TestClient) -> None:
+        preflight = cors_client.options(
+            "/api/ws-ticket",
+            headers={"Origin": GRAFANA, "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "x-groovemap-console"},
+        )
+        assert preflight.status_code == 400
+        assert "access-control-allow-credentials" not in preflight.headers
+        assert "x-groovemap-console" not in preflight.headers.get("access-control-allow-headers", "").lower()
+
+    def test_a_cross_origin_read_is_never_credentialed(self, cors_client: TestClient) -> None:
+        _sign_in(cors_client)
+        response = cors_client.get("/api/session", headers={"Origin": GRAFANA})
+        assert response.headers["access-control-allow-origin"] == GRAFANA
+        assert "access-control-allow-credentials" not in response.headers, "the browser must not hand the answer to the page"
+
+    def test_without_cors_origins_no_cors_is_served(self) -> None:
+        from dashboard.dashboard import app as production
+
+        assert not [entry for entry in production.user_middleware if entry.cls is CORSMiddleware]
+
+    @pytest.mark.parametrize(
+        "browser",
+        [{"Sec-Fetch-Site": "same-origin", "Origin": "https://console.test"}, {"Origin": "https://console.test"}, {"Origin": "http://console.test"}],
+        ids=["same-origin", "origin-only", "origin-scheme-ignored"],
+    )
+    def test_the_consoles_own_origin_passes(self, client: TestClient, proxied_catalog: FakeCatalogApi, browser: dict[str, str]) -> None:
+        _sign_in(client)
+        assert client.post("/api/ws-ticket", headers={**CONSOLE, **browser}).status_code == 200

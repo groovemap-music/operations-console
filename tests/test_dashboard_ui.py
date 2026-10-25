@@ -567,16 +567,14 @@ class TestDashboardUI:
         expect(page.locator("#service-extractor-discogs")).to_be_visible(timeout=10000)
 
     def test_api_endpoints(self, page: Page) -> None:
-        """The data routes answer the signed-in session's bearer, and nothing without it."""
-        sign_in(page)
-        token = page.evaluate("() => localStorage.getItem('admin_token')")
-        headers = {"Authorization": f"Bearer {token}"}
-
+        """The data routes answer the signed-in session's cookie, and nothing without it."""
         for path in DATA_ROUTES:
             assert page.request.get(f"{CONSOLE_URL}{path}").status == 401, path
 
+        sign_in(page)  # the context's request API shares the browser's session cookie
+
         # Test metrics endpoint (pipeline-grouped structure)
-        response = page.request.get(f"{CONSOLE_URL}/api/metrics", headers=headers)
+        response = page.request.get(f"{CONSOLE_URL}/api/metrics")
         assert response.ok
         data = response.json()
         assert "pipelines" in data
@@ -584,19 +582,19 @@ class TestDashboardUI:
         assert "timestamp" in data
 
         # Test services endpoint (grouped by pipeline)
-        response = page.request.get(f"{CONSOLE_URL}/api/services", headers=headers)
+        response = page.request.get(f"{CONSOLE_URL}/api/services")
         assert response.ok
         services = response.json()
         assert isinstance(services, dict)
 
         # Test queues endpoint (grouped by pipeline)
-        response = page.request.get(f"{CONSOLE_URL}/api/queues", headers=headers)
+        response = page.request.get(f"{CONSOLE_URL}/api/queues")
         assert response.ok
         queues = response.json()
         assert isinstance(queues, dict)
 
         # Test databases endpoint (flat list, unchanged)
-        response = page.request.get(f"{CONSOLE_URL}/api/databases", headers=headers)
+        response = page.request.get(f"{CONSOLE_URL}/api/databases")
         assert response.ok
         databases = response.json()
         assert isinstance(databases, list)
