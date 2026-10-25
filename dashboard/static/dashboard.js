@@ -1151,7 +1151,7 @@ class Dashboard {
                 return 'text-[10px] px-2 py-0.5 rounded uppercase font-bold bg-red-500/10 text-red-400 border border-red-500/20';
             case 'extracting':
             case 'active':
-                return 'text-[10px] px-2 py-0.5 rounded uppercase font-bold bg-purple-500/10 text-purple-400 border border-purple-500/20';
+                return 'text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-active';
             default:
                 return 'text-[10px] px-2 py-0.5 rounded uppercase font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20';
         }
