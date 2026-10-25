@@ -6,21 +6,22 @@ datastore going up or down, the broker scrape failing or recovering, a dead-lett
 emptying. A reconnecting client receives the ring as its backlog, so every operator sees the same
 history.
 
-The queue health rules (no consumer, stalled) are deliberately not re-derived here. The matrix and
-the attention bar compute them in the browser (``QueueHealth`` in ``static/dashboard.js``), and a
-second copy would drift. The server reports only what it observes directly.
+The queue health rules (no consumer, stalled) live here too, so every operator sees the same
+verdict and the same events, and a stall is detected while no browser is open. Each work queue's
+current verdict is also written to ``QueueInfo.condition``, which the matrix and the attention bar
+render as given.
 """
 
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
-    from dashboard.dashboard import SystemMetrics
+    from dashboard.dashboard import QueueCondition, SystemMetrics
 
 
 # The most events the ring keeps; the oldest is dropped first.
@@ -37,6 +38,22 @@ _SERVICE_DOWN = frozenset({"unhealthy", "unknown", "unreachable"})
 _OBSERVABILITY = "observability"
 
 
+# A work queue with a backlog, consumers and computed zero acks for this long is stalled.
+STALL_SECONDS = 60
+# The stall label stops counting at this span ("5m+").
+STALL_LABEL_CAP_SECONDS = 300
+# A longer silence between readings starts a queue's zero-ack run afresh.
+GAP_SECONDS = 30
+
+KIND_NO_CONSUMER = "no-consumer"
+KIND_STALLED = "stalled"
+
+
+def _duration(seconds: float) -> str:
+    """The short form the matrix has always used: 45s, 3m."""
+    return f"{max(1, round(seconds))}s" if seconds < 60 else f"{round(seconds / 60)}m"
+
+
 def _plural(count: int) -> str:
     return f"{count} message" if count == 1 else f"{count} messages"
 
@@ -51,6 +68,7 @@ class EventDetector:
     """
 
     dead_letter_queues: frozenset[str] = frozenset()
+    work_queues: frozenset[str] = frozenset()
     capacity: int = EVENT_RING_SIZE
     ring: deque[dict[str, Any]] = field(init=False)
     _next_id: int = field(default=1, init=False)
@@ -59,6 +77,11 @@ class EventDetector:
     _datastores: dict[str, bool] = field(default_factory=dict, init=False)
     _available: dict[str, bool] = field(default_factory=dict, init=False)
     _dlq_depth: dict[tuple[str, str], int] = field(default_factory=dict, init=False)
+    # Per work queue: when the current run of computed zero acks with a backlog began, the time of
+    # the last reading, and the condition last reported (None while it is healthy).
+    _zero_since: dict[tuple[str, str], datetime] = field(default_factory=dict, init=False)
+    _seen_at: dict[tuple[str, str], datetime] = field(default_factory=dict, init=False)
+    _conditions: dict[tuple[str, str], str | None] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         """Size the ring."""
@@ -69,11 +92,15 @@ class EventDetector:
         return list(self.ring)
 
     def observe(self, metrics: SystemMetrics) -> list[dict[str, Any]]:
-        """Compare one reading with the last; record and return the events it produced."""
+        """Compare one reading with the last; record and return the events it produced.
+
+        Each work queue of the reading also gets its current ``condition`` set.
+        """
         found: list[tuple[str, str, str, str]] = []  # (level, kind, subject, message)
         for pipeline_id, pipeline in metrics.pipelines.items():
             self._services_of(pipeline_id, pipeline.services, found)
             self._broker_of(pipeline_id, pipeline, found)
+            self._work_queues_of(pipeline_id, pipeline, metrics.timestamp, found)
         self._platform_of(metrics.platform, found)
         self._datastores_of(metrics, found)
         stamp = metrics.timestamp.astimezone(UTC).isoformat()
@@ -151,3 +178,52 @@ class EventDetector:
                 found.append((LEVEL_ERROR, "dlq-grew", queue.name, f"{queue.name} grew by {_plural(queue.messages - before)} to {queue.messages}"))
             elif queue.messages == 0:
                 found.append((LEVEL_INFO, "dlq-emptied", queue.name, f"{queue.name} emptied"))
+
+    def _work_queues_of(self, pipeline_id: str, pipeline: Any, at: datetime, found: list[tuple[str, str, str, str]]) -> None:
+        """Raise and clear the no-consumer and stalled conditions of each work queue.
+
+        No consumer: a backlog and no consumer, at once. Stalled: a backlog, consumers, and a
+        computed zero ack rate for ``STALL_SECONDS``, measured from the first reading of the run
+        (conservative by up to one poll). An unknown ack rate is not a zero and ends the run, as
+        does a broker scrape failure or a gap of more than ``GAP_SECONDS`` between readings.
+        """
+        if not pipeline.queues_available:
+            for state in (self._zero_since, self._seen_at, self._conditions):
+                for key in [key for key in state if key[0] == pipeline_id]:
+                    del state[key]
+            return
+        for queue in pipeline.queues:
+            if queue.name not in self.work_queues:
+                continue
+            key = (pipeline_id, queue.name)
+            last = self._seen_at.get(key)
+            if last is not None and (at - last).total_seconds() > GAP_SECONDS:
+                self._zero_since.pop(key, None)
+            self._seen_at[key] = at
+            if queue.messages > 0 and queue.ack_rate == 0:
+                self._zero_since.setdefault(key, at)
+            else:
+                self._zero_since.pop(key, None)
+            condition = self._condition_of(queue, (at - self._zero_since[key]).total_seconds() if key in self._zero_since else 0)
+            queue.condition = condition
+            kind = condition.kind if condition else None
+            known = key in self._conditions
+            previous = self._conditions.get(key)
+            self._conditions[key] = kind
+            if not known or previous == kind:
+                continue
+            if condition is not None:
+                found.append((LEVEL_ERROR, f"queue-{kind}", queue.name, f"{queue.name}: {condition.label}"))
+            else:
+                found.append((LEVEL_INFO, "queue-recovered", queue.name, f"{queue.name} is {'drained' if queue.messages == 0 else 'flowing'}"))
+
+    @staticmethod
+    def _condition_of(queue: Any, zero_seconds: float) -> QueueCondition | None:
+        from dashboard.dashboard import QueueCondition  # noqa: PLC0415 - dashboard imports this module
+
+        if queue.messages > 0 and queue.consumers == 0:
+            return QueueCondition(kind=KIND_NO_CONSUMER, label="NO CONSUMER")
+        if queue.messages > 0 and queue.consumers > 0 and zero_seconds >= STALL_SECONDS:
+            span = f"{_duration(STALL_LABEL_CAP_SECONDS)}+" if zero_seconds >= STALL_LABEL_CAP_SECONDS else _duration(zero_seconds)
+            return QueueCondition(kind=KIND_STALLED, label=f"STALLED · no acks {span}")
+        return None

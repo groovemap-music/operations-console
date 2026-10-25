@@ -91,10 +91,10 @@ describe('RunProgress.headline', () => {
         });
     });
 
-    it('reads the matrix rules: a QueueHealth stall is the reason', () => {
+    it('reads the server verdict: a stalled condition is the reason', () => {
         const samples = [];
         for (let i = 0; i < 31; i++) {
-            QueueHealth.record(samples, { t: i * 2000, messages: 5000, messages_ready: 4800, messages_unacknowledged: 200, consumers: 1, message_rate: 10, ack_rate: 0 });
+            QueueHealth.record(samples, { t: i * 2000, messages: 5000, messages_ready: 4800, messages_unacknowledged: 200, consumers: 1, message_rate: 10, ack_rate: 0, condition: { kind: 'stalled', label: 'STALLED · no acks 1m' } });
         }
         const result = headline([cell({ health: QueueHealth.assessQueue(samples), meanAck: QueueHealth.meanAckRate(samples) })]);
         expect(result.text).toBe('Cannot finish: Graphinator · Releases stalled');
@@ -176,7 +176,7 @@ describe('the Overview with a run', () => {
         const pipeline = dashboard.topology.pipelines[0];
         for (let i = 0; i < count; i++) {
             const queues = pipeline.consumers.flatMap(c => c.queues.flatMap(q => [
-                { name: q.name, messages: 5000, messages_ready: 4800, messages_unacknowledged: 200, consumers: 1, message_rate: 10, ack_rate: q.name === stalled ? 0 : ack },
+                { name: q.name, messages: 5000, messages_ready: 4800, messages_unacknowledged: 200, consumers: 1, message_rate: 10, ack_rate: q.name === stalled ? 0 : ack, condition: q.name === stalled ? { kind: 'stalled', label: 'STALLED · no acks 1m' } : null },
                 { name: q.dead_letter_queue, messages: 0, messages_ready: 0, messages_unacknowledged: 0, consumers: 0, message_rate: 0, ack_rate: 0 },
             ]));
             dashboard.updateQueues('discogs', queues, NOW - (count - 1 - i) * 2000);

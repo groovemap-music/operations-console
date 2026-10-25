@@ -149,7 +149,7 @@ describe('deep links on the page', () => {
         dashboard.linkBases = { grafana: GRAFANA, traces: GRAFANA };
         dashboard.updateDashboard({
             timestamp: 1,
-            pipelines: { discogs: { services: [{ name: 'tableinator', status: 'unhealthy' }], queues: [queueOf(QUEUE, { consumers: 0 })], queues_available: true } },
+            pipelines: { discogs: { services: [{ name: 'tableinator', status: 'unhealthy' }], queues: [queueOf(QUEUE, { consumers: 0, condition: { kind: 'no-consumer', label: 'NO CONSUMER' } })], queues_available: true } },
         });
         const byKind = (kind) => document.querySelector(`[data-attention-kind="${kind}"]`).closest('li');
         expect([...byKind('no-consumer').querySelectorAll('a')].map(a => a.getAttribute('href'))[0])

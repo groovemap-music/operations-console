@@ -15,7 +15,8 @@ PHONE = {"width": 390, "height": 844}
 # Push 36 readings 2 s apart (70 s of server time) for every queue the drawn topology names:
 # `tableinator · releases` (or the second consumer's) stops acknowledging while connected, the
 # first consumer's MusicBrainz releases DLQ grows, and `graphinator · artists` holds a flat DLQ.
-# Everything else flows. The history is reset first, so live readings do not mix in.
+# Everything else flows. The stalled queue carries the `condition` the server's EventDetector would
+# have set after 60 s of zero acks. The history is reset first, so live readings do not mix in.
 SCENARIO = """
 () => {
   const dashboard = window.dashboard;
@@ -29,7 +30,8 @@ SCENARIO = """
         let messages = 200 + qi * 900 + ci * 15000, ack = 400 + qi * 50;
         if (p.id === 'discogs' && ci === 1 && q.entity === 'releases') { messages = 442000 + i * 1200; ack = 0; }
         queues.push({ name: q.name, messages, messages_ready: Math.max(0, messages - 200), messages_unacknowledged: Math.min(200, messages),
-                      consumers: 1, message_rate: ack + 5, ack_rate: ack });
+                      consumers: 1, message_rate: ack + 5, ack_rate: ack,
+                      condition: ack === 0 ? { kind: 'stalled', label: 'STALLED · no acks 1m' } : null });
         let dlq = 0;
         if (p.id === 'discogs' && ci === 0 && q.entity === 'artists') dlq = 12;
         if (p.id === 'musicbrainz' && ci === 0 && q.entity === 'releases') dlq = 3000 + i * 40;

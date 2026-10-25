@@ -4,7 +4,7 @@ import { DATASTORES, discogs, makeDashboard, queue as queueOf } from './overview
 /**
  * A null rate means "not computable this interval" (first poll, missed poll, counter reset). The
  * matrix never treats it as a zero: a backlog with only unknown ack rates is not stalled and its
- * lag is unknown, while a computed zero sustained for 60 s is a stall.
+ * lag is unknown, while a stall is the server's verdict, shown as it arrives.
  */
 const NAME = 'groovemap-discogs-graphinator-artists';
 
@@ -33,8 +33,8 @@ describe('Dashboard unknown rates', () => {
         expect(cell().className).toBe('mx-cell mx-lag-unknown');
     });
 
-    it('reports a stall from a computed zero ack rate held for 60 s', () => {
-        run({ message_rate: 3, ack_rate: 0 });
+    it('shows the stall the server reports for a computed zero ack rate', () => {
+        run({ message_rate: 3, ack_rate: 0, condition: { kind: 'stalled', label: 'STALLED · no acks 1m' } });
         expect(cell().dataset).toMatchObject({ state: 'crit', kind: 'stalled' });
         expect(cell().querySelector('.mx-flag').textContent).toBe('◆ STALLED · no acks 1m');
     });

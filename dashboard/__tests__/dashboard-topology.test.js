@@ -105,7 +105,7 @@ describe('Overview matrix rendered from the topology', () => {
         const start = Date.parse('2026-10-24T00:00:00Z');
         for (let i = 0; i <= 31; i++) {
             push(dashboard, 'synthetic', [
-                queueOf('acme-synthetic-beta-artists', { messages: 4000 + i * 100, messages_unacknowledged: 200, ack_rate: 0, message_rate: 50 }),
+                queueOf('acme-synthetic-beta-artists', { messages: 4000 + i * 100, messages_unacknowledged: 200, ack_rate: 0, message_rate: 50, condition: { kind: 'stalled', label: 'STALLED · no acks 1m' } }),
                 queueOf('acme-synthetic-beta-artists.dlq', { messages: 0, consumers: 0 }),
                 queueOf('acme-synthetic-alpha-tracks', { messages: 20, ack_rate: 5 }),
                 queueOf('acme-synthetic-alpha-tracks.dlq', { messages: 10 + i, consumers: 0 }),
@@ -123,16 +123,27 @@ describe('Overview matrix rendered from the topology', () => {
         expect(dlq.querySelector('.mx-dlq').classList.contains('mx-dlq-crit')).toBe(true);
     });
 
-    it('logs a queue entering a critical or warning state once, not on every update', () => {
+    it('logs a dead-letter queue entering a warning state once, not on every update', () => {
         dashboard.renderTopology(topology(synthetic()));
         const log = vi.spyOn(dashboard, 'addLogEntry');
         for (let i = 0; i < 3; i++) {
-            push(dashboard, 'synthetic', [queueOf('acme-synthetic-gamma-tracks', { messages: 50_000, consumers: 0 })], new Date(1e12 + i * 2000).toISOString());
+            push(dashboard, 'synthetic', [queueOf('acme-synthetic-gamma-tracks.dlq', { messages: 3, consumers: 0 })], new Date(1e12 + i * 2000).toISOString());
         }
         expect(log).toHaveBeenCalledTimes(1);
-        expect(log).toHaveBeenCalledWith('Tracks → Gamma: NO CONSUMER', 'error');
-        push(dashboard, 'synthetic', [queueOf('acme-synthetic-gamma-tracks', { messages: 50_000, consumers: 1, ack_rate: 900 })], new Date(1e12 + 8000).toISOString());
-        expect(log).toHaveBeenLastCalledWith('Tracks → Gamma: flowing', 'info');
+        expect(log).toHaveBeenCalledWith('Tracks → Gamma: DLQ 3', 'warning');
+    });
+
+    it('leaves a work queue\'s no-consumer and stall to the server events, in the log and in the cell', () => {
+        dashboard.renderTopology(topology(synthetic()));
+        const log = vi.spyOn(dashboard, 'addLogEntry');
+        const condition = { kind: 'no-consumer', label: 'NO CONSUMER' };
+        push(dashboard, 'synthetic', [queueOf('acme-synthetic-gamma-tracks', { messages: 50_000, consumers: 0 })], new Date(1e12).toISOString());
+        expect(cell('synthetic', 'gamma', 'tracks').dataset.state).toBe('ok');
+        push(dashboard, 'synthetic', [queueOf('acme-synthetic-gamma-tracks', { messages: 50_000, consumers: 0, condition })], new Date(1e12 + 2000).toISOString());
+        expect(cell('synthetic', 'gamma', 'tracks').dataset).toMatchObject({ state: 'crit', kind: 'no-consumer' });
+        push(dashboard, 'synthetic', [queueOf('acme-synthetic-gamma-tracks', { messages: 50_000, consumers: 1, ack_rate: 900 })], new Date(1e12 + 4000).toISOString());
+        expect(cell('synthetic', 'gamma', 'tracks').dataset.state).toBe('ok');
+        expect(log).not.toHaveBeenCalled();
     });
 
     it('holds a reading that arrives before the topology and applies it once the layout is drawn', async () => {
