@@ -92,7 +92,7 @@ class TestAdminJsPrefixesAreOverridable:
     def test_admin_js_fetches_queue_prefixes(self) -> None:
         source = (REPO_ROOT / "dashboard" / "static" / "admin.js").read_text(encoding="utf-8")
         assert "/api/queue-prefixes" in source, "admin.js must fetch the live prefixes"
-        assert "loadQueuePrefixes(this.token)" in source, "the fetched prefixes must actually be applied before rendering"
+        assert "loadQueuePrefixes().then(() => this.renderDlqList())" in source, "the fetched prefixes must actually be applied before rendering"
 
 
 class TestQueueRegexFollowsPrefixes:

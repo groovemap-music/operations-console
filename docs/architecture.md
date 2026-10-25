@@ -46,18 +46,22 @@ the only supported promotion path.
 
 ## Browser and API surfaces
 
-The console is one shell at `/`: a login form, then a live Overview followed by the admin tabs. Only `/health` and the shell's static assets are public. Every console data route requires a bearer that `catalog-api` confirms through the promoted `admin_session` operation; the console caches a confirmed session for at most 30 seconds, keyed by a digest of the token, and treats any other answer as no session. A bearer `catalog-api` just called invalid is answered from a 10-second record, and every check shares one pooled HTTP client. The live Overview reaches its WebSocket with a single-use, 30-second ticket from an authenticated `POST /api/ws-ticket`, which the console strips from the query string before logging or tracing; the socket re-validates its bearer with `catalog-api`, bypassing the cache, when it opens and every 30 seconds after, closing with 4401 for a dead session and 4503 when `catalog-api` cannot answer, which the browser retries on an exponential backoff. No interactive API documentation is served. Admin tabs send bearer-authenticated requests through a constrained proxy whose allowed paths come from the promoted `catalog-api` contract. Queue names are derived from the promoted exchange prefixes; arbitrary queue and URL input is rejected.
+The console is one shell at `/`: a login form, then a live Overview followed by the admin tabs. Only `/health` and the shell's static assets are public. Signing in stores the bearer `catalog-api` issues in an HttpOnly, `SameSite=Strict` session cookie (`Secure` and `__Host-`-prefixed unless `SESSION_COOKIE_SECURE=false`), so page script never sees it; an explicit `Authorization` header still takes precedence for clients that are not a browser. A state-changing request authenticated by the cookie must come from the console's own origin and carry the `X-GrooveMap-Console` header, so no other page, not even an origin in `CORS_ORIGINS`, can forge one; CORS never admits credentials. Every console data route requires a bearer that `catalog-api` confirms through the promoted `admin_session` operation; the console caches a confirmed session for at most 30 seconds, keyed by a digest of the token, and treats any other answer as no session. A bearer `catalog-api` just called invalid is answered from a 10-second record, and every check shares one pooled HTTP client. The live Overview reaches its WebSocket with a single-use, 30-second ticket from an authenticated `POST /api/ws-ticket`, which the console strips from the query string before logging or tracing; the socket re-validates its bearer with `catalog-api`, bypassing the cache, when it opens and every 30 seconds after, closing with 4401 for a dead session and 4503 when `catalog-api` cannot answer, which the browser retries on an exponential backoff. No interactive API documentation is served. Admin tabs send cookie-authenticated requests through a constrained proxy, which forwards the bearer as `Authorization` to paths allowed by the promoted `catalog-api` contract. Queue names are derived from the promoted exchange prefixes; arbitrary queue and URL input is rejected.
 
 ```mermaid
 sequenceDiagram
     participant Browser
     participant Console as operations-console
     participant API as catalog-api
-    Browser->>Console: Data request with bearer
+    Browser->>Console: POST /admin/api/login
+    Console->>API: Credentials
+    API-->>Console: Bearer
+    Console-->>Browser: HttpOnly session cookie (body has no bearer)
+    Browser->>Console: Data request with the cookie
     Console->>API: GET /api/admin/auth/session (cached up to 30 s)
     API-->>Console: 200 session, or 401/403
-    Console-->>Browser: Data, or 401 and a reason
-    Browser->>Console: POST /api/ws-ticket with bearer
+    Console-->>Browser: Data, or 401 and a reason (cookie cleared when invalid)
+    Browser->>Console: POST /api/ws-ticket with the cookie and X-GrooveMap-Console
     Console-->>Browser: Single-use ticket, 30 s
     Browser->>Console: WebSocket /ws?ticket=...
     Console-->>Browser: Live metrics, or close 4401

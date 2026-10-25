@@ -4,12 +4,17 @@
 import json
 import re
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 import pytest
 from playwright.sync_api import Page, Route, expect
 
 from tests.e2e_console import freeze_live_feed, sign_in
 from tests.test_dashboard_ui import DESKTOP, PHONE, SCENARIO
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 STARTED = datetime.now(UTC) - timedelta(hours=2)
@@ -45,6 +50,18 @@ HEALTHY = """
   }
 }
 """
+
+
+@pytest.fixture(autouse=True)
+def settle_progress_routes(page: Page) -> Iterator[None]:
+    """Let the in-flight /api/progress handlers finish or abort before the page is closed.
+
+    A handler awaits ``route.fetch``; when a test ends while the console's poll is mid-request,
+    closing the context disposes that request and Playwright reports the failure against whichever
+    test runs next. ``unroute_all`` waits for running handlers and ignores their errors.
+    """
+    yield
+    page.unroute_all(behavior="ignoreErrors")
 
 
 def serve_runs(page: Page, runs: list[dict]) -> None:
@@ -93,6 +110,10 @@ def open_console(page: Page, viewport: dict[str, int], scenario: str) -> None:
     sign_in(page)
     freeze_live_feed(page)
     page.evaluate(scenario)
+    # The headline reads "Progress unavailable: no history from the run's start" until the first
+    # /api/progress answer lands, and that answer chains through the extraction history, a topology
+    # fetch and the progress route. Wait for it by its own condition, not by the headline's text.
+    page.wait_for_function("() => window.dashboard.runProgress.discogs && window.dashboard.runProgress.discogs.key", timeout=30000)
 
 
 @pytest.mark.e2e

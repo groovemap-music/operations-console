@@ -27,9 +27,12 @@ const AUDIT_POLL_MS = 60000;
 // Every rule reads a short in-browser history of one queue: samples of
 // `{ t, messages, messages_ready, messages_unacknowledged, consumers, message_rate, ack_rate }`,
 // oldest first, `t` in milliseconds of server time. A null rate is "not computable this interval"
-// (first poll, missed poll, counter reset): it is never a zero and never part of a stall.
+// (first poll, missed poll, counter reset): it is never a zero.
+//
+// The stalled and no-consumer verdicts are not decided here: the console server's EventDetector
+// decides them (dashboard/events.py) and sends each work queue's as `condition`, so every operator
+// sees the same one, and the same events, whichever browser is open.
 const QueueHealth = (() => {
-    const STALL_SECONDS = 60;       // backlog, consumers, and computed zero acks for this long: stalled
     const TREND_SECONDS = 300;      // the window for DLQ growth, the backlog trend, and the mean ack rate
     const GAP_SECONDS = 30;         // a longer silence between samples starts the history afresh
     const TREND_MIN_CHANGE = 1000;  // backlog changes smaller than a few prefetch windows read as steady
@@ -53,8 +56,9 @@ const QueueHealth = (() => {
     const latest = samples => samples[samples.length - 1];
     const seconds = (from, to) => (to.t - from.t) / 1000;
 
-    // Seconds of the current run of computed zero acks with a backlog, measured from its first
-    // sample: conservative by up to one poll, so a stall is never reported early.
+    // Seconds of the current run of computed zero acks with a backlog in this browser's history, for
+    // the drawer's "No acks for" figure. A display statistic only: whether the queue is stalled is
+    // the server's verdict (`condition`).
     function zeroAckSeconds(samples) {
         const last = latest(samples);
         let start = null;
@@ -101,17 +105,12 @@ const QueueHealth = (() => {
         return { direction: change > 0 ? 'rising' : 'falling', change };
     }
 
-    // A work queue: critical when stalled or without a consumer, otherwise ok and drawn quietly.
-    // A filling queue during an extraction is not an alarm.
+    // A work queue: critical when the server reports it stalled or without a consumer, otherwise ok
+    // and drawn quietly. A filling queue during an extraction is not an alarm.
     function assessQueue(samples) {
         const last = latest(samples);
         if (!last) return { state: 'unknown', kind: 'missing', label: 'not reported' };
-        if (last.messages > 0 && last.consumers === 0) return { state: 'crit', kind: 'no-consumer', label: 'NO CONSUMER' };
-        const zero = zeroAckSeconds(samples);
-        if (last.messages > 0 && last.consumers > 0 && zero >= STALL_SECONDS) {
-            const span = zero >= TREND_SECONDS ? `${formatDuration(TREND_SECONDS)}+` : formatDuration(zero);
-            return { state: 'crit', kind: 'stalled', label: `STALLED · no acks ${span}` };
-        }
+        if (last.condition) return { state: 'crit', kind: last.condition.kind, label: last.condition.label };
         if (last.messages === 0) return { state: 'ok', kind: 'drained', label: 'drained' };
         return { state: 'ok', kind: 'flowing', label: 'flowing' };
     }
@@ -146,7 +145,7 @@ const QueueHealth = (() => {
     }
 
     return {
-        STALL_SECONDS, TREND_SECONDS, GAP_SECONDS, TREND_MIN_CHANGE, LAG_BINS,
+        TREND_SECONDS, GAP_SECONDS, TREND_MIN_CHANGE, LAG_BINS,
         record, zeroAckSeconds, meanAckRate, lagSeconds, lagBin, depthChange, coverage, trend,
         assessQueue, assessDlq, worst, formatCount, formatDuration,
     };
@@ -559,19 +558,19 @@ function matrixLayout(consumerCount, narrow) {
 }
 
 // The Overview's live view. It reads nothing until admin.js confirms a session and announces
-// it with `console:authenticated`; `console:signed-out` stops it again. Every data request and
-// every WebSocket ticket carries the session's bearer.
+// it with `console:authenticated`; `console:signed-out` stops it again. The bearer lives in an
+// HttpOnly cookie the browser attaches by itself; `session` only tells one sign-in from the next.
 class Dashboard {
     constructor() {
         this.ws = null;
-        this.token = null;
+        this.session = null;
         this.active = false;
         this.connecting = false;
         this.reconnectTimer = null;
         this.reconnectDelay = RECONNECT_BASE_MS;
         // The System Event Log, newest first: events the server detected and streamed (`server`),
-        // recent operator actions from the audit log (`audit`), and queue health changes the matrix
-        // derives in this browser (`local`). Connect and disconnect are the connection indicator's
+        // recent operator actions from the audit log (`audit`), and dead-letter queue health changes
+        // the matrix derives in this browser (`local`). Connect and disconnect are the connection indicator's
         // business, never log entries.
         this.activityLog = [];
         this.maxLogEntries = 100;
@@ -618,7 +617,7 @@ class Dashboard {
         this.progressTimer = null;
         this.overviewView = 'matrix';
 
-        document.addEventListener('console:authenticated', (event) => this.start(event.detail?.token));
+        document.addEventListener('console:authenticated', (event) => this.start(event.detail?.session));
         document.addEventListener('console:signed-out', () => this.stop());
 
         this.narrowViewport = window.matchMedia?.(`(max-width: ${MATRIX_STACKED_MAX_WIDTH}px)`);
@@ -651,10 +650,10 @@ class Dashboard {
 
     // ─── Session lifecycle ────────────────────────────────────────────────────
 
-    start(token) {
-        if (!token) return;
-        const resumed = this.active && this.token === token;
-        this.token = token;
+    start(session) {
+        if (session == null) return;
+        const resumed = this.active && this.session === session;
+        this.session = session;
         this.active = true;
         if (resumed) {
             // admin.js re-confirmed the session after a refusal: reconnect on the backoff.
@@ -672,7 +671,7 @@ class Dashboard {
 
     stop() {
         this.active = false;
-        this.token = null;
+        this.session = null;
         // Nothing of the signed-in view outlives the session; the next one fetches it afresh.
         this.topology = null;
         this.pendingData = null;
@@ -714,16 +713,18 @@ class Dashboard {
         document.dispatchEvent(new CustomEvent('console:session-check'));
     }
 
-    _authHeaders() {
-        return { Authorization: `Bearer ${this.token}` };
+    // The console refuses a state-changing request without this header, so a cross-site page
+    // cannot ride the session cookie; every request sends it.
+    _consoleHeaders() {
+        return { 'X-GrooveMap-Console': '1' };
     }
 
     // ─── WebSocket ────────────────────────────────────────────────────────────
 
-    // Browsers cannot send Authorization on a WebSocket, so each connection first trades the
-    // bearer for a single-use ticket (valid 30 s) and presents it as `/ws?ticket=...`.
+    // The socket authenticates with a ticket, never the cookie, so each connection first trades
+    // the cookie session for a single-use ticket (valid 30 s) and presents it as `/ws?ticket=...`.
     async _fetchTicket() {
-        const response = await fetch('/api/ws-ticket', { method: 'POST', headers: this._authHeaders(), cache: 'no-store' });
+        const response = await fetch('/api/ws-ticket', { method: 'POST', headers: this._consoleHeaders(), cache: 'no-store' });
         if (response.status === 401) {
             this.requestSessionCheck();
             return null;
@@ -978,10 +979,10 @@ class Dashboard {
 
     async fetchAlerts() {
         if (!this.active) return;
-        const token = this.token;
+        const session = this.session;
         let alerts;
         try {
-            const response = await fetch('/api/alerts', { headers: this._authHeaders(), cache: 'no-store' });
+            const response = await fetch('/api/alerts', { headers: this._consoleHeaders(), cache: 'no-store' });
             if (SESSION_REFUSALS.has(response.status)) {
                 this.requestSessionCheck();
                 return;
@@ -991,7 +992,7 @@ class Dashboard {
         } catch {
             alerts = { configured: true, available: false, alerts: [], note: 'Grafana alerts unavailable: showing the problems derived from the live feed only' };
         }
-        if (!this.active || this.token !== token) return;
+        if (!this.active || this.session !== session) return;
         this.alerts = alerts.configured ? alerts : null;
         this.updateAttention();
     }
@@ -1001,10 +1002,10 @@ class Dashboard {
     // The base URLs come from the console (never the page), behind the session like every data route.
     async fetchLinkBases() {
         if (!this.active) return;
-        const token = this.token;
+        const session = this.session;
         let bases = { grafana: null, traces: null };
         try {
-            const response = await fetch('/api/links', { headers: this._authHeaders(), cache: 'no-store' });
+            const response = await fetch('/api/links', { headers: this._consoleHeaders(), cache: 'no-store' });
             if (SESSION_REFUSALS.has(response.status)) {
                 this.requestSessionCheck();
                 return;
@@ -1016,7 +1017,7 @@ class Dashboard {
         } catch {
             // No links is the safe answer when the bases cannot be read.
         }
-        if (!this.active || this.token !== token) return;
+        if (!this.active || this.session !== session) return;
         this.linkBases = bases;
         this._refreshLinks();
     }
@@ -1087,7 +1088,7 @@ class Dashboard {
     async fetchInitialData() {
         try {
             await this.ensureTopology();
-            const response = await fetch('/api/metrics', { headers: this._authHeaders() });
+            const response = await fetch('/api/metrics', { headers: this._consoleHeaders() });
             if (SESSION_REFUSALS.has(response.status)) {
                 this.requestSessionCheck();
             } else if (response.ok) {
@@ -1215,7 +1216,7 @@ class Dashboard {
         return this.topology?.pipelines.find(p => p.id === pipelineName);
     }
 
-    // The topology is fetched with the session's bearer; a refusal hands the decision to admin.js.
+    // The topology is fetched within the session; a refusal hands the decision to admin.js.
     // Concurrent callers share one request, and a failure leaves `topology` unset so the next
     // metrics update tries again.
     ensureTopology() {
@@ -1226,7 +1227,7 @@ class Dashboard {
 
     async _loadTopology() {
         try {
-            const response = await fetch('/api/topology', { headers: this._authHeaders() });
+            const response = await fetch('/api/topology', { headers: this._consoleHeaders() });
             if (SESSION_REFUSALS.has(response.status)) {
                 this.requestSessionCheck();
                 return false;
@@ -1461,6 +1462,7 @@ class Dashboard {
                         consumers: reading.consumers,
                         message_rate: reading.message_rate ?? null,
                         ack_rate: reading.ack_rate ?? null,
+                        condition: reading.condition ?? null,
                     });
                     this.history.set(name, samples);
                 }
@@ -1561,10 +1563,11 @@ class Dashboard {
         return label.join('; ');
     }
 
-    // Log a queue entering a critical or warning state, and leaving one, once per change.
+    // Log a dead-letter queue entering a critical or warning state, and leaving one, once per
+    // change. A work queue's stall and missing consumer are server events, streamed to every operator.
     _logHealthChange(model) {
         const where = `${this._entityLabel(model.entity)} → ${model.consumer.label}`;
-        for (const [name, health] of [[model.queue?.name, model.health], [model.queue?.dead_letter_queue, model.dlq]]) {
+        for (const [name, health] of [[model.queue?.dead_letter_queue, model.dlq]]) {
             if (!name || health.state === 'unknown') continue;
             const previous = this.healthKinds[name];
             this.healthKinds[name] = health.kind;
@@ -1881,7 +1884,7 @@ class Dashboard {
     // ─── Run progress: the ETA headline and the Run progress view ──────────────
 
     // Runs come from the extraction history through the console's /admin/api proxy with this
-    // session's bearer, like the audit log; their progress from /api/progress.
+    // session's cookie, like the audit log; their progress from /api/progress.
     startProgressPolling() {
         this.stopProgressPolling();
         this.fetchRunProgress();
@@ -1895,9 +1898,9 @@ class Dashboard {
 
     async fetchRunProgress() {
         if (!this.active) return;
-        const token = this.token;
+        const session = this.session;
         try {
-            const response = await fetch('/admin/api/extractions', { headers: this._authHeaders(), cache: 'no-store' });
+            const response = await fetch('/admin/api/extractions', { headers: this._consoleHeaders(), cache: 'no-store' });
             if (SESSION_REFUSALS.has(response.status)) {
                 this.requestSessionCheck();
                 return;
@@ -1905,22 +1908,22 @@ class Dashboard {
             // A failed read keeps the runs already known; their progress still refreshes below.
             if (response.ok) {
                 const body = await response.json();
-                if (!this.active || this.token !== token) return;
+                if (!this.active || this.session !== session) return;
                 this.runs = RunProgress.latestRuns(body.extractions);
             }
         } catch {
             // Offline or malformed: keep what is known.
         }
-        if (!this.active || this.token !== token || !(await this.ensureTopology())) return;
-        await Promise.all(this.topology.pipelines.map(pipeline => this._fetchPipelineProgress(pipeline, token)));
-        if (!this.active || this.token !== token) return;
+        if (!this.active || this.session !== session || !(await this.ensureTopology())) return;
+        await Promise.all(this.topology.pipelines.map(pipeline => this._fetchPipelineProgress(pipeline, session)));
+        if (!this.active || this.session !== session) return;
         for (const pipeline of this.topology.pipelines) this._renderHeadline(pipeline);
         this.renderRunProgress();
     }
 
     // What /api/progress says for the pipeline's run. A finished run's numbers do not change, so
     // they are read once; a 503 from VictoriaMetrics is "history unavailable", not a session refusal.
-    async _fetchPipelineProgress(pipeline, token) {
+    async _fetchPipelineProgress(pipeline, session) {
         const run = this.runs[pipeline.id];
         if (!run) {
             delete this.runProgress[pipeline.id];
@@ -1932,7 +1935,7 @@ class Dashboard {
         const params = new URLSearchParams({ start: run.started_at, ...(end ? { end } : {}) });
         let entry;
         try {
-            const response = await fetch(`/api/progress/${encodeURIComponent(pipeline.id)}?${params}`, { headers: this._authHeaders(), cache: 'no-store' });
+            const response = await fetch(`/api/progress/${encodeURIComponent(pipeline.id)}?${params}`, { headers: this._consoleHeaders(), cache: 'no-store' });
             const body = await response.json().catch(() => ({}));
             if (response.status === 401 || (response.status === 503 && body.detail !== 'history unavailable')) {
                 this.requestSessionCheck();
@@ -1942,7 +1945,7 @@ class Dashboard {
         } catch {
             entry = { key, data: null, error: 'progress request failed' };
         }
-        if (this.active && this.token === token) this.runProgress[pipeline.id] = entry;
+        if (this.active && this.session === session) this.runProgress[pipeline.id] = entry;
     }
 
     // Every cell of one pipeline as the run sees it: the matrix's assessment, the live 5-minute
@@ -2287,7 +2290,7 @@ class Dashboard {
     }
 
     // Operator actions come from the audit log through the console's own /admin/api proxy with
-    // this session's bearer, in the browser: the console holds no service credential for
+    // this session's cookie, in the browser: the console holds no service credential for
     // catalog-api, so nothing about another operator's audit view is kept on the server.
     startAuditPolling() {
         this.stopAuditPolling();
@@ -2310,11 +2313,11 @@ class Dashboard {
 
     async fetchAuditEntries() {
         if (!this.active) return;
-        const token = this.token;
+        const session = this.session;
         try {
             const responses = await Promise.all(AUDIT_ACTIONS.map(action =>
-                fetch(`/admin/api/audit-log?action=${encodeURIComponent(action)}&page_size=${AUDIT_PAGE_SIZE}`, { headers: this._authHeaders(), cache: 'no-store' })));
-            if (!this.active || this.token !== token) return;
+                fetch(`/admin/api/audit-log?action=${encodeURIComponent(action)}&page_size=${AUDIT_PAGE_SIZE}`, { headers: this._consoleHeaders(), cache: 'no-store' })));
+            if (!this.active || this.session !== session) return;
             if (responses.some(r => SESSION_REFUSALS.has(r.status))) {
                 this.requestSessionCheck();
                 return;
@@ -2322,7 +2325,7 @@ class Dashboard {
             // A failed fetch leaves the entries already shown; the next poll tries again.
             if (!responses.every(r => r.ok)) return;
             const bodies = await Promise.all(responses.map(r => r.json()));
-            if (!this.active || this.token !== token) return;
+            if (!this.active || this.session !== session) return;
             const entries = bodies.flatMap(body => body.entries || []).map(entry => ({
                 message: Dashboard.auditMessage(entry), type: 'info', time: Date.parse(entry.created_at),
             })).filter(entry => !Number.isNaN(entry.time));

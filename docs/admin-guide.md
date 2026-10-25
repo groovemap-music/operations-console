@@ -30,12 +30,24 @@ page: until `catalog-api` confirms an admin session it shows only the login form
 sign-in the live **Overview** tab comes first, followed by the admin tabs. The old
 `http://<host>:8003/admin` and `/admin.html` addresses redirect to `/`.
 
+The session cookie is `Secure` by default, so the browser keeps it only over HTTPS or on
+`http://localhost` (Chromium and Firefox; Safari refuses it there too). To sign in over plain
+HTTP from another host, or from Safari on `localhost`, the deployment must set
+`SESSION_COOKIE_SECURE=false`; otherwise sign-in returns straight to the login form. See
+[configuration](configuration.md#admin-session-cookie-and-reverse-proxies).
+
 Every data route (`/api/metrics`, `/api/services`, `/api/queues`, `/api/databases`,
 `/api/queue-prefixes`, `/api/session`, `POST /api/ws-ticket`), every admin proxy route except
 login and logout, and the live WebSocket require a live admin session. Only `/health`, the
 login page and its static assets, the `/admin` redirects, and the login and logout proxy routes
 (which `catalog-api` validates itself) are public; the console serves no `/docs`, `/redoc`, or
-`/openapi.json`. The console holds no JWT secret:
+`/openapi.json`. Signing in sets the bearer `catalog-api` issues as an HttpOnly,
+`SameSite=Strict` session cookie, so no script in the page can read it. The browser sends the
+cookie with every console request, and state-changing requests also carry the
+`X-GrooveMap-Console` header, without which the console refuses them as cross-site. The cookie
+and what a reverse proxy in front of the console must do are described in
+[configuration](configuration.md#admin-session-cookie-and-reverse-proxies). The console holds
+no JWT secret:
 it asks `catalog-api` (`GET /api/admin/auth/session`) whether the bearer is live and caches a
 yes for at most 30 seconds. A 401 or 403 from `catalog-api` (missing, expired, revoked,
 password-changed, or non-admin token) is answered `401` with `"reason": "invalid"`; a
@@ -52,15 +64,21 @@ The console returns to the login form, with the reason shown above it, when you 
 the session expires or is revoked while the console is open, and when `catalog-api` cannot be
 reached to confirm it. The open console re-checks its session every 15 seconds and just after
 the session's expiry. Signing out always reaches `catalog-api`, even when the console cannot
-confirm the session itself, and drops the console's cached copy of the session and every
-outstanding WebSocket ticket for it whatever `catalog-api` answers. The login form says
+confirm the session itself. Whatever `catalog-api` answers, it clears the session cookie and
+drops the console's cached copy of the session and every outstanding WebSocket ticket for it.
+If the console itself cannot be reached, the next load of the page signs out again before it
+resumes anything. The login form says
 "You signed out." only when `catalog-api` answered 2xx (revoked) or 401 (already dead); any
 other answer, or none, is reported as an unconfirmed sign-out, because the session may still be
-valid until it expires. The browser forgets the bearer either way. A session revoked elsewhere
-stops working for HTTP requests within the 30-second cache window.
+valid until it expires. The browser loses the session either way. A session that expires, or
+that `catalog-api` calls invalid, clears the cookie too, but a `catalog-api` outage leaves the
+cookie in place, so a reload resumes the session once it is back. A session revoked elsewhere
+stops working for HTTP requests within the 30-second cache window. Older consoles kept the
+bearer in the browser's `localStorage`. The first load of this console signs that bearer out at
+`catalog-api` and removes it, so you sign in again once.
 
-The live Overview cannot send `Authorization` on a WebSocket, so it first posts the bearer to
-`POST /api/ws-ticket` for a single-use ticket valid for 30 seconds and opens
+The live WebSocket never accepts the session cookie. The Overview first calls
+`POST /api/ws-ticket` with its session for a single-use ticket valid for 30 seconds and opens
 `/ws?ticket=<ticket>`. Opening the socket re-validates the ticket's bearer with `catalog-api`,
 bypassing the cache. A missing, reused, expired, or logged-out ticket is closed with code
 `4401`, as is an open socket whose session stops being valid: the socket asks `catalog-api`

@@ -13,6 +13,16 @@ One shared HTTP client with a bounded connection pool, opened and closed by the 
 carries every check, so concurrent validations queue for a connection instead of opening
 unbounded sockets to catalog-api.
 
+The browser never holds the bearer where page script can read it. Signing in sets it as an
+HttpOnly, SameSite=Strict, Path=/ cookie (``SessionCookie``), Secure and ``__Host-``-prefixed
+unless the deployment explicitly turns that off for plain-HTTP access, and the console reads
+it back from that cookie. An explicit ``Authorization`` header still wins over the cookie, for
+clients that are not a browser. Because a browser attaches the cookie by itself, every
+state-changing request that relies on it must come from the console's own origin and carry
+the ``X-GrooveMap-Console`` header (``require_console_request``): a cross-site form cannot set
+a custom header, and a page on any other origin, even one in ``CORS_ORIGINS``, fails the
+origin check. A session catalog-api calls invalid clears the cookie in the same response.
+
 Browsers cannot set ``Authorization`` on a WebSocket, so an authenticated
 ``POST /api/ws-ticket`` mints a single-use ticket valid for 30 seconds and the browser opens
 ``/ws?ticket=...``. Logging out purges the bearer's outstanding tickets, and the socket
@@ -35,17 +45,21 @@ from collections import OrderedDict
 from collections.abc import Callable  # noqa: TC003  # dataclass fields resolve annotations at runtime.
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Literal
-from urllib.parse import parse_qsl, urlencode
+from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import httpx
 import structlog
 from common import describe_exception
-from fastapi import Request  # noqa: TC002  # FastAPI resolves dependency annotations at runtime.
+from fastapi import HTTPException, Request  # FastAPI resolves dependency annotations at runtime.
 from httpx import AsyncClient
 from starlette.responses import JSONResponse
 
 from dashboard import catalog_admin_contract
+
+
+if TYPE_CHECKING:
+    from starlette.responses import Response
 
 
 logger = structlog.get_logger(__name__)
@@ -70,6 +84,15 @@ _VALIDATION_POOL = httpx.Limits(max_connections=16, max_keepalive_connections=8)
 # RFC 6750 b64token, bounded. Anything else is rejected without a catalog-api round trip, so
 # an anonymous client cannot turn arbitrary header bytes into upstream validation calls.
 _BEARER_TOKEN = re.compile(r"^[A-Za-z0-9\-._~+/]{1,4096}=*$")
+
+# The session cookie. Secure, it takes the `__Host-` prefix, which the browser accepts only when
+# Secure, host-only, and on Path=/, so a sibling subdomain or a plain-HTTP response cannot plant
+# a session of its own under that name. The plain name exists only for an explicit opt-out.
+SESSION_COOKIE = "groovemap_console_session"
+SECURE_SESSION_COOKIE = f"__Host-{SESSION_COOKIE}"
+# Every state-changing request the console's own pages make carries this header with value "1".
+CONSOLE_REQUEST_HEADER = "X-GrooveMap-Console"
+_UNSAFE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 Reason = Literal["missing", "invalid", "unavailable"]
 
@@ -124,6 +147,21 @@ def cache_seconds_from_env(raw: str | None) -> float:
     return value
 
 
+def cookie_secure_from_env(raw: str | None) -> bool:
+    """Parse ``SESSION_COOKIE_SECURE``: Secure unless it is explicitly ``false``.
+
+    The default fails closed: the console cannot tell a TLS-terminating proxy in front of it
+    from plain HTTP, so it never guesses. Anything but true or false fails startup rather than
+    silently dropping the Secure attribute.
+    """
+    value = (raw or "").strip().lower()
+    if value in {"", "true", "1", "yes"}:
+        return True
+    if value in {"false", "0", "no"}:
+        return False
+    raise ValueError(f"SESSION_COOKIE_SECURE must be true or false, got {raw!r}")
+
+
 def token_digest(token: str) -> str:
     """Return the cache key for a bearer token; the token itself is never stored as a key."""
     return hashlib.sha256(token.encode()).hexdigest()
@@ -136,6 +174,55 @@ def bearer_token(authorization: str | None) -> str | None:
     if scheme.lower() != "bearer" or not _BEARER_TOKEN.fullmatch(credentials):
         return None
     return credentials
+
+
+class SessionCookie:
+    """The HttpOnly cookie that carries the admin bearer between the browser and the console.
+
+    Secure (and ``__Host-``-prefixed) unless ``secure`` is False, which only an explicit
+    ``SESSION_COOKIE_SECURE=false`` sets, for a console browsers reach over plain HTTP on a
+    host other than localhost.
+    """
+
+    def __init__(self, secure: bool = True) -> None:
+        """Start Secure unless told otherwise."""
+        self.secure = secure
+
+    @property
+    def name(self) -> str:
+        """The cookie name the console sets and reads."""
+        return SECURE_SESSION_COOKIE if self.secure else SESSION_COOKIE
+
+    def read(self, request: Request) -> str | None:
+        """The bearer the request's session cookie carries, if any."""
+        return request.cookies.get(self.name) or None
+
+    def carried_by(self, request: Request) -> bool:
+        """True when the request authenticates with the cookie rather than its own header."""
+        return not request.headers.get("authorization") and self.read(request) is not None
+
+    def set(self, response: Response, token: str, max_age: int | None) -> None:
+        """Hand ``token`` to the browser for at most ``max_age`` seconds (the session's own life)."""
+        response.set_cookie(self.name, token, max_age=max_age, path="/", secure=self.secure, httponly=True, samesite="strict")
+
+    def clear(self, response: Response) -> None:
+        """Tell the browser to drop the session cookie."""
+        response.delete_cookie(self.name, path="/", secure=self.secure, httponly=True, samesite="strict")
+
+
+session_cookie = SessionCookie()
+
+
+def request_authorization(request: Request) -> str | None:
+    """The request's credential as an ``Authorization`` value: its own header, else the cookie.
+
+    The header wins, so a request that sends one is never also authenticated by the cookie.
+    """
+    header = request.headers.get("authorization")
+    if header:
+        return header
+    token = session_cookie.read(request)
+    return f"Bearer {token}" if token else None
 
 
 class SessionCache:
@@ -426,19 +513,59 @@ gate = SessionGate()
 
 async def require_session(request: Request) -> AdminSession:
     """FastAPI dependency: the request's live admin session, or a SessionRejected response."""
-    session, _ = await gate.validate(request.headers.get("authorization"))
+    session, _ = await gate.validate(request_authorization(request))
     return session
 
 
-async def session_rejected_handler(_request: Request, exc: Exception) -> JSONResponse:
-    """Render a SessionRejected as ``{"detail", "reason"}`` with the matching status."""
+def _same_origin(request: Request) -> bool:
+    """Whether a browser sent ``request`` from the console's own origin, as far as it says.
+
+    ``Sec-Fetch-Site``, which every current browser sends and no page can set, must be
+    ``same-origin``: ``same-site`` would admit another port on the same host, such as Grafana
+    on localhost:3000. A browser too old to send it still sends ``Origin`` on a POST, which must
+    name the host the request was sent to. A client that sends neither is not a browser page.
+    """
+    site = request.headers.get("sec-fetch-site")
+    if site is not None:
+        return site == "same-origin"
+    origin = request.headers.get("origin")
+    if origin is None:
+        return True
+    host = request.headers.get("host")
+    return host is not None and urlsplit(origin).netloc.lower() == host.lower()
+
+
+async def require_console_request(request: Request) -> None:
+    """FastAPI dependency: refuse a state-changing request another origin could have forged.
+
+    Safe methods pass. A request with its own ``Authorization`` header passes too: the header
+    wins over the cookie, and no other page can attach one without the CORS preflight the
+    console refuses. Any other unsafe request is refused with 403 unless it comes from the
+    console's own origin and carries ``X-GrooveMap-Console: 1``, so the cookie alone never
+    authorizes a change, not even from an origin in ``CORS_ORIGINS``.
+    """
+    if request.method not in _UNSAFE_METHODS or request.headers.get("authorization"):
+        return
+    if not _same_origin(request) or request.headers.get(CONSOLE_REQUEST_HEADER) != "1":
+        raise HTTPException(status_code=403, detail="Cross-site request refused: the console's own pages send this request")
+
+
+async def session_rejected_handler(request: Request, exc: Exception) -> JSONResponse:
+    """Render a SessionRejected as ``{"detail", "reason"}`` with the matching status.
+
+    A session catalog-api called invalid also clears the cookie that carried it; one it could
+    not answer for keeps it, so the browser resumes once catalog-api is back.
+    """
     if not isinstance(exc, SessionRejected):  # pragma: no cover - registered for SessionRejected only
         raise exc
-    return JSONResponse(
+    response = JSONResponse(
         status_code=exc.status_code,
         content={"detail": exc.detail, "reason": exc.reason},
         headers={"WWW-Authenticate": "Bearer"},
     )
+    if exc.reason == "invalid" and session_cookie.carried_by(request):
+        session_cookie.clear(response)
+    return response
 
 
 def take_ws_ticket(scope: dict[str, Any]) -> None:

@@ -45,6 +45,20 @@ describe('System Event Log', () => {
         expect(rows().map((r) => r[2])).toEqual(['three', 'two', 'one']);
     });
 
+    it('shows the server\'s stall, no-consumer and recovery events, from the backlog after a reconnect and live', () => {
+        const queue = 'groovemap-discogs-graphinator-artists';
+        dashboard.handleMessage({ type: 'event_backlog', data: [
+            { ...event(1, `${queue}: NO CONSUMER`, 'error', 0), kind: 'queue-no-consumer' },
+            { ...event(2, `${queue}: STALLED · no acks 1m`, 'error', 20), kind: 'queue-stalled' },
+        ] });
+        dashboard.handleMessage({ type: 'event', data: { ...event(3, `${queue} is flowing`, 'info', 40), kind: 'queue-recovered' } });
+        expect(rows().map((r) => [r[1], r[2]])).toEqual([
+            ['[INFO]', `${queue} is flowing`],
+            ['[ERR]', `${queue}: STALLED · no acks 1m`],
+            ['[ERR]', `${queue}: NO CONSUMER`],
+        ]);
+    });
+
     it('routes backlog and live events through the message handler, and ignores unknown types', () => {
         dashboard.handleMessage({ type: 'event_backlog', data: [event(1, 'one')] });
         dashboard.handleMessage({ type: 'event', data: event(2, 'two', 'info', 3) });
@@ -60,14 +74,14 @@ describe('System Event Log', () => {
 
     it('interleaves operator actions from the audit log by time, and replaces them on each poll', async () => {
         dashboard.active = true;
-        dashboard.token = 'bearer-1';
+        dashboard.session = 1;
         const audit = {
             'extraction.trigger': [{ action: 'extraction.trigger', admin_email: 'ops@example.com', created_at: new Date(T0 + 20_000).toISOString() }],
             'dlq.purge': [{ action: 'dlq.purge', admin_email: 'sre@example.com', target: 'q.dlq', created_at: new Date(T0 + 5_000).toISOString() }],
         };
         const calls = [];
         globalThis.fetch = vi.fn(async (url, init) => {
-            calls.push([String(url), init.headers.Authorization]);
+            calls.push([String(url), init.headers]);
             const action = new URL(url, 'http://console.test').searchParams.get('action');
             return { ok: true, status: 200, json: async () => ({ entries: audit[action] }) };
         });
@@ -75,7 +89,7 @@ describe('System Event Log', () => {
 
         await dashboard.fetchAuditEntries();
         expect(rows().map((r) => r[2])).toEqual(['ops@example.com triggered an extraction', 'Neo4j is down', 'sre@example.com purged DLQ q.dlq']);
-        expect(calls.every(([, auth]) => auth === 'Bearer bearer-1')).toBe(true);
+        expect(calls.every(([, headers]) => headers['X-GrooveMap-Console'] === '1' && !('Authorization' in headers))).toBe(true);
         expect(calls.map(([url]) => url)).toEqual([
             '/admin/api/audit-log?action=extraction.trigger&page_size=20',
             '/admin/api/audit-log?action=dlq.purge&page_size=20',
@@ -88,7 +102,7 @@ describe('System Event Log', () => {
 
     it('keeps the entries shown when the audit log cannot be read, and asks for a session check on a refusal', async () => {
         dashboard.active = true;
-        dashboard.token = 'bearer-1';
+        dashboard.session = 1;
         dashboard.requestSessionCheck = vi.fn();
         dashboard._replaceLogSource('audit', [{ message: 'ops@example.com triggered an extraction', type: 'info', time: T0 }]);
 

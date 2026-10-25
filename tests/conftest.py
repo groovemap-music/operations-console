@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
+import signal
+import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, create_autospec
@@ -20,6 +24,7 @@ from playwright.sync_api import Browser, Page, sync_playwright
 from psycopg import AsyncConnection, AsyncCursor
 
 from dashboard.config import DashboardConfig
+from tests.e2e_console import CATALOG_PORT, CATALOG_URL, CONSOLE_PORT, SECURE_COOKIE
 from tests.fake_catalog_api import FakeCatalogApi
 
 
@@ -68,54 +73,71 @@ def pytest_runtest_makereport(item: pytest.Item) -> Iterator[None]:
     setattr(item, f"rep_{report.when}", report)
 
 
-E2E_CONSOLE_URL = "http://127.0.0.1:8003"
-E2E_CATALOG_PORT = 18004
-E2E_CATALOG_URL = f"http://127.0.0.1:{E2E_CATALOG_PORT}"
+E2E_CONSOLE_URL = f"http://127.0.0.1:{CONSOLE_PORT}"
+E2E_CATALOG_PORT = CATALOG_PORT
+E2E_CATALOG_URL = CATALOG_URL
+
+
+def _server_log(cwd: str, port: int) -> Path:
+    """The file one test server writes its output to.
+
+    Never an unread pipe: a pipe holds 64 KiB, and once a whole run's access log fills it the
+    server blocks on its next log line, so the last tests of the run hang or time out.
+    """
+    directory = Path(cwd) / "test-results" / os.environ.get("GROOVEMAP_E2E_PROJECT", "chromium")
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"server-{port}.log"
 
 
 def _start_server(module: str, port: int, env: dict[str, str], cwd: str) -> subprocess.Popen[str]:
-    return subprocess.Popen(  # noqa: S603  # Fixed test-server modules, never external input.
-        [sys.executable, "-m", "uvicorn", module, "--factory", "--host", "127.0.0.1", "--port", str(port), "--log-level", "info"],
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=cwd,
-    )
+    with socket.socket() as probe:
+        probe.settimeout(1)
+        if probe.connect_ex(("127.0.0.1", port)) == 0:
+            raise RuntimeError(f"Port {port} already has a listener; refusing to start {module} on it or to trust whatever answers there.")
+    with _server_log(cwd, port).open("w") as log:
+        return subprocess.Popen(  # noqa: S603  # Fixed test-server modules, never external input.
+            [sys.executable, "-m", "tests.serve_test_app", module, str(port)],
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+            cwd=cwd,
+            start_new_session=True,  # Its own process group, so teardown reaps anything it spawned.
+        )
 
 
-def _wait_until_ready(process: subprocess.Popen[str], health_url: str, project_root: str) -> None:
+def _wait_until_ready(process: subprocess.Popen[str], health_url: str, project_root: str, log: Path, token: str) -> None:
     """Poll a public health route for up to 20 seconds, failing with the server's output."""
     for retry in range(40):
-        try:
-            if httpx.get(health_url, timeout=1.0).status_code == 200:
-                return
-        except Exception:  # noqa: S110
-            pass  # Server might not be ready yet
         if process.poll() is not None:
-            stdout, stderr = process.communicate()
             raise RuntimeError(
                 f"Server for {health_url} died after {retry} retries.\n"
                 f"Working directory: {project_root}\nPython executable: {sys.executable}\n"
-                f"STDOUT:\n{stdout or '(empty)'}\nSTDERR:\n{stderr or '(empty)'}\n"
+                f"OUTPUT ({log}):\n{log.read_text() or '(empty)'}\n"
             )
+        # A healthy answer only counts when it carries this run's token: a server left behind on
+        # the port by another run would answer too.
+        try:
+            response = httpx.get(health_url, timeout=1.0)
+            if response.status_code == 200 and response.headers.get("x-e2e-run") == token and process.poll() is None:
+                return
+        except Exception:  # noqa: S110
+            pass  # Server might not be ready yet
         time.sleep(0.5)
-    process.terminate()
-    try:
-        stdout, stderr = process.communicate(timeout=2)
-    except subprocess.TimeoutExpired as e:
-        process.kill()
-        raise RuntimeError(f"Server for {health_url} failed to start and didn't terminate cleanly") from e
-    raise RuntimeError(f"Server for {health_url} failed to start after 20 seconds.\nSTDOUT:\n{stdout or '(empty)'}\nSTDERR:\n{stderr or '(empty)'}\n")
+    _stop_server(process)
+    raise RuntimeError(f"Server for {health_url} failed to start after 20 seconds.\nOUTPUT ({log}):\n{log.read_text() or '(empty)'}\n")
 
 
 def _stop_server(process: subprocess.Popen[str]) -> None:
-    process.terminate()
-    try:
-        process.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
+    """End the server's whole process group."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, sig)
+        try:
+            process.wait(timeout=5)
+            return
+        except subprocess.TimeoutExpired:
+            continue
 
 
 @pytest.fixture(scope="session")
@@ -125,7 +147,8 @@ def test_server() -> Any:
     The console reaches the fake over a real socket, exactly as it reaches catalog-api, and
     validates every session against it with the positive cache disabled
     (``SESSION_CACHE_SECONDS=0``), so a revocation or outage the suite triggers takes effect on
-    the next request instead of up to 30 seconds later.
+    the next request instead of up to 30 seconds later. The session cookie stays Secure, its
+    default, except in the WebKit projects (see ``tests.e2e_console.SECURE_COOKIE``).
     """
     project_root = str(Path(__file__).resolve().parents[1])
     env = os.environ.copy()
@@ -135,13 +158,16 @@ def test_server() -> Any:
     env["API_HOST"] = "127.0.0.1"
     env["API_PORT"] = str(E2E_CATALOG_PORT)
     env["SESSION_CACHE_SECONDS"] = "0"
+    token = uuid.uuid4().hex
+    env["E2E_RUN_TOKEN"] = token
+    env["SESSION_COOKIE_SECURE"] = "true" if SECURE_COOKIE else "false"
 
     catalog = _start_server("tests.fake_catalog_api:create_app", E2E_CATALOG_PORT, env, project_root)
     try:
-        _wait_until_ready(catalog, f"{E2E_CATALOG_URL}/__fake__/health", project_root)
-        console = _start_server("tests.dashboard_test_app:create_test_app", 8003, env, project_root)
+        _wait_until_ready(catalog, f"{E2E_CATALOG_URL}/__fake__/health", project_root, _server_log(project_root, E2E_CATALOG_PORT), token)
+        console = _start_server("tests.dashboard_test_app:create_test_app", CONSOLE_PORT, env, project_root)
         try:
-            _wait_until_ready(console, f"{E2E_CONSOLE_URL}/health", project_root)
+            _wait_until_ready(console, f"{E2E_CONSOLE_URL}/health", project_root, _server_log(project_root, CONSOLE_PORT), token)
             yield
         finally:
             _stop_server(console)
