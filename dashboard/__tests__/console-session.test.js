@@ -315,6 +315,72 @@ describe('admin.js owns the session', () => {
         expect(document.getElementById('login-reason').textContent).toBe('You signed out.');
     });
 
+    // The revocation makes catalog-api refuse a read still in flight; whichever answer lands
+    // first, the user asked to sign out and must never be told the session expired.
+    it.each([
+        ['before', 'authFetch'],
+        ['before', 'verifySession'],
+        ['after', 'authFetch'],
+        ['after', 'verifySession'],
+    ])('reports a sign-out as "You signed out." when the refused read lands %s the logout answer (%s)', async (order, read) => {
+        let answerRead;
+        let answerLogout;
+        let sessionCalls = 0;
+        installFetch({
+            '/api/session': () => {
+                sessionCalls += 1;
+                if (read === 'verifySession' && sessionCalls > 1) return new Promise((resolve) => { answerRead = resolve; });
+                return jsonResponse(200, LIVE_SESSION);
+            },
+            '/admin/api/extractions': () => jsonResponse(200, { extractions: [] }),
+            '/admin/api/logout': () => new Promise((resolve) => { answerLogout = resolve; }),
+            '/admin/api/storage': () => new Promise((resolve) => { answerRead = resolve; }),
+        });
+        const app = new classes.AdminDashboard();
+        await flush();
+        const reasons = [];
+        const showLogin = app.showLogin.bind(app);
+        app.showLogin = (reason) => { reasons.push(reason); showLogin(reason); };
+        events.length = 0;
+
+        const inFlight = read === 'authFetch' ? app.authFetch('/admin/api/storage') : app.verifySession();
+        const settled = inFlight.then(() => null, (error) => error);
+        const loggingOut = app.logout();
+        await flush();
+        const refuse = () => answerRead(read === 'authFetch'
+            ? jsonResponse(401, { detail: 'Invalid or expired token' })
+            : NO_SESSION());
+        const confirm = () => answerLogout(jsonResponse(200, {}));
+        if (order === 'before') { refuse(); await flush(); confirm(); } else { confirm(); await flush(); refuse(); }
+        await loggingOut;
+        await settled;
+
+        expect(reasons).toEqual(['signed-out']);
+        expect(document.getElementById('login-reason').textContent).toBe('You signed out.');
+        expect(document.getElementById('login-reason').dataset.reason).toBe('signed-out');
+        expect(events.filter((event) => event.name === 'console:signed-out')).toHaveLength(1);
+    });
+
+    it('still reports an unconfirmed sign-out when a read is refused during it', async () => {
+        let answerStorage;
+        installFetch({
+            '/api/session': () => jsonResponse(200, LIVE_SESSION),
+            '/admin/api/extractions': () => jsonResponse(200, { extractions: [] }),
+            '/admin/api/logout': () => { throw new TypeError('Failed to fetch'); },
+            '/admin/api/storage': () => new Promise((resolve) => { answerStorage = resolve; }),
+        });
+        const app = new classes.AdminDashboard();
+        await flush();
+
+        const settled = app.authFetch('/admin/api/storage').catch((error) => error);
+        const loggingOut = app.logout();
+        answerStorage(jsonResponse(401, { detail: 'Invalid or expired token' }));
+        await loggingOut;
+        await settled;
+
+        expect(document.getElementById('login-reason').dataset.reason).toBe('signed-out-unconfirmed');
+    });
+
     it('treats a 401 from any admin call as an ended session', async () => {
         installFetch({
             '/api/session': () => jsonResponse(200, LIVE_SESSION),
