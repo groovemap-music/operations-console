@@ -158,6 +158,7 @@ def _mock_response(status: int, payload: dict[str, Any]) -> MagicMock:
     resp = MagicMock()
     resp.status_code = status
     resp.content = content
+    resp.headers = {}
     resp.json = MagicMock(return_value=payload)
     return resp
 

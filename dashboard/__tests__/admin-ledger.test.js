@@ -26,8 +26,12 @@ const SPLIT_EDITION = '00000000-0000-4000-8000-000000000002';
 const FORMER = '00000000-0000-4000-8000-000000000009';
 const MBID = '00000000-9000-4000-8000-000000000001';
 
+const REFRESHED_AT = '2026-10-25T21:05:00.123456Z';
+const NOT_REFRESHED = { detail: 'identity ledger not yet refreshed' };
+
 const DENSITY = {
     kind: 'release',
+    refreshed_at: REFRESHED_AT,
     buckets: [
         { month: '2025-11', type: 'link_added', dated_from: 'musicbrainz_fullexport', events: 40 },
         { month: '2026-02', type: 'link_changed', dated_from: 'musicbrainz_fullexport', events: 3 },
@@ -52,6 +56,7 @@ const WORKS = {
     total: 120,
     page: 1,
     page_size: 50,
+    refreshed_at: REFRESHED_AT,
 };
 
 const LINK_ADDED = {
@@ -106,6 +111,7 @@ const WORK_PAYLOAD = {
     ],
     edition_count: 5,
     truncated: true,
+    refreshed_at: REFRESHED_AT,
 };
 
 function loadAdminDashboardClass() {
@@ -126,9 +132,18 @@ function setupLedgerDOM() {
     document.body.appendChild(document.importNode(SHELL.getElementById('tab-ledger'), true));
 }
 
-function jsonResponse(status, body) {
-    return { ok: status >= 200 && status < 300, status, json: async () => body };
+function jsonResponse(status, body, headers = {}) {
+    const lowered = Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]));
+    return {
+        ok: status >= 200 && status < 300,
+        status,
+        json: async () => body,
+        headers: { get: (name) => lowered[name.toLowerCase()] ?? null },
+    };
 }
+
+// catalog-api's answer from the works list and the density strip before the ledger's first refresh.
+const notRefreshed = (retryAfter = '60') => jsonResponse(503, NOT_REFRESHED, retryAfter === null ? {} : { 'Retry-After': retryAfter });
 
 // Answer ledger reads by path; record every URL asked for.
 function installFetch({ density = DENSITY, works = WORKS, work = WORK_PAYLOAD } = {}) {
@@ -509,6 +524,205 @@ describe('the Ledger tab', () => {
             installFetch({ work: { ...WORK_PAYLOAD, editions: [], edition_count: 0, truncated: false } });
             await app.openLedgerWork(WORK);
             expect(text('ledger-editions')).toBe('No editions are recorded for this work at this time.');
+        });
+    });
+
+    describe('freshness', () => {
+        it('says when the strip, the works table and the drill-down were last refreshed', async () => {
+            app.switchTab('ledger');
+            await flush();
+            await app.openLedgerWork(WORK);
+
+            for (const id of ['ledger-density-asof', 'ledger-works-asof', 'ledger-work-asof']) {
+                expect(text(id)).toBe('Ledger as of 2026-10-25 21:05 UTC');
+                expect(document.getElementById(id).title).toBe(REFRESHED_AT);
+            }
+            expect(document.getElementById('ledger-building').style.display).toBe('none');
+        });
+
+        it('reads "not yet refreshed" for a null refreshed_at, which one work has before the first refresh', async () => {
+            installFetch({ work: { ...WORK_PAYLOAD, refreshed_at: null } });
+            app.switchTab('ledger');
+            await flush();
+            await app.openLedgerWork(WORK);
+
+            expect(text('ledger-work-asof')).toBe('Ledger not yet refreshed');
+            expect(document.getElementById('ledger-work-asof').title).toBe('');
+            expect(text('ledger-work-id')).toBe(WORK);
+            expect(text('ledger-density-asof')).toBe('Ledger as of 2026-10-25 21:05 UTC');
+        });
+    });
+
+    describe('the ledger being built', () => {
+        const SEC = 1000;
+
+        beforeEach(() => {
+            vi.useFakeTimers();
+        });
+
+        afterEach(() => {
+            app.stopLedgerRetries();
+            vi.useRealTimers();
+        });
+
+        // The strip and the list answer from `reads`, one answer per read in turn, then the last.
+        function answerInTurn(reads) {
+            const calls = { density: 0, works: 0 };
+            const fetchMock = vi.fn(async (url) => {
+                const path = new URL(url, 'http://console.test').pathname;
+                const name = path.endsWith('/density') ? 'density' : 'works';
+                const list = reads[name];
+                return list[Math.min(calls[name]++, list.length - 1)]();
+            });
+            globalThis.fetch = fetchMock;
+            return fetchMock;
+        }
+
+        const countOf = (fetchMock, name) => requested(fetchMock).filter((url) => url.pathname.endsWith(name === 'density' ? '/density' : '/works')).length;
+
+        it('shows a state, not an error, for a 503 from the works list and the strip', async () => {
+            answerInTurn({ density: [() => notRefreshed()], works: [() => notRefreshed()] });
+            app.switchTab('ledger');
+            await vi.advanceTimersByTimeAsync(0);
+
+            const notice = document.getElementById('ledger-building');
+            expect(notice.style.display).toBe('');
+            expect(notice.textContent).toContain('The ledger is being built; it refreshes after loads and identity runs');
+            expect(notice.getAttribute('role')).toBe('status');
+            expect(document.getElementById('ledger-density-error').style.display).toBe('none');
+            expect(document.getElementById('ledger-works-error').style.display).toBe('none');
+            expect(document.getElementById('ledger-density-loading').style.display).toBe('none');
+            expect(document.getElementById('ledger-works-loading').style.display).toBe('none');
+            expect(text('ledger-density-asof')).toBe('Ledger not yet refreshed');
+            expect(text('ledger-works-asof')).toBe('Ledger not yet refreshed');
+            expect(text('ledger-works-body')).toBe('No works to list until the ledger is built');
+            expect(document.getElementById('ledger-density-empty').style.display).toBe('none');
+            expect(FakeChart.instances).toHaveLength(0);
+        });
+
+        it('asks again after Retry-After, and shows the ledger once it is built', async () => {
+            const fetchMock = answerInTurn({
+                density: [() => notRefreshed('7'), () => jsonResponse(200, DENSITY)],
+                works: [() => notRefreshed('7'), () => jsonResponse(200, WORKS)],
+            });
+            app.switchTab('ledger');
+            await vi.advanceTimersByTimeAsync(0);
+            expect(fetchMock).toHaveBeenCalledTimes(2);
+
+            await vi.advanceTimersByTimeAsync(6 * SEC);
+            expect(fetchMock).toHaveBeenCalledTimes(2);
+            expect(document.getElementById('ledger-building').style.display).toBe('');
+
+            await vi.advanceTimersByTimeAsync(1 * SEC);
+            expect(fetchMock).toHaveBeenCalledTimes(4);
+            expect(document.getElementById('ledger-building').style.display).toBe('none');
+            expect(document.querySelectorAll('#ledger-works-body tr[data-work]')).toHaveLength(1);
+            expect(FakeChart.instances).toHaveLength(1);
+            expect(text('ledger-works-asof')).toBe('Ledger as of 2026-10-25 21:05 UTC');
+            expect(text('ledger-density-asof')).toBe('Ledger as of 2026-10-25 21:05 UTC');
+
+            // Built: nothing is left waiting to ask again.
+            await vi.advanceTimersByTimeAsync(10 * 60 * SEC);
+            expect(fetchMock).toHaveBeenCalledTimes(4);
+        });
+
+        it('keeps asking while the ledger is still being built', async () => {
+            const fetchMock = answerInTurn({ density: [() => notRefreshed('2')], works: [() => notRefreshed('2')] });
+            app.switchTab('ledger');
+            await vi.advanceTimersByTimeAsync(0);
+            await vi.advanceTimersByTimeAsync(4 * SEC);
+
+            expect(countOf(fetchMock, 'works')).toBe(3);
+            expect(countOf(fetchMock, 'density')).toBe(3);
+            expect(document.getElementById('ledger-building').style.display).toBe('');
+        });
+
+        it('waits a minute when Retry-After is missing, and keeps a silly one within bounds', async () => {
+            const fetchMock = answerInTurn({ density: [() => notRefreshed(null)], works: [() => notRefreshed('0')] });
+            app.switchTab('ledger');
+            await vi.advanceTimersByTimeAsync(0);
+
+            await vi.advanceTimersByTimeAsync(1 * SEC);
+            expect(countOf(fetchMock, 'works')).toBe(2);
+            expect(countOf(fetchMock, 'density')).toBe(1);
+            await vi.advanceTimersByTimeAsync(59 * SEC);
+            expect(countOf(fetchMock, 'density')).toBe(2);
+        });
+
+        it('reads Retry-After given as an HTTP date', async () => {
+            vi.setSystemTime(new Date('2026-10-25T21:00:00Z'));
+            const fetchMock = answerInTurn({
+                density: [() => notRefreshed('Sun, 25 Oct 2026 21:00:05 GMT'), () => jsonResponse(200, DENSITY)],
+                works: [() => jsonResponse(200, WORKS)],
+            });
+            app.switchTab('ledger');
+            await vi.advanceTimersByTimeAsync(0);
+            await vi.advanceTimersByTimeAsync(4 * SEC);
+            expect(countOf(fetchMock, 'density')).toBe(1);
+            await vi.advanceTimersByTimeAsync(1 * SEC);
+            expect(countOf(fetchMock, 'density')).toBe(2);
+        });
+
+        it('hides the notice once the only read that was waiting is answered, and leaves the other alone', async () => {
+            answerInTurn({ density: [() => notRefreshed('5'), () => jsonResponse(200, DENSITY)], works: [() => jsonResponse(200, WORKS)] });
+            app.switchTab('ledger');
+            await vi.advanceTimersByTimeAsync(0);
+            expect(document.getElementById('ledger-building').style.display).toBe('');
+            expect(document.querySelectorAll('#ledger-works-body tr[data-work]')).toHaveLength(1);
+            expect(text('ledger-works-asof')).toBe('Ledger as of 2026-10-25 21:05 UTC');
+
+            await vi.advanceTimersByTimeAsync(5 * SEC);
+            expect(document.getElementById('ledger-building').style.display).toBe('none');
+        });
+
+        it('replaces a waiting retry with a newer read instead of reading twice', async () => {
+            const fetchMock = answerInTurn({ density: [() => jsonResponse(200, DENSITY)], works: [() => notRefreshed('30'), () => jsonResponse(200, WORKS)] });
+            app.switchTab('ledger');
+            await vi.advanceTimersByTimeAsync(0);
+            expect(countOf(fetchMock, 'works')).toBe(1);
+
+            document.getElementById('ledger-refresh-btn').click();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(countOf(fetchMock, 'works')).toBe(2);
+            expect(document.getElementById('ledger-building').style.display).toBe('none');
+
+            await vi.advanceTimersByTimeAsync(60 * SEC);
+            expect(countOf(fetchMock, 'works')).toBe(2);
+        });
+
+        it('stops asking when the session ends', async () => {
+            const fetchMock = answerInTurn({ density: [() => notRefreshed('5')], works: [() => notRefreshed('5')] });
+            app.switchTab('ledger');
+            await vi.advanceTimersByTimeAsync(0);
+
+            app.showLogin('signed-out');
+            await vi.advanceTimersByTimeAsync(60 * SEC);
+            expect(fetchMock).toHaveBeenCalledTimes(2);
+            expect(document.getElementById('ledger-building').style.display).toBe('none');
+        });
+
+        it('still shows any other 503 as an error, and does not retry it', async () => {
+            const fetchMock = answerInTurn({
+                density: [() => jsonResponse(503, { detail: 'Service not ready' }, { 'Retry-After': '1' })],
+                works: [() => jsonResponse(200, WORKS)],
+            });
+            app.switchTab('ledger');
+            await vi.advanceTimersByTimeAsync(0);
+            await vi.advanceTimersByTimeAsync(60 * SEC);
+
+            expect(text('ledger-density-error-msg')).toBe('Service not ready');
+            expect(document.getElementById('ledger-density-error').style.display).toBe('');
+            expect(document.getElementById('ledger-building').style.display).toBe('none');
+            expect(countOf(fetchMock, 'density')).toBe(1);
+        });
+
+        it('does not treat a work that answers 503 as the ledger being built', async () => {
+            installFetch({ work: () => jsonResponse(503, NOT_REFRESHED, { 'Retry-After': '1' }) });
+            await app.openLedgerWork(WORK);
+            await vi.advanceTimersByTimeAsync(60 * SEC);
+
+            expect(text('ledger-work-error-msg')).toBe(NOT_REFRESHED.detail);
+            expect(document.getElementById('ledger-building').style.display).toBe('none');
         });
     });
 

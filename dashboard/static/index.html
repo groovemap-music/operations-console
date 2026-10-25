@@ -1491,6 +1491,12 @@
              ============================================================ -->
         <div id="tab-ledger" class="space-y-6" style="display:none">
 
+            <!-- Until the ledger's first refresh catalog-api answers 503; the tab waits and asks again -->
+            <p id="ledger-building" class="dashboard-card p-4 text-xs flex items-center gap-2" role="status" style="display:none">
+                <span class="material-symbols-outlined text-sm animate-spin" style="color:var(--accent-mint)">progress_activity</span>
+                The ledger is being built; it refreshes after loads and identity runs.
+            </p>
+
             <!-- Events per UTC month, by type; backfilled segments are hatched -->
             <section class="dashboard-card p-6" aria-labelledby="ledger-density-title">
                 <div class="ledger-head">
@@ -1517,6 +1523,7 @@
                     <canvas id="ledger-density-chart" role="img" aria-label="Identity events per UTC month, by event type">Identity events per month</canvas>
                 </div>
                 <div id="ledger-density-legend" class="ledger-legend"></div>
+                <p id="ledger-density-asof" class="text-xs t-dim mt-2"></p>
                 <p id="ledger-density-backfill" class="text-xs t-dim mt-2" style="display:none"></p>
                 <p id="ledger-density-empty" class="text-xs t-muted mt-2" style="display:none">No identity events are recorded for this kind.</p>
             </section>
@@ -1558,6 +1565,7 @@
                         </button>
                     </div>
                 </div>
+                <p id="ledger-works-asof" class="text-xs t-dim mb-2"></p>
                 <div class="ledger-table overflow-x-auto">
                     <table class="w-full text-xs">
                         <thead>
@@ -1608,7 +1616,8 @@
                         </button>
                     </div>
                 </div>
-                <p id="ledger-work-status" class="text-xs t-dim mb-3"></p>
+                <p id="ledger-work-status" class="text-xs t-dim mb-1"></p>
+                <p id="ledger-work-asof" class="text-xs t-dim mb-3"></p>
                 <div id="ledger-work-summary" class="mb-4"></div>
                 <div id="ledger-editions" class="space-y-4"></div>
             </section>

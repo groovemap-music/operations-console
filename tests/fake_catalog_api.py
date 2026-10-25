@@ -5,7 +5,10 @@ It answers the promoted operations the console's session gate and login flow cal
 catalog-api's documented statuses: 401 for missing, unknown, expired, or revoked tokens and
 403 for an authenticated non-admin. It also serves the audit log and the three Identity Ledger
 operations (``admin_identity_ledger_works``, ``admin_identity_ledger_work``,
-``admin_identity_ledger_density``) from fixtures a test can replace. Unit tests mount it in-process through
+``admin_identity_ledger_density``) from fixtures a test can replace. Each ledger payload carries
+``refreshed_at``; ``/__fake__/ledger-building`` makes the list and the strip answer catalog-api's
+``503`` "identity ledger not yet refreshed" with ``Retry-After``, as before the first refresh, and
+``refreshed_at`` null on one work. Unit tests mount it in-process through
 ``httpx.ASGITransport``; the browser suite runs it as its own server (``create_app``) and drives
 it through the ``/__fake__`` control routes, so the console reaches it over a real socket.
 """
@@ -39,6 +42,8 @@ LEDGER_SPLIT_EDITION = "00000000-0000-4000-8000-000000000002"
 LEDGER_FORMER_ITEM = "00000000-0000-4000-8000-000000000009"
 LEDGER_MBID = "00000000-9000-4000-8000-000000000001"
 _RULE = "fake rule"
+LEDGER_REFRESHED_AT = "2026-10-25T21:05:00.123456Z"
+LEDGER_NOT_REFRESHED_DETAIL = "identity ledger not yet refreshed"
 
 
 def _event(at: str, event_type: str, dated_from: str = "groovemap", **fields: Any) -> dict[str, Any]:
@@ -48,7 +53,7 @@ def _event(at: str, event_type: str, dated_from: str = "groovemap", **fields: An
 def default_ledger() -> dict[str, Any]:
     """A small Identity Ledger in catalog-api's payload shapes, with both provenances.
 
-    ``density`` is keyed by catalog kind, ``works`` is the whole works list (paged on read), and
+    ``refreshed_at`` is when the precomputed views were last refreshed. ``density`` is keyed by catalog kind, ``works`` is the whole works list (paged on read), and
     ``work`` maps a work id to its payload read now. A work read ``as_of`` drops the events and
     former items recorded after it.
     """
@@ -64,6 +69,7 @@ def default_ledger() -> dict[str, Any]:
         decision_ref="backfill-1",
     )
     return {
+        "refreshed_at": LEDGER_REFRESHED_AT,
         "density": {
             "release": [
                 {"month": "2025-11", "type": "link_added", "dated_from": "musicbrainz_fullexport", "events": 40},
@@ -198,6 +204,8 @@ class FakeCatalogApi:
         self.session_calls = 0
         self.audit_entries: list[dict[str, Any]] = []
         self.ledger = default_ledger()
+        self.ledger_building = False
+        self.ledger_retry_after = 60
         self.app = self._build_app()
 
     def mint(self, email: str = ADMIN_EMAIL, *, lifetime_seconds: float = 3600, is_admin: bool = True) -> str:
@@ -225,6 +233,14 @@ class FakeCatalogApi:
         if not record.is_admin:
             return JSONResponse({"detail": "Admin access required"}, status_code=403)
         return record
+
+    def _ledger_not_refreshed(self) -> JSONResponse:
+        """catalog-api's answer from the list and the strip before the ledger's first refresh."""
+        return JSONResponse(
+            {"detail": LEDGER_NOT_REFRESHED_DETAIL},
+            status_code=503,
+            headers={"Retry-After": str(self.ledger_retry_after)},
+        )
 
     def _build_app(self) -> FastAPI:
         app = FastAPI()
@@ -277,11 +293,15 @@ class FakeCatalogApi:
             record = self._live(request)
             if isinstance(record, JSONResponse):
                 return record
+            if self.ledger_building:
+                return self._ledger_not_refreshed()
             page = max(int(request.query_params.get("page", "1")), 1)
             page_size = min(max(int(request.query_params.get("page_size", "50")), 1), 100)
             works = self.ledger["works"]
             listed = works[(page - 1) * page_size : page * page_size]
-            return JSONResponse({"works": listed, "total": len(works), "page": page, "page_size": page_size})
+            return JSONResponse(
+                {"works": listed, "total": len(works), "page": page, "page_size": page_size, "refreshed_at": self.ledger["refreshed_at"]}
+            )
 
         @app.get(catalog_admin_contract.ADMIN_IDENTITY_LEDGER_WORK_PATH)
         async def ledger_work(work_id: str, request: Request) -> JSONResponse:
@@ -291,15 +311,19 @@ class FakeCatalogApi:
             payload = self.ledger["work"].get(work_id)
             if payload is None:
                 return JSONResponse({"detail": "Work not found"}, status_code=404)
-            return JSONResponse(_ledger_work_as_of(payload, request.query_params.get("as_of")))
+            work = _ledger_work_as_of(payload, request.query_params.get("as_of"))
+            work["refreshed_at"] = None if self.ledger_building else self.ledger["refreshed_at"]
+            return JSONResponse(work)
 
         @app.get(catalog_admin_contract.ADMIN_IDENTITY_LEDGER_DENSITY_PATH)
         async def ledger_density(request: Request) -> JSONResponse:
             record = self._live(request)
             if isinstance(record, JSONResponse):
                 return record
+            if self.ledger_building:
+                return self._ledger_not_refreshed()
             kind = request.query_params.get("kind", "release")
-            return JSONResponse({"kind": kind, "buckets": self.ledger["density"].get(kind, [])})
+            return JSONResponse({"kind": kind, "buckets": self.ledger["density"].get(kind, []), "refreshed_at": self.ledger["refreshed_at"]})
 
         @app.post("/__fake__/ledger")
         async def set_ledger(request: Request) -> JSONResponse:
@@ -307,6 +331,14 @@ class FakeCatalogApi:
             body: dict[str, Any] = await request.json()
             self.ledger = {**default_ledger(), **body}
             return JSONResponse({"works": len(self.ledger["works"])})
+
+        @app.post("/__fake__/ledger-building")
+        async def set_ledger_building(request: Request) -> JSONResponse:
+            """Answer the list and the strip 503 until turned off, as before the first refresh."""
+            body: dict[str, Any] = await request.json()
+            self.ledger_building = bool(body["enabled"])
+            self.ledger_retry_after = int(body.get("retry_after", 60))
+            return JSONResponse({"building": self.ledger_building, "retry_after": self.ledger_retry_after})
 
         @app.post("/__fake__/audit")
         async def set_audit(request: Request) -> JSONResponse:

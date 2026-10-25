@@ -18,6 +18,7 @@ def _mock_httpx(method: str = "get", status: int = 200, content: bytes = b"{}") 
     mock_resp = MagicMock()
     mock_resp.status_code = status
     mock_resp.content = content
+    mock_resp.headers = {}
 
     mock_instance = AsyncMock()
     setattr(mock_instance, method, AsyncMock(return_value=mock_resp))

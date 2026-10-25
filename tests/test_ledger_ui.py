@@ -3,7 +3,9 @@
 The tab reads the three Identity Ledger routes through the console's proxy from the standalone
 fake catalog-api, so every read crosses a real socket. It reads nothing until it is shown, and
 its density strip is sized when its tab is, not while hidden. At phone width nothing spills out
-of the page. Backfilled events say they are dated from the MusicBrainz full export.
+of the page. Backfilled events say they are dated from the MusicBrainz full export. Every view
+says when the ledger was last refreshed, and before its first refresh the tab says the ledger is
+being built, then reads it again once catalog-api says to.
 """
 # mypy: disable-error-code="no-untyped-def"
 
@@ -51,8 +53,10 @@ LAYOUT_FAULTS = """
 @pytest.fixture(autouse=True)
 def _default_ledger(test_server: None) -> Iterator[None]:
     fake_catalog("ledger", {})
+    fake_catalog("ledger-building", {"enabled": False})
     yield
     fake_catalog("ledger", {})
+    fake_catalog("ledger-building", {"enabled": False})
 
 
 def _record_ledger_reads(page: Page) -> list[str]:
@@ -218,3 +222,56 @@ class TestLedgerTab:
         assert item_box is not None
         # Stacked below the time and type at this width, the detail takes the row's full width.
         assert detail_box["width"] == pytest.approx(item_box["width"], abs=2)
+
+
+@pytest.mark.e2e
+@pytest.mark.usefixtures("test_server")
+class TestLedgerFreshness:
+    def test_every_view_says_when_the_ledger_was_refreshed(self, page: Page) -> None:
+        sign_in(page)
+        page.click("#tab-btn-ledger")
+        expect(page.locator("#ledger-works-body tr[data-work]")).to_have_count(2)
+        expect(page.locator("#ledger-density-asof")).to_have_text("Ledger as of 2026-10-25 21:05 UTC")
+        expect(page.locator("#ledger-works-asof")).to_have_text("Ledger as of 2026-10-25 21:05 UTC")
+        expect(page.locator("#ledger-building")).to_be_hidden()
+
+        page.click(f'#ledger-works-body tr[data-work="{LEDGER_WORK}"] button.ledger-work-link')
+        expect(page.locator("#ledger-work-asof")).to_have_text("Ledger as of 2026-10-25 21:05 UTC")
+
+    def test_a_ledger_that_is_being_built_is_a_state_and_is_read_again_when_built(self, page: Page) -> None:
+        fake_catalog("ledger-building", {"enabled": True, "retry_after": 1})
+        reads = _record_ledger_reads(page)
+        sign_in(page)
+        page.click("#tab-btn-ledger")
+
+        notice = page.locator("#ledger-building")
+        expect(notice).to_be_visible()
+        expect(notice).to_contain_text("The ledger is being built; it refreshes after loads and identity runs")
+        expect(page.locator("#ledger-density-error")).to_be_hidden()
+        expect(page.locator("#ledger-works-error")).to_be_hidden()
+        expect(page.locator("#ledger-density-asof")).to_have_text("Ledger not yet refreshed")
+        expect(page.locator("#ledger-works-body")).to_contain_text("until the ledger is built")
+        expect(page.locator("#ledger-works-body tr[data-work]")).to_have_count(0)
+
+        # It asks again after Retry-After, and keeps waiting while the answer is still 503.
+        for _ in range(100):
+            if sum(urlparse(url).path.endswith("/ledger/works") for url in reads) >= 2:
+                break
+            page.wait_for_timeout(100)
+        assert sum(urlparse(url).path.endswith("/ledger/works") for url in reads) >= 2
+        expect(notice).to_be_visible()
+
+        # One work is read live, so it opens, and says the ledger was never refreshed.
+        page.evaluate("(id) => window.adminDashboard.openLedgerWork(id)", LEDGER_WORK)
+        expect(page.locator("#ledger-work-asof")).to_have_text("Ledger not yet refreshed")
+        expect(page.locator(f'[data-edition="{LEDGER_EDITION}"]')).to_be_visible()
+
+        fake_catalog("ledger-building", {"enabled": False})
+        expect(page.locator("#ledger-works-body tr[data-work]")).to_have_count(2, timeout=10000)
+        expect(notice).to_be_hidden()
+        expect(page.locator("#ledger-density-asof")).to_have_text("Ledger as of 2026-10-25 21:05 UTC")
+        expect(page.locator("#ledger-works-asof")).to_have_text("Ledger as of 2026-10-25 21:05 UTC")
+        _wait_for_drawn_strip(page)
+        settled = len(reads)
+        page.wait_for_timeout(1500)
+        assert len(reads) == settled, "the tab kept reading after the ledger was built"
