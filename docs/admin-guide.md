@@ -2,13 +2,13 @@
 
 ## Creating an admin account
 
-Admin accounts are created via the `admin-setup` CLI tool inside the API container:
+Admin accounts are created via the `catalog-admin-setup` CLI tool inside the API container:
 
 ```bash
-docker exec -it groovemap-api admin-setup --email admin@example.com
+docker exec -it groovemap-api catalog-admin-setup --email admin@example.com
 ```
 
-`admin-setup` never accepts the password as a CLI argument (command-line
+`catalog-admin-setup` never accepts the password as a CLI argument (command-line
 arguments are world-readable via `/proc/*/cmdline` and land in shell
 history). The command above prompts interactively (input hidden, not
 echoed). For scripted/non-interactive use, set `ADMIN_PASSWORD` (or
@@ -20,7 +20,7 @@ Passwords must be at least 8 characters. If the email already exists, the passwo
 ## Listing admin accounts
 
 ```bash
-docker exec -it groovemap-api admin-setup --list
+docker exec -it groovemap-api catalog-admin-setup --list
 ```
 
 ## Signing in to the console
