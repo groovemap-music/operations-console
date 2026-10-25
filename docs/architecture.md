@@ -40,7 +40,7 @@ This repository consumes promoted, immutable copies of the catalog API, catalog-
 | `database-schema` persistence compatibility | `9a50949b1810f3e61adae2f89b86acec2e20c4a3` | [`contracts/persistence/v1/compatibility.json`](../contracts/persistence/v1/compatibility.json) |
 
 Brand assets are separately promoted from `groovemap-music/design` revision
-`7abe13ad3e22e81b5437eb92acb8db998730e11a`; [`source.json`](../dashboard/static/brand/source.json)
+`41be7cbe738f40df0c75ad7065475e91d6cc2aa4`; [`source.json`](../dashboard/static/brand/source.json)
 records the revision and the digest of every generated asset. `scripts/promote-brand.sh` is
 the only supported promotion path.
 
