@@ -1,6 +1,8 @@
 """Playwright tests for the Label web theme: the OS default, the header toggle, persistence, and the brand marks."""
 # mypy: disable-error-code="no-untyped-def"
 
+import re
+
 import pytest
 from playwright.sync_api import Page, expect
 
@@ -90,7 +92,7 @@ class TestTheme:
         wordmark = page.locator("h1 .wordmark")
         expect(wordmark).to_have_text("groovemap")
         expect(wordmark).to_have_css("font-weight", "300")
-        expect(wordmark).to_have_css("font-family", "Jura, sans-serif")
+        expect(wordmark).to_have_css("font-family", re.compile(r'^"?Jura"?, sans-serif$'))
         expect(wordmark).to_have_css("letter-spacing", "2.88px")  # 0.12em of the 24px (text-2xl) size
         expect(page.locator("h1 .brand-tagline")).to_have_text("explore the connections behind music")
         assert page.evaluate("async () => (await document.fonts.load('300 24px Jura')).length") == 1
