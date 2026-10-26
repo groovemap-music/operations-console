@@ -95,10 +95,24 @@ const RANGE_STORAGE_KEY = 'console_range';
 const HISTORY_RANGES = ['1h', '6h', '24h', '7d', '30d', '90d'];
 const HISTORY_TABS = ['queue-trends', 'system-health'];
 
-const QUEUE_CHART_COLORS = [
-    '#818cf8', '#34d399', '#f59e0b', '#f87171',
-    '#a78bfa', '#38bdf8', '#fb923c', '#e879f9',
-];
+// Chart.js paints to a canvas, which cannot read CSS variables, so the colours are the active
+// theme's tokens (index.html) resolved when a chart is built, and again on every theme change.
+// Series order: brass (oxblood in the light theme), sage (forest), then the warm series colours,
+// each at least 15 CIEDE2000 from every Strata state and entity colour and from the others.
+const SERIES_COUNT = 9;
+
+function themeVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function seriesColor(index) {
+    return themeVar(`--series-${(index % SERIES_COUNT) + 1}`);
+}
+
+// Axis grid lines and tick labels: the border and muted-text tokens.
+function chartAxisColors() {
+    return { grid: themeVar('--chart-grid'), tick: themeVar('--chart-tick') };
+}
 
 // Identity Ledger (design ADR 0016 section 7, concept D), in the order the density strip stacks
 // event types. The strip also counts `minted`, which the works list cannot filter on.
@@ -115,27 +129,29 @@ const LEDGER_EVENT_LABELS = {
     link_removed: 'Link removed',
 };
 
+// The CSS variable each event type is drawn in: `minted` has its own colour, the rest take the
+// series palette, so no event colour is within 15 CIEDE2000 of a Strata state (guarded in
+// matrix-contrast.test.js; see ledgerEventColor).
 const LEDGER_EVENT_COLORS = {
-    minted: '#64748b',
-    linked_at_ingest: '#34d399',
-    evidence_attached: '#38bdf8',
-    alias_closed: '#94a3b8',
-    reattached: '#f59e0b',
-    promoted: '#a78bfa',
-    reverted: '#f87171',
-    link_added: '#818cf8',
-    link_changed: '#e879f9',
-    link_removed: '#fb923c',
+    minted: '--ledger-minted',
+    linked_at_ingest: '--series-2',
+    evidence_attached: '--series-1',
+    alias_closed: '--series-7',
+    reattached: '--series-5',
+    promoted: '--series-4',
+    reverted: '--series-3',
+    link_added: '--series-6',
+    link_changed: '--series-8',
+    link_removed: '--series-9',
 };
 
-const LEDGER_STATE_BADGES = {
-    linked: 'badge-ok',
-    discogs_only: 'badge-waiting',
-    musicbrainz_only: 'badge-waiting',
-    unresolved: 'badge-running',
-    split: 'badge-error',
-    not_recorded: 'badge-idle',
-};
+function ledgerEventColor(type) {
+    return themeVar(LEDGER_EVENT_COLORS[type] || '--text-dim');
+}
+
+// Identity states drawn by the `.ledger-badge[data-state]` rules in index.html, which take the
+// --groovemap-state-identity-* tokens; a state the console does not know is shown as unknown.
+const LEDGER_STATES = new Set(['not_recorded', 'discogs_only', 'musicbrainz_only', 'unresolved', 'split', 'linked', 'superseded']);
 
 // `dated_from` of a link change the one-time backfill dated from the MusicBrainz full export.
 // About 9% of those dates belong to an older link MusicBrainz replaced, so such an event is
@@ -984,7 +1000,7 @@ class AdminQueues extends AdminExtractions {
             left.append(icon, name, serviceBadge, typeBadge);
 
             const purgeBtn = document.createElement('button');
-            purgeBtn.className = 'text-[10px] px-3 py-1 rounded font-bold uppercase tracking-wider bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition-colors flex items-center gap-1';
+            purgeBtn.className = 'text-[10px] px-3 py-1 rounded font-bold uppercase tracking-wider badge-error hover:opacity-80 transition-opacity flex items-center gap-1';
             purgeBtn.addEventListener('click', () => this.purgeDlq(queue));
 
             const deleteIcon = document.createElement('span');
@@ -1339,12 +1355,11 @@ class AdminFeedback extends AdminServices {
         toast.style.display = 'block';
 
         if (type === 'success') {
-            toast.style.backgroundColor = '#059669';
-            toast.style.color = '#fff';
+            toast.style.backgroundColor = 'var(--status-ok)';
         } else {
-            toast.style.backgroundColor = '#DC2626';
-            toast.style.color = '#fff';
+            toast.style.backgroundColor = 'var(--status-err)';
         }
+        toast.style.color = 'var(--on-status)';
 
         requestAnimationFrame(() => {
             toast.style.opacity = '1';
@@ -1447,8 +1462,8 @@ class AdminQueueHistory extends AdminFeedback {
         }, 0);
 
         const tiles = [
-            { label: 'Total Queue Depth', value: totalDepth.toLocaleString(), spark: depthSparkPoints, color: '#818cf8' },
-            { label: 'DLQ Messages', value: dlqTotal.toLocaleString(), spark: dlqSparkPoints, color: '#f87171' },
+            { label: 'Total Queue Depth', value: totalDepth.toLocaleString(), spark: depthSparkPoints, color: 'var(--series-1)' },
+            { label: 'DLQ Messages', value: dlqTotal.toLocaleString(), spark: dlqSparkPoints, color: 'var(--status-err)' },
             { label: 'Avg Publish Rate', value: avgPublish == null ? 'No rate data' : `${avgPublish.toFixed(1)}/s`, spark: null, color: null },
             { label: 'Avg Ack Rate', value: avgAck == null ? 'No rate data' : `${avgAck.toFixed(1)}/s`, spark: null, color: null },
             { label: 'Active Consumers', value: totalConsumers.toLocaleString(), spark: null, color: null },
@@ -1499,8 +1514,8 @@ class AdminQueueHistory extends AdminFeedback {
             return {
                 label: _shortQueueName(q.queue_name || `Queue ${i + 1}`),
                 data: pts.map(p => ({ x: p.timestamp, y: p.messages_ready || 0 })),
-                borderColor: QUEUE_CHART_COLORS[i % QUEUE_CHART_COLORS.length],
-                backgroundColor: QUEUE_CHART_COLORS[i % QUEUE_CHART_COLORS.length] + '20',
+                borderColor: seriesColor(i),
+                backgroundColor: seriesColor(i) + '20',
                 borderWidth: 2,
                 pointRadius: 0,
                 tension: 0.3,
@@ -1524,6 +1539,8 @@ class AdminQueueHistory extends AdminFeedback {
             }));
         }
 
+        const axes = chartAxisColors();
+        this._lastQueueHistory = data;
         this.queueDepthChart = new Chart(canvas, {
             type: 'line',
             data: { datasets },
@@ -1539,13 +1556,13 @@ class AdminQueueHistory extends AdminFeedback {
                     x: {
                         type: 'time',
                         time: { tooltipFormat: 'MMM d, HH:mm' },
-                        grid: { color: '#334155' },
-                        ticks: { color: '#94a3b8', maxTicksLimit: 8 },
+                        grid: { color: axes.grid },
+                        ticks: { color: axes.tick, maxTicksLimit: 8 },
                     },
                     y: {
                         beginAtZero: true,
-                        grid: { color: '#334155' },
-                        ticks: { color: '#94a3b8' },
+                        grid: { color: axes.grid },
+                        ticks: { color: axes.tick },
                     },
                 },
             },
@@ -1590,7 +1607,7 @@ class AdminQueueHistory extends AdminFeedback {
             const sparkPts = pts.map(p => p.messages_ready || 0);
             if (sparkPts.length >= 2) {
                 const sparkDiv = document.createElement('div');
-                sparkDiv.appendChild(this._createSparklineSVGElement(sparkPts, '#f87171'));
+                sparkDiv.appendChild(this._createSparklineSVGElement(sparkPts, 'var(--status-err)'));
                 row.appendChild(sparkDiv);
             }
 
@@ -1651,9 +1668,9 @@ class AdminServiceHealth extends AdminQueueHistory {
             card.className = 'stat-card';
 
             const status = (svc.status || 'unknown').toLowerCase();
-            let borderColor = '#ef4444';
-            if (status === 'healthy') borderColor = '#34d399';
-            else if (status === 'degraded' || status === 'starting') borderColor = '#f59e0b';
+            let borderColor = 'var(--status-err)';
+            if (status === 'healthy') borderColor = 'var(--status-ok)';
+            else if (status === 'degraded' || status === 'starting') borderColor = 'var(--status-warn)';
             card.style.borderLeft = `3px solid ${borderColor}`;
 
             const nameEl = document.createElement('p');
@@ -1696,11 +1713,14 @@ class AdminServiceHealth extends AdminQueueHistory {
         const timeSeries = data.response_time_series || [];
         if (timeSeries.length === 0) return;
 
+        const status = { ok: themeVar('--status-ok'), warn: themeVar('--status-warn'), err: themeVar('--status-err') };
+        const axes = chartAxisColors();
+        this._lastResponseTimeData = data;
         const datasets = [
             {
                 label: 'p50',
                 data: timeSeries.map(p => ({ x: p.timestamp, y: p.p50 || 0 })),
-                borderColor: '#34d399',
+                borderColor: status.ok,
                 borderWidth: 2,
                 pointRadius: 0,
                 tension: 0.3,
@@ -1709,7 +1729,7 @@ class AdminServiceHealth extends AdminQueueHistory {
             {
                 label: 'p95',
                 data: timeSeries.map(p => ({ x: p.timestamp, y: p.p95 || 0 })),
-                borderColor: '#f59e0b',
+                borderColor: status.warn,
                 borderWidth: 2,
                 pointRadius: 0,
                 tension: 0.3,
@@ -1718,7 +1738,7 @@ class AdminServiceHealth extends AdminQueueHistory {
             {
                 label: 'p99',
                 data: timeSeries.map(p => ({ x: p.timestamp, y: p.p99 || 0 })),
-                borderColor: '#f87171',
+                borderColor: status.err,
                 borderWidth: 2,
                 borderDash: [5, 3],
                 pointRadius: 0,
@@ -1742,14 +1762,14 @@ class AdminServiceHealth extends AdminQueueHistory {
                     x: {
                         type: 'time',
                         time: { tooltipFormat: 'MMM d, HH:mm' },
-                        grid: { color: '#334155' },
-                        ticks: { color: '#94a3b8', maxTicksLimit: 8 },
+                        grid: { color: axes.grid },
+                        ticks: { color: axes.tick, maxTicksLimit: 8 },
                     },
                     y: {
                         beginAtZero: true,
-                        grid: { color: '#334155' },
+                        grid: { color: axes.grid },
                         ticks: {
-                            color: '#94a3b8',
+                            color: axes.tick,
                             callback: (v) => `${v}ms`,
                         },
                     },
@@ -1776,7 +1796,7 @@ class AdminServiceHealth extends AdminQueueHistory {
 
             const tdPath = document.createElement('td');
             tdPath.className = 'py-2 px-4 mono text-xs';
-            tdPath.style.color = '#818cf8';
+            tdPath.style.color = 'var(--accent)';
             tdPath.textContent = ep.endpoint ? (ep.service_name ? `${ep.service_name} ${ep.endpoint}` : ep.endpoint) : '\u2014';
 
             const tdReqs = document.createElement('td');
@@ -1799,9 +1819,9 @@ class AdminServiceHealth extends AdminQueueHistory {
             tdErr.className = 'py-2 px-4 mono text-right font-semibold';
             const errPct = ep.error_pct != null ? ep.error_pct : 0;
             tdErr.textContent = `${errPct.toFixed(1)}%`;
-            if (errPct < 1) tdErr.style.color = '#34d399';
-            else if (errPct <= 5) tdErr.style.color = '#f59e0b';
-            else tdErr.style.color = '#ef4444';
+            if (errPct < 1) tdErr.style.color = 'var(--status-ok)';
+            else if (errPct <= 5) tdErr.style.color = 'var(--status-warn)';
+            else tdErr.style.color = 'var(--status-err)';
 
             tr.append(tdPath, tdReqs, tdP50, tdP95, tdP99, tdErr);
             return tr;
@@ -1915,7 +1935,7 @@ class AdminServiceHealth extends AdminQueueHistory {
         const polyline = document.createElementNS(ns, 'polyline');
         polyline.setAttribute('points', coords);
         polyline.setAttribute('fill', 'none');
-        polyline.setAttribute('stroke', color);
+        polyline.style.stroke = color;
         polyline.setAttribute('stroke-width', '1.5');
         polyline.setAttribute('stroke-linecap', 'round');
         polyline.setAttribute('stroke-linejoin', 'round');
@@ -1990,7 +2010,7 @@ class AdminContracts extends AdminServiceHealth {
         } else {
             for (const entry of data.entries) {
                 const tr = document.createElement('tr');
-                tr.className = 'border-b b-theme hover:bg-white/5 transition-colors';
+                tr.className = 'border-b b-theme hover:bg-hover transition-colors';
 
                 const tdTs = document.createElement('td');
                 tdTs.className = 'py-2 px-3 t-muted whitespace-nowrap';
@@ -2005,7 +2025,7 @@ class AdminContracts extends AdminServiceHealth {
                 const tdAction = document.createElement('td');
                 tdAction.className = 'py-2 px-3';
                 const badge = document.createElement('span');
-                badge.className = 'inline-block px-2 py-0.5 rounded text-[10px] font-medium bg-blue-500/10 text-blue-400';
+                badge.className = 'inline-block px-2 py-0.5 rounded text-[10px] font-medium badge-secondary';
                 badge.textContent = entry.action;
                 tdAction.appendChild(badge);
                 tr.appendChild(tdAction);
@@ -2630,7 +2650,7 @@ class AdminContracts extends AdminServiceHealth {
                     const li = document.createElement('li');
                     li.className = 'flex items-start gap-2';
                     const dot = document.createElement('span');
-                    dot.className = `material-symbols-outlined text-xs ${v.severity === 'error' ? 'text-red-400' : 'text-amber-400'}`;
+                    dot.className = `material-symbols-outlined text-xs ${v.severity === 'error' ? 'st-err' : 'st-warn'}`;
                     dot.textContent = 'circle';
                     const text = document.createElement('span');
                     text.className = 'text-xs t-mid';
@@ -2709,7 +2729,7 @@ class AdminContracts extends AdminServiceHealth {
                     tdDelta.className = 'py-2 px-2 text-right mono font-bold';
                     const diff = (d.count_b ?? 0) - (d.count_a ?? 0);
                     tdDelta.textContent = (diff > 0 ? '+' : '') + diff.toLocaleString();
-                    tdDelta.style.color = diff > 0 ? 'var(--text-high)' : diff < 0 ? '#10B981' : 'var(--text-dim)';
+                    tdDelta.style.color = diff > 0 ? 'var(--text-high)' : diff < 0 ? 'var(--status-ok)' : 'var(--text-dim)';
                     tr.append(tdRule, tdEt, tdA, tdB, tdDelta);
                     return tr;
                 });
@@ -2740,7 +2760,7 @@ class AdminContracts extends AdminServiceHealth {
                 tdD.className = 'py-2 px-2 text-right mono font-bold';
                 const skipDiff = totalSkB - totalSkA;
                 tdD.textContent = (skipDiff > 0 ? '+' : '') + skipDiff.toLocaleString();
-                tdD.style.color = skipDiff > 0 ? 'var(--text-high)' : skipDiff < 0 ? '#10B981' : 'var(--text-dim)';
+                tdD.style.color = skipDiff > 0 ? 'var(--text-high)' : skipDiff < 0 ? 'var(--status-ok)' : 'var(--text-dim)';
                 skipRow.append(tdLabel, tdA, tdB, tdD);
                 tbody.appendChild(skipRow);
             }
@@ -3074,12 +3094,15 @@ class AdminLedger extends AdminContracts {
         const canvas = document.getElementById('ledger-density-chart');
         if (!canvas || series.months.length === 0 || typeof Chart === 'undefined') return;
         const backfilled = new Set(series.backfilledMonths);
+        const axes = chartAxisColors();
+        const warn = themeVar('--status-warn');
+        this._lastLedgerDensity = { data, building };
         this.state.ledgerChart = new Chart(canvas, {
             type: 'bar',
             data: {
                 labels: series.months,
                 datasets: series.datasets.map(dataset => {
-                    const color = LEDGER_EVENT_COLORS[dataset.type] || '#94a3b8';
+                    const color = ledgerEventColor(dataset.type);
                     const isBackfill = dataset.datedFrom === LEDGER_BACKFILL;
                     return {
                         label: isBackfill ? `${_ledgerEventLabel(dataset.type)}, ${LEDGER_BACKFILL_LABEL}` : _ledgerEventLabel(dataset.type),
@@ -3105,7 +3128,7 @@ class AdminLedger extends AdminContracts {
                         stacked: true,
                         grid: { display: false },
                         ticks: {
-                            color: context => (backfilled.has(series.months[context.index]) ? '#ffab00' : '#94a3b8'),
+                            color: context => (backfilled.has(series.months[context.index]) ? warn : axes.tick),
                             maxRotation: 0,
                             autoSkip: true,
                         },
@@ -3113,8 +3136,8 @@ class AdminLedger extends AdminContracts {
                     y: {
                         stacked: true,
                         beginAtZero: true,
-                        grid: { color: '#334155' },
-                        ticks: { color: '#94a3b8', precision: 0 },
+                        grid: { color: axes.grid },
+                        ticks: { color: axes.tick, precision: 0 },
                     },
                 },
             },
@@ -3122,7 +3145,7 @@ class AdminLedger extends AdminContracts {
     }
 
     _ledgerLegendItem(dataset) {
-        const color = LEDGER_EVENT_COLORS[dataset.type] || '#94a3b8';
+        const color = ledgerEventColor(dataset.type);
         const isBackfill = dataset.datedFrom === LEDGER_BACKFILL;
         const item = _el('span');
         item.dataset.datedFrom = dataset.datedFrom;
@@ -3162,7 +3185,7 @@ class AdminLedger extends AdminContracts {
     }
 
     _ledgerWorkRow(work) {
-        const tr = _el('tr', 'border-b b-theme hover:bg-white/5 transition-colors');
+        const tr = _el('tr', 'border-b b-theme hover:bg-hover transition-colors');
         tr.dataset.work = work.gm_id;
 
         const tdWork = _el('td', 'py-2 px-3');
@@ -3281,7 +3304,9 @@ class AdminLedger extends AdminContracts {
     }
 
     _ledgerStateBadge(state) {
-        return _el('span', `ledger-badge ${LEDGER_STATE_BADGES[state] || 'badge-idle'}`, state || 'unknown');
+        const badge = _el('span', 'ledger-badge', state || 'unknown');
+        badge.dataset.state = LEDGER_STATES.has(state) ? state : 'not_recorded';
+        return badge;
     }
 
     _ledgerFields(entries) {
@@ -3311,7 +3336,7 @@ class AdminLedger extends AdminContracts {
         const li = _el('li');
         li.dataset.type = event.type;
         li.dataset.datedFrom = event.dated_from;
-        const type = _el('span', 'ledger-badge', _ledgerEventLabel(event.type));
+        const type = _el('span', 'ledger-badge ledger-chip', _ledgerEventLabel(event.type));
         if (event.rule) type.title = event.rule;
         const provenance = event.dated_from === LEDGER_BACKFILL
             ? _el('span', 'ledger-backfill', LEDGER_BACKFILL_LABEL)
@@ -3356,4 +3381,14 @@ class AdminDashboard extends AdminLedger {}
 
 document.addEventListener('DOMContentLoaded', () => {
     window.adminDashboard = new AdminDashboard();
+});
+
+// Canvas charts cannot follow CSS variables, so a theme change redraws each chart that is showing
+// from the data it was built with.
+document.addEventListener('groovemap:themechange', () => {
+    const app = window.adminDashboard;
+    if (!app) return;
+    if (app.queueDepthChart && app._lastQueueHistory) app.renderQueueDepthChart(app._lastQueueHistory);
+    if (app.responseTimeChart && app._lastResponseTimeData) app.renderResponseTimeChart(app._lastResponseTimeData);
+    if (app.state.ledgerChart && app._lastLedgerDensity) app.renderLedgerDensity(app._lastLedgerDensity.data, { building: app._lastLedgerDensity.building });
 });

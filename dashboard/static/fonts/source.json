@@ -1,0 +1,13 @@
+{
+  "files": {
+    "jura-latin-300-normal.woff2": "3b6f8a8a7543fb3d8b8745c23414546e2ed294df70380712089fad9dc2f569ba",
+    "jura-latin-400-normal.woff2": "b34f1dc726f62a8f0860f57ca83c481de72244d7e49eb6a5704625e7ddf3dc5c",
+    "license.txt": "0d5db8c052b693936cbc18c1411060c34cc4d8209b98fb13baca93e267778651"
+  },
+  "font": "Jura",
+  "license": "OFL-1.1",
+  "license_file": "license.txt",
+  "package": "@fontsource/jura",
+  "package_version": "5.3.0",
+  "upstream": "https://github.com/ossobuffo/jura"
+}
