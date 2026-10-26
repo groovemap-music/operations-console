@@ -40,7 +40,8 @@ dependency is distributed.
 ## JavaScript build and test dependencies
 
 The direct, build-only JavaScript dependencies are `@tailwindcss/cli` 4.3.3,
-`@tailwindcss/forms` 0.5.11, `@vitest/coverage-v8` 5.0.5, `jsdom` 30.1.3,
+`@tailwindcss/forms` 0.5.11, `@fontsource/jura` 5.3.0 (`OFL-1.1`, see
+below), `@vitest/coverage-v8` 5.0.5, `jsdom` 30.1.3,
 and `vitest` 5.0.5. Each declares the `MIT` license. The browser-coverage
 pipeline directly uses `istanbul-lib-coverage` 3.2.2,
 `istanbul-lib-instrument` 6.0.3, `istanbul-lib-report` 3.0.1, and
@@ -57,6 +58,16 @@ distribution boundary changes.
 The remaining locked dependencies primarily use permissive `MIT`, BSD, ISC,
 Python, or `Apache-2.0` terms. Preserve their copyright, attribution, license,
 and upstream NOTICE material as required.
+
+## Vendored fonts
+
+The console self-hosts the Jura typeface, used for the wordmark and tagline,
+from `@fontsource/jura` 5.3.0 (upstream <https://github.com/ossobuffo/jura>).
+Jura is copyright 2019 The Jura Project Authors and licensed under the SIL Open
+Font License 1.1 (`OFL-1.1`). The two Latin woff2 files, the license text
+(`license.txt`), and their SHA-256 digests live in `dashboard/static/fonts/`
+and are verified by `scripts/check-brand.py`. The font is shipped unmodified and
+not sold by itself; the license text must accompany any redistribution.
 
 ## First-party names and marks
 

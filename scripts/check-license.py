@@ -74,6 +74,7 @@ assert "does not change any third-party license" in dependency_notices
 assert "does not grant trademark rights" in dependency_notices
 
 js_license_overrides = {
+    "@fontsource/jura": "OFL-1.1",
     "istanbul-lib-coverage": "BSD-3-Clause",
     "istanbul-lib-instrument": "BSD-3-Clause",
     "istanbul-lib-report": "BSD-3-Clause",
