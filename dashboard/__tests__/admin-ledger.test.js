@@ -182,6 +182,10 @@ describe('the Ledger tab', () => {
         localStorage.clear();
         FakeChart.instances = [];
         globalThis.Chart = FakeChart;
+        // The theme tokens the charts resolve (index.html defines them; jsdom does not load it).
+        const tokens = { '--chart-grid': '#2e2a24', '--chart-tick': '#a89f91', '--status-warn': '#ffab00', '--text-dim': '#a89f91', '--text-muted-aa': '#918878' };
+        for (let i = 1; i <= 9; i++) tokens[`--series-${i}`] = `#${i}${i}${i}${i}${i}${i}`;
+        for (const [name, value] of Object.entries(tokens)) document.documentElement.style.setProperty(name, value);
         // jsdom has no 2D canvas; the hatch falls back to a translucent fill.
         vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
         const AdminDashboard = loadAdminDashboardClass();

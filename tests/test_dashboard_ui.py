@@ -174,9 +174,11 @@ class TestDashboardUI:
         # Page title is set in <title> tag
         expect(page).to_have_title("GrooveMap Operations Console")
 
-        # Deep Space rebrand: heading contains brand name and tagline
+        # Label web brand: the lowercase wordmark and the brand tagline (the accessible name keeps "GrooveMap")
         heading = page.locator("h1")
-        expect(heading).to_contain_text("GrooveMap")
+        expect(heading).to_contain_text("groovemap")
+        expect(heading).to_contain_text("explore the connections behind music")
+        expect(heading.get_by_role("img", name="GrooveMap Operations Console")).to_be_visible()
 
     def test_service_cards_display(self, page: Page) -> None:
         """Every Discogs service shows in its matrix: the producer in the pipeline head, consumers as column heads."""

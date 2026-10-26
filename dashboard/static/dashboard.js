@@ -826,17 +826,17 @@ class Dashboard {
 
         if (status === 'connected') {
             // NOTE: 'connected' class is kept for Playwright test detection
-            if (indicator) indicator.className = 'status-indicator connected w-2 h-2 rounded-full bg-emerald-500 animate-pulse';
+            if (indicator) indicator.className = 'status-indicator connected w-2 h-2 rounded-full bg-st-ok animate-pulse';
             if (text) {
                 text.textContent = 'Connected';
-                text.className = 'status-text text-[10px] text-emerald-400 font-bold uppercase tracking-widest';
+                text.className = 'status-text text-[10px] st-ok font-bold uppercase tracking-widest';
             }
         } else {
             // NOTE: 'disconnected' class is kept for Playwright test detection
-            if (indicator) indicator.className = 'status-indicator disconnected w-2 h-2 rounded-full bg-red-500';
+            if (indicator) indicator.className = 'status-indicator disconnected w-2 h-2 rounded-full bg-st-err';
             if (text) {
                 text.textContent = 'Disconnected';
-                text.className = 'status-text text-[10px] text-red-400 font-bold uppercase tracking-widest';
+                text.className = 'status-text text-[10px] st-err font-bold uppercase tracking-widest';
             }
         }
     }
@@ -847,12 +847,12 @@ class Dashboard {
         const text = document.getElementById('operational-status-text');
         if (!dot || !text) return;
         const looks = {
-            operational: ['bg-emerald-500 animate-pulse', 'text-emerald-500'],
-            warning: ['bg-yellow-500', 'text-yellow-500'],
-            critical: ['bg-red-500', 'text-red-500'],
-            offline: ['bg-red-500', 'text-red-500'],
-            unknown: ['bg-yellow-500 animate-pulse', 'text-yellow-500'],
-            connecting: ['bg-yellow-500 animate-pulse', 'text-yellow-500'],
+            operational: ['bg-st-ok animate-pulse', 'st-ok'],
+            warning: ['bg-st-warn', 'st-warn'],
+            critical: ['bg-st-err', 'st-err'],
+            offline: ['bg-st-err', 'st-err'],
+            unknown: ['bg-st-warn animate-pulse', 'st-warn'],
+            connecting: ['bg-st-warn animate-pulse', 'st-warn'],
         };
         const [dotClasses, textClass] = looks[status.key];
         dot.className = `w-3 h-3 rounded-full ${dotClasses}`;
@@ -1147,14 +1147,14 @@ class Dashboard {
     _serviceBadgeClasses(status) {
         switch (status.toLowerCase()) {
             case 'healthy':
-                return 'text-[10px] px-2 py-0.5 rounded uppercase font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20';
+                return 'text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-ok';
             case 'unhealthy':
-                return 'text-[10px] px-2 py-0.5 rounded uppercase font-bold bg-red-500/10 text-red-400 border border-red-500/20';
+                return 'text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-error';
             case 'extracting':
             case 'active':
                 return 'text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-active';
             default:
-                return 'text-[10px] px-2 py-0.5 rounded uppercase font-bold bg-yellow-500/10 text-yellow-400 border border-yellow-500/20';
+                return 'text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-running';
         }
     }
 
@@ -1296,7 +1296,7 @@ class Dashboard {
         const producerPrefix = `${pipeline.id}-${producer.name}`;
         const badge = (id) => this._el('span', {
             id,
-            cls: 'text-[10px] bg-yellow-500/10 text-yellow-400 px-2 py-0.5 rounded border border-yellow-500/20 uppercase font-bold',
+            cls: 'text-[10px] badge-running px-2 py-0.5 rounded uppercase font-bold',
             text: 'Unknown',
         });
 
@@ -2202,7 +2202,7 @@ class Dashboard {
 
                 if (badge) {
                     badge.textContent = db.status === 'healthy' ? 'Healthy' : 'Unavailable';
-                    badge.className = `text-[10px] font-bold uppercase ${db.status === 'healthy' ? 'text-emerald-400' : 'text-red-400'}`;
+                    badge.className = `text-[10px] font-bold uppercase ${db.status === 'healthy' ? 'st-ok' : 'st-err'}`;
                 }
 
                 if (nodesEl && relsEl) {
@@ -2229,7 +2229,7 @@ class Dashboard {
 
                 if (badge) {
                     badge.textContent = db.status === 'healthy' ? 'Healthy' : 'Unavailable';
-                    badge.className = `text-[10px] font-bold uppercase ${db.status === 'healthy' ? 'text-emerald-400' : 'text-red-400'}`;
+                    badge.className = `text-[10px] font-bold uppercase ${db.status === 'healthy' ? 'st-ok' : 'st-err'}`;
                 }
                 if (connEl) connEl.textContent = db.connection_count != null ? db.connection_count.toString() : '—';
                 if (sizeEl) sizeEl.textContent = db.size || '—';
@@ -2339,7 +2339,7 @@ class Dashboard {
         const container = document.getElementById('activityLog');
         if (!container) return;
 
-        const levelCls = { info: 'text-emerald-500', warning: 'text-orange-500', error: 'text-red-500' };
+        const levelCls = { info: 'st-ok', warning: 'st-warn', error: 'st-err' };
         const levelLbl = { info: '[INFO]',            warning: '[WARN]',          error: '[ERR]'        };
 
         // A quiet system is news too: say so, rather than collapse the log to nothing.
@@ -2357,7 +2357,7 @@ class Dashboard {
                 ts.textContent = e.timestamp;
 
                 const lv = document.createElement('span');
-                lv.className = `${levelCls[e.type] || 'text-emerald-500'} font-bold shrink-0`;
+                lv.className = `${levelCls[e.type] || 'st-ok'} font-bold shrink-0`;
                 lv.textContent = levelLbl[e.type] || '[INFO]';
 
                 const msg = document.createElement('span');
@@ -2388,7 +2388,24 @@ class Dashboard {
     }
 }
 
+// The header's light/dark toggle. The theme itself (stored choice, else the OS, applied before first
+// paint) is owned by the inline script in <head>; the button only asks it to switch and names the
+// theme a click leads to.
+function setupThemeToggle() {
+    const button = document.getElementById('theme-toggle');
+    if (!button || !window.GrooveMapTheme) return;
+    const label = () => {
+        const next = window.GrooveMapTheme.get() === 'dark' ? 'light' : 'dark';
+        button.setAttribute('aria-label', `Switch to ${next} theme`);
+        button.title = `Switch to ${next} theme`;
+    };
+    button.addEventListener('click', () => window.GrooveMapTheme.toggle());
+    document.addEventListener('groovemap:themechange', label);
+    label();
+}
+
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
+    setupThemeToggle();
     window.dashboard = new Dashboard();
 });
