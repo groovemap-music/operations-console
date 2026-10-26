@@ -281,6 +281,9 @@ class AdminDashboardState {
         this.sessionGeneration = 1;
         this.activeTab = 'overview';
         this.signedIn = false;
+        // True while logout awaits the console: the revocation makes catalog-api refuse reads
+        // still in flight, and those refusals are not the session ending on its own.
+        this.signingOut = false;
         this.sessionWatch = null;
         this.sessionExpiryTimer = null;
         this.queueDepthChart = null;
@@ -328,6 +331,8 @@ class AdminInteractions {
         this.start();
     }
 
+    get signingOut() { return this.state.signingOut; }
+    set signingOut(value) { this.state.signingOut = value; }
     get sessionGeneration() { return this.state.sessionGeneration; }
     set sessionGeneration(value) { this.state.sessionGeneration = value; }
     get refreshInterval() { return this.refreshSubscription.handle; }
@@ -683,12 +688,18 @@ class AdminInteractions {
         }
     }
 
+    // An answer may end only the session it was asked about, and never one that is already
+    // ending or being signed out by the user.
+    ownsSession(generation) {
+        return generation === this.sessionGeneration && this.signedIn && !this.signingOut;
+    }
+
     // Mid-session, no cookie at all means the session ended: the browser dropped it at its
     // expiry, or the console cleared it when catalog-api called it invalid.
     async verifySession() {
         const generation = this.sessionGeneration;
         const result = await this.checkSession();
-        if (generation !== this.sessionGeneration || !this.signedIn) return result;
+        if (!this.ownsSession(generation)) return result;
         if (!result.ok) this.endSession(result.reason === 'missing' ? 'invalid' : result.reason);
         return result;
     }
@@ -776,11 +787,14 @@ class AdminInteractions {
     // console clears the cookie; with none, the sign-out is retried on the next load.
     async logout() {
         let status = null;
+        this.signingOut = true;
         try {
             const response = await fetch('/admin/api/logout', { method: 'POST', headers: CONSOLE_REQUEST_HEADERS });
             status = response.status;
         } catch {
             status = null;
+        } finally {
+            this.signingOut = false;
         }
         if (status === null) {
             localStorage.setItem(SIGNOUT_PENDING_KEY, '1');
@@ -798,7 +812,7 @@ class AdminInteractions {
         const headers = { ...CONSOLE_REQUEST_HEADERS, ...options.headers };
         const response = await fetch(url, { ...options, headers });
         if (response.status === 401) {
-            if (generation === this.sessionGeneration && this.signedIn) this.endSession('invalid');
+            if (this.ownsSession(generation)) this.endSession('invalid');
             throw new Error('Session expired');
         }
         return response;
