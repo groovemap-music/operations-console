@@ -129,10 +129,11 @@ const LEDGER_EVENT_LABELS = {
     link_removed: 'Link removed',
 };
 
-// The CSS variable each event type is drawn in: `minted` is the neutral muted tone, the rest take
-// the series palette, so no event colour is a Strata state colour (see ledgerEventColor).
+// The CSS variable each event type is drawn in: `minted` has its own colour, the rest take the
+// series palette, so no event colour is within 15 CIEDE2000 of a Strata state (guarded in
+// matrix-contrast.test.js; see ledgerEventColor).
 const LEDGER_EVENT_COLORS = {
-    minted: '--text-muted-aa',
+    minted: '--ledger-minted',
     linked_at_ingest: '--series-2',
     evidence_attached: '--series-1',
     alias_closed: '--series-7',

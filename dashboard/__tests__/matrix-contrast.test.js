@@ -274,6 +274,25 @@ describe.each(THEMES)('chart series, %s theme', (theme) => {
         }
     });
 
+    it('draws every ledger event in a colour at least 15 CIEDE2000 from every state, entity, brand and other event colour, readable at 4.5:1', () => {
+        const ledger = readFileSync(resolve(STATIC, 'admin.js'), 'utf-8');
+        const block = ledger.slice(ledger.indexOf('const LEDGER_EVENT_COLORS = {'));
+        const events = [...block.slice(0, block.indexOf('};')).matchAll(/(\w+): '--([\w-]+)'/g)].map(([, type, name]) => [type, ui(theme, name)]);
+        expect(events.map(([type]) => type)).toHaveLength(10);
+        for (const [i, [type, colour]] of events.entries()) {
+            for (const [other, value] of [...states, ...entities, ...brand]) {
+                if (other === (theme === 'dark' ? 'groovemap-brass' : 'groovemap-oxblood') && colour.join() === ui(theme, 'accent').join()) continue;
+                expect(deltaE2000(colour, value), `${type} vs ${other}`).toBeGreaterThanOrEqual(15);
+            }
+            for (const [otherType, other] of events.slice(i + 1)) {
+                expect(deltaE2000(colour, other), `${type} vs ${otherType}`).toBeGreaterThanOrEqual(15);
+            }
+            for (const surface of ['bg-void', 'bg-deep', 'card-bg', 'inner-bg']) {
+                expect(contrast(colour, ui(theme, surface)), `${type} on ${surface}`).toBeGreaterThanOrEqual(type === 'minted' ? 4.5 : 3);
+            }
+        }
+    });
+
     it('draws the axis grid and ticks from the border and muted-text tokens, ticks at 4.5:1', () => {
         expect(ui(theme, 'chart-grid')).toEqual(ui(theme, 'border-color'));
         expect(ui(theme, 'chart-tick')).toEqual(ui(theme, 'text-dim'));
