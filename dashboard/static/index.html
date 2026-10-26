@@ -1,14 +1,50 @@
 <!DOCTYPE html>
-<html lang="en" class="dark">
+<html lang="en" data-theme="dark" class="dark">
 <head>
     <meta charset="utf-8"/>
     <meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+    <meta name="color-scheme" content="dark light"/>
+    <meta name="theme-color" content="#0e0d0b" media="(prefers-color-scheme: dark)"/>
+    <meta name="theme-color" content="#eeeae3" media="(prefers-color-scheme: light)"/>
     <title>GrooveMap Operations Console</title>
+    <!-- Theme before first paint: a stored choice wins, otherwise the OS setting, followed live. Dispatches
+         `groovemap:themechange` on document so the charts redraw in the new palette. -->
+    <script>
+        (function () {
+            var KEY = 'groovemap-theme', COLORS = { dark: '#0e0d0b', light: '#eeeae3' };
+            var root = document.documentElement, query = window.matchMedia('(prefers-color-scheme: light)');
+            function stored() {
+                try { var value = window.localStorage.getItem(KEY); return value === 'light' || value === 'dark' ? value : null; } catch (e) { return null; }
+            }
+            function system() { return query.matches ? 'light' : 'dark'; }
+            function apply(theme) {
+                root.setAttribute('data-theme', theme);
+                root.classList.toggle('dark', theme === 'dark');
+                root.style.colorScheme = theme;
+                document.querySelectorAll('meta[name="theme-color"]').forEach(function (meta) {
+                    meta.removeAttribute('media');
+                    meta.setAttribute('content', COLORS[theme]);
+                });
+                document.dispatchEvent(new CustomEvent('groovemap:themechange', { detail: { theme: theme } }));
+            }
+            window.GrooveMapTheme = {
+                get: function () { return root.getAttribute('data-theme'); },
+                set: function (theme) {
+                    try { window.localStorage.setItem(KEY, theme); } catch (e) { /* the choice still applies to this page */ }
+                    apply(theme);
+                },
+                toggle: function () { this.set(this.get() === 'dark' ? 'light' : 'dark'); },
+            };
+            apply(stored() || system());
+            query.addEventListener('change', function () { if (!stored()) apply(system()); });
+        })();
+    </script>
+    <link href="/brand/tokens.css" rel="stylesheet"/>
     <link href="/tailwind.css" rel="stylesheet"/>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8" integrity="sha384-T/4KgSWuZEPozpPz7rnnp/5lDSnpY1VPJCojf1S81uTHS1E38qgLfMgVsAeRCWc4" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/luxon@3.5.0/build/global/luxon.min.js" integrity="sha384-CU0J6nu6GO5gWB5IqOOhPQsG0LKyjpotF5Gw502R+0zbkzKHjDWc6FKSZsNTJfLX" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js" integrity="sha384-7cWzHabR6ZyfMWzZgVssYaOQRTccHUWZ0F09AanlF3RAJ/JNyFnIma2JTYIVKEUP" crossorigin="anonymous"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet"/>
     <link rel="icon" type="image/svg+xml" href="/brand/favicon.svg">
     <link rel="apple-touch-icon" href="/brand/app-icon-192.svg">
@@ -17,29 +53,138 @@
     <meta property="og:image:width" content="1200">
     <meta property="og:image:height" content="630">
     <style>
-        :root {
-            --bg-void: #0e0d0b;
-            --bg-deep: #141310;
-            --card-bg: #0f1a2e;
-            --inner-bg: #162540;
-            --border-color: #2e2a24;
-            --inner-border: #2e2a24;
-            --bg-hover: #2a3d58;
-            --text-high: #f2ede4;
-            --text-mid: #b0bec5;
-            --text-dim: #7a8ba3;
-            --text-muted: #a89f91;
-            --accent-brass: #b8962a;
-            --accent-oxblood: #4d0018;
-            --on-brass: #0e0d0b;
-            --accent-green: #00e676;
-            --accent-yellow: #ffab00;
-            --accent-red: #ff5252;
-            --card-shadow: 0 1px 3px rgba(0,0,0,0.3), 0 1px 2px rgba(0,0,0,0.2);
-            --scrollbar-thumb: #2a3d58;
-            --log-msg: #b0bec5;
-            --row-border: rgba(255,255,255,0.05);
+        @font-face { font-family: 'Jura'; font-style: normal; font-weight: 300; font-display: swap; src: url('/fonts/jura-latin-300-normal.woff2') format('woff2'); }
+        @font-face { font-family: 'Jura'; font-style: normal; font-weight: 400; font-display: swap; src: url('/fonts/jura-latin-400-normal.woff2') format('woff2'); }
+
+        /* ─── Label web theme (design 41be7cb, Brass palette) ─────────────────────────
+           Dark is the default; the inline script in <head> sets data-theme before first paint, from the
+           stored choice or the OS. Brand colours come from /brand/tokens.css (--groovemap-*); the UI scale
+           below is shared with the Graph Explorer. Dark surfaces that carry Strata state colours stay no
+           lighter than #141310 so every state keeps 4.5:1. Matrix colours are checked for contrast in
+           dashboard/__tests__/matrix-contrast.test.js, which reads this block and tokens.css. */
+        :root, [data-theme="dark"] {
+            color-scheme: dark;
+            --bg-void: #0a0908;
+            --bg-deep: #0e0d0b;
+            --card-bg: #12110e;
+            --inner-bg: #141310;
+            --border-color: var(--groovemap-border);
+            --inner-border: var(--groovemap-border);
+            --bg-hover: #24211c;
+            --scrollbar-thumb: #3a352d;
+            --text-high: var(--groovemap-text);
+            --text-mid: #cfc6b8;
+            --text-dim: var(--groovemap-muted-text);
+            --text-muted: #7a7164;
+            --text-muted-aa: #918878;
+            --accent: var(--groovemap-brass);
+            --on-accent: var(--groovemap-void);
+            --secondary: #96c0a7;
+            --card-shadow: 0 1px 3px rgba(26,23,20,0.5), 0 1px 2px rgba(26,23,20,0.4);
+            --log-msg: var(--text-mid);
+            --row-border: rgba(242,237,228,0.06);
+            --chart-grid: var(--groovemap-border);
+            --chart-tick: var(--groovemap-muted-text);
+            --series-1: #b8962a;
+            --series-2: #96c0a7;
+            --series-3: #b62075;
+            --series-4: #ba97ab;
+            --series-5: #995233;
+            --series-6: #717a52;
+            --series-7: #99666f;
+            --series-8: #946f38;
+            --series-9: #e4ed97;
+            --ledger-minted: #7d78a5;
+            --status-ok: var(--mx-ok);
+            --status-warn: var(--mx-warn);
+            --status-err: var(--mx-crit);
+            --on-status: var(--groovemap-void);
+            --id-not-recorded: var(--groovemap-state-identity-not-recorded-dark);
+            --id-discogs-only: var(--groovemap-state-identity-discogs-only-dark);
+            --id-musicbrainz-only: var(--groovemap-state-identity-musicbrainz-only-dark);
+            --id-unresolved: var(--groovemap-state-identity-unresolved-dark);
+            --id-split: var(--groovemap-state-identity-split-dark);
+            --id-linked: var(--groovemap-state-identity-linked-dark);
+            --id-superseded: var(--groovemap-state-identity-superseded-dark);
+            --mx-surface: var(--card-bg);
+            --mx-border: var(--groovemap-border);
+            --mx-text-high: var(--text-high);
+            --mx-text-mid: var(--text-mid);
+            --mx-text-dim: var(--text-dim);
+            --mx-accent: var(--groovemap-brass);
+            --mx-warn: #ffab00;
+            --mx-ok: #3ddc97;
+            --mx-crit: #ff5c8a;
+            --mx-crit-bg: rgba(255, 92, 138, 0.16);
+            --mx-ramp-0: #1e1a11;
+            --mx-ramp-1: #4a3a12;
+            --mx-ramp-2: #6e5510;
+            --mx-ramp-3: #b8962a;
+            --mx-ramp-3-text: var(--groovemap-void);
+            --mx-edge: #8f7d57;
+            --mx-backdrop: rgba(14, 13, 11, 0.7);
         }
+        [data-theme="light"] {
+            color-scheme: light;
+            --bg-void: #eeeae3;
+            --bg-deep: #f7f4ee;
+            --card-bg: #fbf9f5;
+            --inner-bg: #f3efe8;
+            --border-color: #ddd5c7;
+            --inner-border: #ddd5c7;
+            --bg-hover: #ebe5db;
+            --scrollbar-thumb: #cfc6b6;
+            --text-high: var(--groovemap-light-text);
+            --text-mid: #4a4339;
+            --text-dim: var(--groovemap-light-muted-text);
+            --text-muted: #8f8577;
+            --text-muted-aa: #6a6153;
+            --accent: var(--groovemap-oxblood);
+            --on-accent: #ffffff;
+            --secondary: #14361e;
+            --card-shadow: 0 1px 3px rgba(26,23,20,0.12), 0 1px 2px rgba(26,23,20,0.08);
+            --row-border: rgba(26,23,20,0.08);
+            --chart-grid: #ddd5c7;
+            --chart-tick: var(--groovemap-light-muted-text);
+            --series-1: #4d0018;
+            --series-2: #14361e;
+            --series-3: #bc752f;
+            --series-4: #708b18;
+            --series-5: #d02569;
+            --series-6: #826917;
+            --series-7: #563944;
+            --series-8: #d04d25;
+            --series-9: #d025d0;
+            --ledger-minted: #1c414a;
+            --id-not-recorded: var(--groovemap-state-identity-not-recorded-light);
+            --id-discogs-only: var(--groovemap-state-identity-discogs-only-light);
+            --id-musicbrainz-only: var(--groovemap-state-identity-musicbrainz-only-light);
+            --id-unresolved: var(--groovemap-state-identity-unresolved-light);
+            --id-split: var(--groovemap-state-identity-split-light);
+            --id-linked: var(--groovemap-state-identity-linked-light);
+            --id-superseded: var(--groovemap-state-identity-superseded-light);
+            --on-status: #ffffff;
+            --mx-surface: var(--card-bg);
+            --mx-border: #ddd5c7;
+            --mx-text-high: var(--text-high);
+            --mx-text-mid: var(--text-mid);
+            --mx-text-dim: var(--text-dim);
+            --mx-accent: var(--groovemap-oxblood);
+            --mx-warn: #6d4600;
+            --mx-ok: #0b6b3a;
+            --mx-crit: #c2185b;
+            --mx-crit-bg: rgba(194, 24, 91, 0.10);
+            --mx-ramp-0: #f7f1e3;
+            --mx-ramp-1: #e8d6a0;
+            --mx-ramp-2: #d6b95c;
+            --mx-ramp-3: #b8962a;
+            --mx-ramp-3-text: var(--groovemap-void);
+            --mx-edge: #7a6a45;
+            --mx-backdrop: rgba(26, 23, 20, 0.4);
+        }
+        html { accent-color: var(--accent); }
+        ::selection { background: var(--groovemap-brass); color: var(--groovemap-void); }
+        [data-theme="light"] ::selection { background: var(--groovemap-oxblood); color: #ffffff; }
         body {
             background-color: var(--bg-deep);
             color: var(--text-high);
@@ -56,38 +201,87 @@
         .t-high { color: var(--text-high); }
         .t-mid { color: var(--text-mid); }
         .t-dim { color: var(--text-dim); }
-        .t-muted { color: var(--text-muted); }
+        .t-muted { color: var(--text-muted-aa); }
+        .t-accent { color: var(--accent); }
+        .t-secondary { color: var(--secondary); }
         .b-theme { border-color: var(--border-color); }
         .b-row { border-color: var(--row-border); }
         .bg-inner { background: var(--inner-bg); border-color: var(--inner-border); }
+        /* Utilities the markup uses that Tailwind does not generate for hand-written classes. */
+        .hover\:t-high:hover { color: var(--text-high); }
+        .hover\:bg-inner:hover, .hover\:bg-hover:hover { background-color: var(--bg-hover); }
+        /* Semantic status colours, from the --status-* tokens of the active theme. */
+        .st-ok { color: var(--status-ok); }
+        .st-warn { color: var(--status-warn); }
+        .st-err { color: var(--status-err); }
+        .bg-st-ok { background-color: var(--status-ok); }
+        .bg-st-warn { background-color: var(--status-warn); }
+        .bg-st-err { background-color: var(--status-err); }
         ::-webkit-scrollbar { width: 6px; }
         ::-webkit-scrollbar-track { background: var(--bg-deep); }
         ::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 10px; }
 
-        .badge-completed {
-            background: rgba(16,185,129,0.1); color: #10B981; border: 1px solid rgba(16,185,129,0.2);
+        /* Brand wordmark: lowercase, Jura 300, 0.12em tracking, beside the mark. */
+        .wordmark { font-family: 'Jura', sans-serif; font-weight: 300; letter-spacing: 0.12em; text-transform: lowercase; color: var(--text-high); line-height: 1; }
+        .brand-tagline { font-family: 'Jura', sans-serif; font-weight: 400; color: var(--text-muted-aa); }
+        .mark { border-radius: 50%; }
+        [data-theme="light"] .mark-dark, :root:not([data-theme="light"]) .mark-light { display: none; }
+
+        /* Theme toggle: shows the theme a click switches to. */
+        .theme-toggle {
+            display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: 8px;
+            color: var(--text-dim); background: transparent; border: 1px solid var(--border-color); cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+        }
+        .theme-toggle:hover { background: var(--bg-hover); color: var(--text-high); }
+        .theme-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .theme-toggle .when-dark { display: none; }
+        [data-theme="dark"] .theme-toggle .when-dark { display: inline; }
+        [data-theme="dark"] .theme-toggle .when-light { display: none; }
+
+        /* Native and plugin form controls follow the theme: fields, the date pickers, focus ring, checkboxes. */
+        input, select, textarea { color-scheme: inherit; }
+        input:not([type="checkbox"]):not([type="radio"]), select, textarea {
+            background-color: var(--inner-bg); color: var(--text-high); border-color: var(--border-color);
+        }
+        input[type="date"], input[type="datetime-local"] { font-family: inherit; }
+        input::placeholder, textarea::placeholder { color: var(--text-muted-aa); opacity: 1; }
+        input:not([type="checkbox"]):not([type="radio"]):focus, select:focus, textarea:focus {
+            --tw-ring-color: var(--accent); --tw-ring-shadow: 0 0 0 2px var(--accent);
+            border-color: var(--accent); outline: 2px solid transparent; outline-offset: 2px;
+        }
+        input[type="checkbox"], input[type="radio"] { color: var(--accent); background-color: var(--inner-bg); border-color: var(--text-dim); }
+        input[type="checkbox"]:checked, input[type="radio"]:checked { background-color: var(--accent); border-color: var(--accent); }
+        input[type="checkbox"]:focus, input[type="radio"]:focus { --tw-ring-color: var(--accent); }
+
+        /* Status badges: tints of the --status-* and brand tokens, legible in both themes. */
+        .badge-completed, .badge-ok {
+            background: color-mix(in srgb, var(--status-ok) 8%, transparent); color: var(--status-ok);
+            border: 1px solid color-mix(in srgb, var(--status-ok) 28%, transparent);
         }
         .badge-waiting {
-            background: rgba(59,130,246,0.1); color: #3B82F6; border: 1px solid rgba(59,130,246,0.2);
+            background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--accent);
+            border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
         }
-        .badge-failed {
-            background: rgba(239,68,68,0.1); color: #EF4444; border: 1px solid rgba(239,68,68,0.2);
+        .badge-failed, .badge-error {
+            background: color-mix(in srgb, var(--status-err) 8%, transparent); color: var(--status-err);
+            border: 1px solid color-mix(in srgb, var(--status-err) 28%, transparent);
         }
         .badge-running, .badge-pending {
-            background: rgba(234,179,8,0.1); color: #EAB308; border: 1px solid rgba(234,179,8,0.2);
+            background: color-mix(in srgb, var(--status-warn) 8%, transparent); color: var(--status-warn);
+            border: 1px solid color-mix(in srgb, var(--status-warn) 28%, transparent);
         }
         .badge-idle {
-            background: rgba(107,114,128,0.1); color: #6B7280; border: 1px solid rgba(107,114,128,0.2);
+            background: color-mix(in srgb, var(--text-dim) 8%, transparent); color: var(--text-dim);
+            border: 1px solid color-mix(in srgb, var(--text-dim) 28%, transparent);
         }
-        .badge-ok {
-            background: rgba(16,185,129,0.1); color: #10B981; border: 1px solid rgba(16,185,129,0.2);
-        }
-        .badge-error {
-            background: rgba(239,68,68,0.1); color: #EF4444; border: 1px solid rgba(239,68,68,0.2);
+        .badge-secondary {
+            background: color-mix(in srgb, var(--secondary) 8%, transparent); color: var(--secondary);
+            border: 1px solid color-mix(in srgb, var(--secondary) 28%, transparent);
         }
         .btn-accent {
-            background: var(--accent-brass);
-            color: var(--on-brass);
+            background: var(--accent);
+            color: var(--on-accent);
             border: none;
             cursor: pointer;
             transition: opacity 0.15s;
@@ -114,14 +308,14 @@
         }
         .tab-btn:hover { background: var(--inner-bg); color: var(--text-high); }
         .tab-btn.active {
-            background: var(--accent-brass);
-            color: var(--on-brass);
+            background: var(--accent);
+            color: var(--on-accent);
         }
 
         /* Extraction Analysis sub-view toggle buttons */
         .ea-view-btn { color: var(--text-dim); background: transparent; border: 1px solid var(--border-color); cursor: pointer; display: inline-flex; align-items: center; gap: 0.25rem; min-width: 6rem; justify-content: center; }
         .ea-view-btn:hover { color: var(--text-high); }
-        .ea-view-btn.active { background: var(--accent-brass); color: var(--on-brass); border-color: var(--accent-brass); }
+        .ea-view-btn.active { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
 
         /* Collapsible section */
         .collapsible-header {
@@ -141,9 +335,9 @@
         }
         .range-btn:hover { background: var(--inner-bg); color: var(--text-high); }
         .range-btn.active {
-            background: var(--accent-brass);
-            color: var(--on-brass);
-            border-color: var(--accent-brass);
+            background: var(--accent);
+            color: var(--on-accent);
+            border-color: var(--accent);
         }
 
         /* Summary stat cards */
@@ -156,10 +350,8 @@
             min-width: 0;
         }
 
-        /* Select/dropdown styling for dark mode */
+        /* Select/dropdown styling: the field colours come from the form rules above. */
         select {
-            background-color: var(--card-bg);
-            color: var(--text-high);
             min-width: 12rem;
         }
         select option {
@@ -172,47 +364,9 @@
 
         /* ─── Overview matrix (spike gm-operations-console-2rf) ───────────────────────
            Every colour pair the matrix draws is checked for WCAG contrast in
-           dashboard/__tests__/matrix-contrast.test.js. The console renders dark; the light set
-           is checked too, ready for a light theme. Lag ramp: lightness rises ~15 L* per bin so
-           bins stay apart under every colour-vision simulation. */
-        :root, [data-theme="dark"] {
-            --mx-surface: #0f1a2e;
-            --mx-border: #2e2a24;
-            --mx-text-high: #f2ede4;
-            --mx-text-mid: #b0bec5;
-            --mx-text-dim: #8a9bb3;
-            --mx-accent: #b8962a;
-            --mx-warn: #ffab00;
-            --mx-ok: #3ddc97;
-            --mx-crit: #ff5c8a;
-            --mx-crit-bg: rgba(255, 92, 138, 0.16);
-            --mx-ramp-0: #0d2431;
-            --mx-ramp-1: #004a67;
-            --mx-ramp-2: #4361a6;
-            --mx-ramp-3: #8c8de6;
-            --mx-ramp-3-text: #0d1b2a;
-            --mx-edge: #2f6f8f;
-            --mx-backdrop: rgba(14,13,11, 0.7);
-        }
-        [data-theme="light"] {
-            --mx-surface: #ffffff;
-            --mx-border: #c3d0de;
-            --mx-text-high: #1a1714;
-            --mx-text-mid: #2c3e55;
-            --mx-text-dim: #5d564b;
-            --mx-accent: #6b1027;
-            --mx-warn: #6d4600;
-            --mx-ok: #0b6b3a;
-            --mx-crit: #c2185b;
-            --mx-crit-bg: rgba(194, 24, 91, 0.10);
-            --mx-ramp-0: #f0f8fb;
-            --mx-ramp-1: #a6dae7;
-            --mx-ramp-2: #98ade3;
-            --mx-ramp-3: #8384d3;
-            --mx-ramp-3-text: #0d1b2a;
-            --mx-edge: #5f97aa;
-            --mx-backdrop: rgba(13, 27, 42, 0.4);
-        }
+           dashboard/__tests__/matrix-contrast.test.js, in both themes (the --mx-* tokens are defined with the
+           theme above). Lag ramp: brass, from near-void to the full label colour, lightness rising 8 L* or
+           more per bin so bins stay apart under every colour-vision simulation. */
         .attention-bar {
             background: var(--mx-surface); border: 1px solid var(--mx-crit); border-radius: 12px; padding: 8px 12px;
             color: var(--mx-text-high); font-size: 13px;
@@ -378,7 +532,7 @@
         .rp-projection { fill: none; stroke-width: 1.5; stroke-dasharray: 4 4; }
         .rp-series-0 { stroke: var(--mx-accent); background: var(--mx-accent); }
         .rp-series-1 { stroke: var(--mx-text-high); background: var(--mx-text-high); }
-        .rp-series-2 { stroke: var(--mx-ramp-3); background: var(--mx-ramp-3); }
+        .rp-series-2 { stroke: var(--secondary); background: var(--secondary); }
         .rp-series-3 { stroke: var(--mx-text-dim); background: var(--mx-text-dim); }
         .rp-swatch { display: inline-block; width: 14px; height: 3px; vertical-align: 3px; margin-right: 4px; }
         .rp-entity { border-top: 1px solid var(--mx-border); padding: 8px 0 6px; font-size: 13px; }
@@ -438,13 +592,13 @@
         .tp-edge { fill: none; stroke: var(--mx-edge); }
         .tp-edge-idle { stroke-dasharray: 3 4; }
         .tp-edge-unknown { stroke-dasharray: 1 5; stroke-linecap: round; }
-        .badge-active { background: rgba(184,150,42,0.1); color: var(--accent-brass); border: 1px solid rgba(184,150,42,0.2); }
+        .badge-active { background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); }
         /* Identity Ledger tab (design ADR 0016 section 7, concept D): a per-month density strip, a
            paged works table, and one work's drill-down. Backfilled events are hatched in the strip and
            labelled in the drill-down: they are dated from the MusicBrainz full export, not recorded. */
         .ledger-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border-color); }
         .ledger-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
-        .ledger-controls label { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); }
+        .ledger-controls label { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted-aa); }
         .ledger-controls input, .ledger-controls select { font-size: 12px; text-transform: none; letter-spacing: normal; font-weight: 400; max-width: 100%; }
         .ledger-strip { position: relative; width: 100%; height: 180px; }
         .ledger-table { overflow-x: auto; max-width: 100%; }
@@ -452,17 +606,29 @@
         .ledger-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 10px; font-size: 11px; color: var(--text-dim); }
         .ledger-legend span { display: inline-flex; align-items: center; gap: 4px; }
         .ledger-swatch { display: inline-block; width: 12px; height: 10px; border-radius: 2px; }
-        .ledger-swatch-backfill { background-image: repeating-linear-gradient(135deg, rgba(255,255,255,0.75) 0 2px, transparent 2px 4px); border: 1px solid; }
+        .ledger-swatch-backfill { background-image: repeating-linear-gradient(135deg, var(--text-high) 0 2px, transparent 2px 4px); border: 1px solid; }
         .ledger-id { font-family: 'JetBrains Mono', monospace; overflow-wrap: anywhere; }
-        .ledger-work-link { color: var(--accent-brass); background: none; border: none; padding: 0; cursor: pointer; text-align: left; font: inherit; }
+        .ledger-work-link { color: var(--accent); background: none; border: none; padding: 0; cursor: pointer; text-align: left; font: inherit; }
         .ledger-work-link:hover { text-decoration: underline; }
-        .ledger-work-link:focus-visible { outline: 2px solid var(--accent-brass); outline-offset: 2px; }
-        .ledger-badge { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; white-space: nowrap; background: var(--inner-bg); color: var(--text-mid); }
-        .ledger-backfill { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; color: var(--accent-yellow); border: 1px dashed var(--accent-yellow); }
-        .ledger-recorded { font-size: 10px; color: var(--text-muted); }
+        .ledger-work-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+        .ledger-badge { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; white-space: nowrap; border: 1px solid transparent; }
+        .ledger-chip { background: var(--inner-bg); color: var(--text-mid); border-color: var(--border-color); }
+        /* Identity states: the Strata state tokens, so every state reads at 4.5:1 or better on its surface
+           (checked in dashboard/__tests__/matrix-contrast.test.js). The base .ledger-badge sets layout only, so it
+           never overrides a state or status colour. */
+        .ledger-badge[data-state] { color: var(--ledger-state); background: transparent; border-color: var(--ledger-state); }
+        .ledger-badge[data-state="not_recorded"] { --ledger-state: var(--id-not-recorded); }
+        .ledger-badge[data-state="discogs_only"] { --ledger-state: var(--id-discogs-only); }
+        .ledger-badge[data-state="musicbrainz_only"] { --ledger-state: var(--id-musicbrainz-only); }
+        .ledger-badge[data-state="unresolved"] { --ledger-state: var(--id-unresolved); }
+        .ledger-badge[data-state="split"] { --ledger-state: var(--id-split); }
+        .ledger-badge[data-state="linked"] { --ledger-state: var(--id-linked); }
+        .ledger-badge[data-state="superseded"] { --ledger-state: var(--id-superseded); }
+        .ledger-backfill { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 10px; font-weight: 600; color: var(--status-warn); border: 1px dashed var(--status-warn); }
+        .ledger-recorded { font-size: 10px; color: var(--text-muted-aa); }
         .ledger-edition { border: 1px solid var(--inner-border); border-radius: 8px; padding: 12px; background: var(--bg-deep); min-width: 0; }
         .ledger-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; font-size: 12px; margin: 8px 0; }
-        .ledger-fields dt { color: var(--text-muted); }
+        .ledger-fields dt { color: var(--text-muted-aa); }
         .ledger-fields dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
         .ledger-events { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; }
         .ledger-events li { display: grid; grid-template-columns: 9.5rem 8rem minmax(0, 1fr) auto; gap: 4px 10px; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--row-border); }
@@ -485,25 +651,30 @@
     <div id="login-view" class="flex items-center justify-center min-h-[80vh]" style="display:none">
         <div class="dashboard-card p-8 w-full max-w-md space-y-6">
             <div class="text-center space-y-2">
-                <span class="material-symbols-outlined text-4xl" style="color:var(--accent-brass)">admin_panel_settings</span>
-                <h2 class="text-xl font-semibold">GrooveMap Operations</h2>
+                <div class="flex items-center justify-center gap-3">
+                    <img class="mark mark-dark" src="/brand/icon-dark.svg" alt="GrooveMap" width="44" height="44" style="width:44px;height:44px;">
+                    <img class="mark mark-light" src="/brand/icon-light.svg" alt="GrooveMap" width="44" height="44" style="width:44px;height:44px;">
+                    <span class="wordmark text-2xl" aria-hidden="true">groovemap</span>
+                </div>
+                <p class="brand-tagline text-xs">explore the connections behind music</p>
+                <h2 class="text-xl font-semibold">Operations Console</h2>
                 <p class="text-xs t-muted">Sign in with your catalog-api admin account</p>
             </div>
 
-            <div id="login-reason" role="status" class="text-xs text-amber-500 text-center" style="display:none"></div>
-            <div id="login-error" class="text-xs text-red-500 text-center" style="display:none"></div>
+            <div id="login-reason" role="status" class="text-xs st-warn text-center" style="display:none"></div>
+            <div id="login-error" class="text-xs st-err text-center" style="display:none"></div>
 
             <div class="space-y-4">
                 <div>
                     <label for="login-email" class="block text-[10px] font-bold uppercase tracking-wider t-dim mb-1">Email</label>
                     <input id="login-email" type="email" autocomplete="email"
-                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high focus:outline-none focus:ring-2 focus:ring-[#b8962a]/50"
+                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high"
                            placeholder="admin@example.com"/>
                 </div>
                 <div>
                     <label for="login-password" class="block text-[10px] font-bold uppercase tracking-wider t-dim mb-1">Password</label>
                     <input id="login-password" type="password" autocomplete="current-password"
-                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high focus:outline-none focus:ring-2 focus:ring-[#b8962a]/50"
+                           class="w-full px-3 py-2 rounded-lg text-sm mono bg-inner border b-theme t-high"
                            placeholder="&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;&#8226;"/>
                 </div>
                 <button id="login-btn"
@@ -534,25 +705,30 @@
                      its own size and shape.
                      ============================================================ -->
                 <div id="app-logo" aria-label="GrooveMap logo">
-                    <img src="/brand/icon-dark.svg" alt="GrooveMap" style="width:40px;height:40px;border-radius:50%;">
+                    <img class="mark mark-dark" src="/brand/icon-dark.svg" alt="GrooveMap" style="width:40px;height:40px;">
+                    <img class="mark mark-light" src="/brand/icon-light.svg" alt="GrooveMap" style="width:40px;height:40px;">
                 </div>
                 <!-- END LOGO -->
 
                 <div>
-                    <h1 class="text-xl font-semibold tracking-tight">
-                        <span style="font-family:'Space Grotesk',sans-serif;font-weight:700;font-size:1.1rem;letter-spacing:-0.03em;" class="t-high">GrooveMap</span>
-                        <span style="font-family:'Space Grotesk',sans-serif;font-size:0.65rem;letter-spacing:0.02em;" class="t-muted ml-1">map the music</span>
+                    <h1 class="flex flex-wrap items-baseline gap-x-3">
+                        <span class="wordmark text-2xl" role="img" aria-label="GrooveMap Operations Console">groovemap</span>
+                        <span class="brand-tagline text-[0.7rem]">explore the connections behind music</span>
                     </h1>
                     <div class="flex items-center space-x-2 mt-0.5">
-                        <span id="operational-status-dot" class="w-3 h-3 rounded-full bg-yellow-500 animate-pulse"></span>
-                        <span id="operational-status-text" class="text-[10px] text-yellow-500 font-bold uppercase tracking-widest">Connecting</span>
+                        <span id="operational-status-dot" class="w-3 h-3 rounded-full bg-st-warn animate-pulse"></span>
+                        <span id="operational-status-text" class="text-[10px] st-warn font-bold uppercase tracking-widest">Connecting</span>
                     </div>
                 </div>
             </div>
 
             <div class="flex flex-wrap items-center gap-4">
                 <span id="admin-email" class="text-xs mono t-dim"></span>
-                <button id="logout-btn" class="text-xs font-bold uppercase tracking-wider text-red-400 hover:text-red-300 transition-colors flex items-center gap-1">
+                <button id="theme-toggle" type="button" class="theme-toggle" aria-label="Switch to light theme" title="Switch theme">
+                    <span class="material-symbols-outlined text-base when-dark" aria-hidden="true">light_mode</span>
+                    <span class="material-symbols-outlined text-base when-light" aria-hidden="true">dark_mode</span>
+                </button>
+                <button id="logout-btn" class="text-xs font-bold uppercase tracking-wider st-err hover:opacity-80 transition-opacity flex items-center gap-1">
                     <span class="material-symbols-outlined text-sm">logout</span> Logout
                 </button>
             </div>
@@ -696,7 +872,7 @@
                     <div id="db-neo4j" class="dashboard-card p-6 flex flex-col justify-between">
                         <div class="flex items-center justify-between">
                             <div class="flex items-center space-x-3">
-                                <span class="material-symbols-outlined text-orange-400">hub</span>
+                                <span class="material-symbols-outlined t-accent">hub</span>
                                 <span class="text-sm font-bold database-name">Neo4j</span>
                             </div>
                             <span id="neo4j-status-badge" class="text-[10px] t-muted font-bold uppercase">Unknown</span>
@@ -718,7 +894,7 @@
                     <div id="db-postgresql" class="dashboard-card p-6 flex flex-col justify-between">
                         <div class="flex items-center justify-between">
                             <div class="flex items-center space-x-3">
-                                <span class="material-symbols-outlined text-blue-400">database</span>
+                                <span class="material-symbols-outlined t-secondary">database</span>
                                 <span class="text-sm font-bold database-name">PostgreSQL</span>
                             </div>
                             <span id="postgresql-status-badge" class="text-[10px] t-muted font-bold uppercase">Unknown</span>
@@ -745,7 +921,7 @@
                         </h2>
                         <!-- WebSocket connection indicator -->
                         <div class="connection-status flex items-center space-x-2">
-                            <span class="status-indicator w-2 h-2 rounded-full bg-yellow-500 animate-pulse"></span>
+                            <span class="status-indicator w-2 h-2 rounded-full bg-st-warn animate-pulse"></span>
                             <span class="status-text text-[10px] t-dim font-bold uppercase tracking-widest">Connecting</span>
                         </div>
                     </div>
@@ -785,7 +961,7 @@
                             class="btn-accent px-6 py-2.5 rounded-lg text-sm font-semibold flex items-center gap-2">
                         <span class="material-symbols-outlined text-sm">play_arrow</span> Trigger MusicBrainz
                     </button>
-                    <span id="trigger-spinner" class="material-symbols-outlined text-lg animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
+                    <span id="trigger-spinner" class="material-symbols-outlined text-lg animate-spin" style="display:none;color:var(--accent)">progress_activity</span>
                 </div>
             </section>
 
@@ -843,8 +1019,8 @@
                         <span class="material-symbols-outlined text-sm t-dim">group</span> User Activity
                     </h3>
                     <div class="flex items-center gap-3">
-                        <span id="users-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
-                        <span id="users-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                        <span id="users-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent)">progress_activity</span>
+                        <span id="users-error" class="text-xs st-warn flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span> <span id="users-error-msg"></span>
                         </span>
                         <button id="users-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors flex items-center gap-1">
@@ -932,8 +1108,8 @@
                         <span class="material-symbols-outlined text-sm t-dim">database</span> Storage Utilization
                     </h3>
                     <div class="flex items-center gap-3">
-                        <span id="storage-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
-                        <span id="storage-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                        <span id="storage-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent)">progress_activity</span>
+                        <span id="storage-error" class="text-xs st-warn flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span> <span id="storage-error-msg"></span>
                         </span>
                         <button id="storage-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors flex items-center gap-1">
@@ -1084,8 +1260,8 @@
                     </h3>
                     <div class="flex items-center gap-3 sh-head-controls">
                         <span class="text-[10px] t-muted">Auto-refresh 60s</span>
-                        <span id="qt-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
-                        <span id="qt-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                        <span id="qt-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent)">progress_activity</span>
+                        <span id="qt-error" class="text-xs st-warn flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span> <span id="qt-error-msg"></span>
                         </span>
                         <button id="qt-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors flex items-center gap-1">
@@ -1132,8 +1308,8 @@
                     </h3>
                     <div class="flex items-center gap-3">
                         <span class="text-[10px] t-muted">Auto-refresh 60s</span>
-                        <span id="sh-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
-                        <span id="sh-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                        <span id="sh-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent)">progress_activity</span>
+                        <span id="sh-error" class="text-xs st-warn flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span> <span id="sh-error-msg"></span>
                         </span>
                         <button id="sh-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors flex items-center gap-1">
@@ -1154,9 +1330,9 @@
                     <p class="text-[10px] font-bold uppercase tracking-wider t-muted mb-3">Response Times</p>
                     <div class="bg-inner rounded-lg border b-theme p-4">
                         <div class="flex gap-4 mb-3 text-[10px]">
-                            <span class="flex items-center gap-1"><span style="display:inline-block;width:12px;height:3px;background:#34d399;border-radius:2px"></span> <span class="t-muted">p50</span></span>
-                            <span class="flex items-center gap-1"><span style="display:inline-block;width:12px;height:3px;background:#f59e0b;border-radius:2px"></span> <span class="t-muted">p95</span></span>
-                            <span class="flex items-center gap-1"><span style="display:inline-block;width:12px;height:3px;background:#f87171;border-radius:2px;border-top:1px dashed #f87171"></span> <span class="t-muted">p99</span></span>
+                            <span class="flex items-center gap-1"><span style="display:inline-block;width:12px;height:3px;background:var(--status-ok);border-radius:2px"></span> <span class="t-muted">p50</span></span>
+                            <span class="flex items-center gap-1"><span style="display:inline-block;width:12px;height:3px;background:var(--status-warn);border-radius:2px"></span> <span class="t-muted">p95</span></span>
+                            <span class="flex items-center gap-1"><span style="display:inline-block;width:12px;height:3px;background:var(--status-err);border-radius:2px;border-top:1px dashed var(--status-err)"></span> <span class="t-muted">p99</span></span>
                         </div>
                         <canvas id="response-time-chart" height="280"></canvas>
                     </div>
@@ -1204,12 +1380,12 @@
                             <option value="dlq.purge">DLQ Purge</option>
                         </select>
                         <span class="text-[10px] t-muted">Auto-refresh 60s</span>
-                        <span id="al-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
-                        <span id="al-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                        <span id="al-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent)">progress_activity</span>
+                        <span id="al-error" class="text-xs st-warn flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span>
                             <span id="al-error-msg"></span>
                         </span>
-                        <button id="al-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors flex items-center gap-1">
+                        <button id="al-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors flex items-center gap-1">
                             <span class="material-symbols-outlined text-sm">refresh</span> Refresh
                         </button>
                     </div>
@@ -1233,8 +1409,8 @@
                 <div id="al-pagination" class="flex items-center justify-between mt-4 pt-4 border-t b-theme" style="display:none">
                     <span id="al-page-info" class="text-xs t-muted"></span>
                     <div class="flex gap-2">
-                        <button id="al-prev-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded" disabled>Previous</button>
-                        <button id="al-next-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded" disabled>Next</button>
+                        <button id="al-prev-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors px-3 py-1 border b-theme rounded" disabled>Previous</button>
+                        <button id="al-next-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors px-3 py-1 border b-theme rounded" disabled>Next</button>
                     </div>
                 </div>
             </section>
@@ -1268,7 +1444,7 @@
                             <option value="">— select —</option>
                         </select>
                         <span id="ea-source-badge" class="text-[10px] px-2 py-0.5 rounded uppercase font-bold badge-idle" style="display:none">source</span>
-                        <span id="ea-loading-spinner" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
+                        <span id="ea-loading-spinner" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent)">progress_activity</span>
                         <button id="ea-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim flex items-center gap-1">
                             <span class="material-symbols-outlined text-sm">refresh</span> Refresh
                         </button>
@@ -1470,7 +1646,7 @@
                             <button id="ea-generate-btn" class="btn-accent px-4 py-1.5 rounded text-xs font-semibold flex items-center gap-1">
                                 <span class="material-symbols-outlined text-sm">auto_awesome</span> Generate
                             </button>
-                            <button id="ea-ai-generate-btn" class="px-4 py-1.5 rounded text-xs font-semibold flex items-center gap-1" style="background:#10B981;color:#fff;border:none;cursor:pointer;transition:opacity 0.15s" onmouseover="this.style.opacity='0.85'" onmouseout="this.style.opacity='1'">
+                            <button id="ea-ai-generate-btn" class="btn-accent px-4 py-1.5 rounded text-xs font-semibold flex items-center gap-1">
                                 <span class="material-symbols-outlined text-sm">psychology</span> Analyze with AI
                                 <span id="ea-ai-spinner" class="material-symbols-outlined text-sm animate-spin" style="display:none">progress_activity</span>
                             </button>
@@ -1494,7 +1670,7 @@
 
             <!-- Until the ledger's first refresh catalog-api answers 503; the tab waits and asks again -->
             <p id="ledger-building" class="dashboard-card p-4 text-xs flex items-center gap-2" role="status" style="display:none">
-                <span class="material-symbols-outlined text-sm animate-spin" style="color:var(--accent-brass)">progress_activity</span>
+                <span class="material-symbols-outlined text-sm animate-spin" style="color:var(--accent)">progress_activity</span>
                 The ledger is being built; it refreshes after loads and identity runs.
             </p>
 
@@ -1513,8 +1689,8 @@
                                 <option value="label">Labels</option>
                             </select>
                         </label>
-                        <span id="ledger-density-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
-                        <span id="ledger-density-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                        <span id="ledger-density-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent)">progress_activity</span>
+                        <span id="ledger-density-error" class="text-xs st-warn flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span>
                             <span id="ledger-density-error-msg"></span>
                         </span>
@@ -1556,12 +1732,12 @@
                         <label for="ledger-until">Until (UTC)
                             <input type="date" id="ledger-until" class="border b-theme rounded px-2 py-1">
                         </label>
-                        <span id="ledger-works-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
-                        <span id="ledger-works-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                        <span id="ledger-works-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent)">progress_activity</span>
+                        <span id="ledger-works-error" class="text-xs st-warn flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span>
                             <span id="ledger-works-error-msg"></span>
                         </span>
-                        <button id="ledger-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors flex items-center gap-1">
+                        <button id="ledger-refresh-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors flex items-center gap-1">
                             <span class="material-symbols-outlined text-sm">refresh</span> Refresh
                         </button>
                     </div>
@@ -1589,8 +1765,8 @@
                 <div id="ledger-pagination" class="flex flex-wrap items-center justify-between gap-2 mt-4 pt-4 border-t b-theme" style="display:none">
                     <span id="ledger-page-info" class="text-xs t-muted"></span>
                     <div class="flex gap-2">
-                        <button id="ledger-prev-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded" disabled>Previous</button>
-                        <button id="ledger-next-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded" disabled>Next</button>
+                        <button id="ledger-prev-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors px-3 py-1 border b-theme rounded" disabled>Previous</button>
+                        <button id="ledger-next-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors px-3 py-1 border b-theme rounded" disabled>Next</button>
                     </div>
                 </div>
             </section>
@@ -1605,14 +1781,14 @@
                         <label for="ledger-as-of">As of (UTC)
                             <input type="datetime-local" id="ledger-as-of" step="1" class="border b-theme rounded px-2 py-1">
                         </label>
-                        <button id="ledger-as-of-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded">Read</button>
-                        <button id="ledger-now-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors px-3 py-1 border b-theme rounded">Now</button>
-                        <span id="ledger-work-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent-brass)">progress_activity</span>
-                        <span id="ledger-work-error" class="text-xs text-amber-500 flex items-center gap-1" style="display:none">
+                        <button id="ledger-as-of-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors px-3 py-1 border b-theme rounded">Read</button>
+                        <button id="ledger-now-btn" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors px-3 py-1 border b-theme rounded">Now</button>
+                        <span id="ledger-work-loading" class="material-symbols-outlined text-sm animate-spin" style="display:none;color:var(--accent)">progress_activity</span>
+                        <span id="ledger-work-error" class="text-xs st-warn flex items-center gap-1" style="display:none">
                             <span class="material-symbols-outlined text-xs">warning</span>
                             <span id="ledger-work-error-msg"></span>
                         </span>
-                        <button id="ledger-work-close" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-primary transition-colors flex items-center gap-1" aria-label="Close the work">
+                        <button id="ledger-work-close" class="text-xs font-bold uppercase tracking-wider t-dim hover:t-high transition-colors flex items-center gap-1" aria-label="Close the work">
                             <span class="material-symbols-outlined text-sm">close</span>
                         </button>
                     </div>
@@ -1627,7 +1803,7 @@
         <!-- ============================================================
              RECORD DETAIL MODAL
              ============================================================ -->
-        <div id="ea-modal" class="fixed inset-0 z-50 flex items-center justify-center p-6" style="display:none; background:rgba(0,0,0,0.5)">
+        <div id="ea-modal" class="fixed inset-0 z-50 flex items-center justify-center p-6" style="display:none; background:var(--mx-backdrop)">
             <div class="dashboard-card p-6 w-full max-w-5xl max-h-[90vh] flex flex-col gap-4 overflow-hidden">
                 <div class="flex items-center justify-between border-b b-theme pb-4 flex-shrink-0">
                     <h3 class="text-sm font-semibold flex items-center gap-2">
