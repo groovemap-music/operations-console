@@ -37,7 +37,7 @@ This repository consumes promoted, immutable copies of the catalog API, catalog-
 | `catalog-api` operations-console routes | `c31703b0f869d0631fa6b22beedd86cf5e950fd4` | [`contracts/catalog-api/operations-console/v1/routes.json`](../contracts/catalog-api/operations-console/v1/routes.json) |
 | `discogs-ingestion` catalog events | `c1bf1b4ada3ee88e1e6768a0be7fa6ed1b921831` | [`contracts/catalog-events/v1/discogs/contract.json`](../contracts/catalog-events/v1/discogs/contract.json) |
 | `musicbrainz-ingestion` catalog events | `f0dae1037c809c6855863aebc35d0a7d21366482` | [`contracts/catalog-events/v1/musicbrainz/contract.json`](../contracts/catalog-events/v1/musicbrainz/contract.json) |
-| `database-schema` persistence compatibility | `9a50949b1810f3e61adae2f89b86acec2e20c4a3` | [`contracts/persistence/v1/compatibility.json`](../contracts/persistence/v1/compatibility.json) |
+| `database-schema` persistence compatibility | `244cb2ba40d8dd80717bcbd5315049896662c99f` | [`contracts/persistence/v1/compatibility.json`](../contracts/persistence/v1/compatibility.json) |
 
 Brand assets are separately promoted from `groovemap-music/design` revision
 `41be7cbe738f40df0c75ad7065475e91d6cc2aa4`; [`source.json`](../dashboard/static/brand/source.json)
