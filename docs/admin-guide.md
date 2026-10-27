@@ -37,8 +37,9 @@ HTTP from another host, or from Safari on `localhost`, the deployment must set
 [configuration](configuration.md#admin-session-cookie-and-reverse-proxies).
 
 Every data route (`/api/metrics`, `/api/services`, `/api/queues`, `/api/databases`,
-`/api/queue-prefixes`, `/api/session`, `POST /api/ws-ticket`), every admin proxy route except
-login and logout, and the live WebSocket require a live admin session. Only `/health`, the
+`/api/queue-prefixes`, `/api/topology`, `/api/history/*`, `/api/progress/{pipeline}`,
+`/api/alerts`, `/api/links`, `/api/session`, `POST /api/ws-ticket`), every admin proxy route
+except login and logout, and the live WebSocket require a live admin session. Only `/health`, the
 login page and its static assets, the `/admin` redirects, and the login and logout proxy routes
 (which `catalog-api` validates itself) are public; the console serves no `/docs`, `/redoc`, or
 `/openapi.json`. Signing in sets the bearer `catalog-api` issues as an HttpOnly,
@@ -346,6 +347,8 @@ The console (`http://<host>:8003`) exposes two tabs backed by the history endpoi
 - **Queue Trends** — Line charts showing message depth over time for each RabbitMQ queue. Use the range selector to zoom in or out.
 - **System Health** — Status timeline showing per-service health over the selected range. Unhealthy periods are highlighted in red; response time is shown as a secondary series.
 
+Both tabs auto-refresh every 60 seconds and respect the currently selected time range.
+
 ## Extraction Analysis: Media Mapping Coverage
 
 The **Extraction Analysis** tab's single-version report includes a **Media Mapping Coverage**
@@ -393,8 +396,6 @@ agree:
 - The denominator is now **media-tagged releases** rather than the count of release-entity
   violations of any rule, so the rate is a share of real releases rather than a share of
   flagged ones.
-
-Both tabs auto-refresh every 60 seconds and respect the currently selected time range.
 
 ## Identity Ledger
 

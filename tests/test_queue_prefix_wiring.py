@@ -1,7 +1,7 @@
 """Regression tests for queue-prefix wiring.
 
 Every component derives queue/exchange names from DISCOGS_EXCHANGE_PREFIX /
-MUSICBRAINZ_EXCHANGE_PREFIX (CLAUDE.md: "never hardcode exchange names"). The
+MUSICBRAINZ_EXCHANGE_PREFIX; exchange names are never hardcoded. The
 dashboard was the sole exception: PIPELINE_CONFIGS carried the default literals, so
 under an override its RabbitMQ queue-name filter matched nothing and both
 pipeline panes silently reported an empty, healthy-looking pipeline.
@@ -33,8 +33,7 @@ DASHBOARD_PY = REPO_ROOT / "dashboard" / "dashboard.py"
 
 # Matches a *string literal* containing a default prefix. Comments (which legitimately
 # name the env vars and the historical literals) are stripped before matching.
-_LEGACY_PRODUCT = "discogs" + "ography"
-_DEFAULT_PREFIX_LITERAL = re.compile(rf"""["'][^"']*{_LEGACY_PRODUCT}-(?:discogs|musicbrainz)[^"']*["']""")
+_DEFAULT_PREFIX_LITERAL = re.compile(r"""["'][^"']*groovemap-(?:discogs|musicbrainz)[^"']*["']""")
 
 
 def _code_without_comments(path: Path) -> str:
