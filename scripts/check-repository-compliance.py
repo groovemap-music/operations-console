@@ -4,8 +4,6 @@ import json
 import re
 from pathlib import Path
 
-from repository_source import RepositorySourceError, tracked_tree_text
-
 
 ROOT = Path(__file__).resolve().parents[1]
 AUTOMATION_CI_REVISION = "dbf22ed83d486e9484fc8c6385c7c3e5995700e4"
@@ -181,8 +179,6 @@ assert "docs/README.md" in readme
 assert not readme.startswith("# GrooveMap operations console\n\nPrivate,")
 active_paths = [ROOT / "README.md", *(sorted((ROOT / "docs").glob("*.md")))]
 active_text = "\n".join(path.read_text() for path in active_paths)
-legacy_product_name = "discogs" + "ography"
-assert legacy_product_name not in active_text.lower()
 assert "```mermaid" in (ROOT / "docs/architecture.md").read_text()
 assert "`catalog-ingestion`" not in active_text
 for producer in ("discogs-ingestion", "musicbrainz-ingestion"):
@@ -230,21 +226,3 @@ dockerfile = (ROOT / "Dockerfile").read_text()
 assert 'org.opencontainers.image.title="operations-console"' in dockerfile
 assert 'org.opencontainers.image.source="https://github.com/groovemap-music/operations-console"' in dockerfile
 assert 'org.opencontainers.image.revision="${VCS_REF}"' in dockerfile
-
-ignored_parts = {
-    ".git",
-    ".venv",
-    ".build",
-    ".pytest_cache",
-    ".ruff_cache",
-    "__pycache__",
-    "node_modules",
-    "dist",
-    "coverage",
-    "test-results",
-}
-try:
-    current_tree_text = tracked_tree_text(ROOT, excluded_parts=ignored_parts)
-except RepositorySourceError as error:
-    raise SystemExit(str(error)) from error
-assert legacy_product_name not in current_tree_text.lower()

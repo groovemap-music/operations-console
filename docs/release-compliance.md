@@ -8,7 +8,7 @@ No migration or validation command publishes a package, image, tag, release, or 
 Python type checking and coverage, `js-test`, the deterministic web and Python builds, wheel
 installation, legal and dependency policy, release artifacts, and the non-mutating version
 preview. `source-check` is limited to formatting, linting, promoted contracts, brand assets,
-and repository policy. `secret-scan` is the narrow Git-history and working-tree scan used by
+repository policy, and documentation links and Mermaid fences. `secret-scan` is the narrow Git-history and working-tree scan used by
 the hosted secret-scanning job. The internal `web-dependencies` prerequisite installs locked Node
 dependencies once when JavaScript tests and the web build run in the same invocation.
 
