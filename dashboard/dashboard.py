@@ -726,6 +726,23 @@ class DashboardApp:
             await self.websockets.broadcast(orjson.dumps({"type": "event", "data": event}).decode())
 
 
+_logging_configured = False
+
+
+def _configure_logging() -> None:
+    """Set up logging once per process.
+
+    main() calls this before uvicorn starts so the banner and uvicorn's startup lines are
+    structured; the lifespan calls it for servers that load the app without main(). Whichever
+    runs first wins, so the runtime's unwritable-log-file warning is emitted only once.
+    """
+    global _logging_configured
+    if _logging_configured:
+        return
+    setup_logging("dashboard", log_file=Path("/logs/dashboard.log"))
+    _logging_configured = True
+
+
 # Create the dashboard app instance
 dashboard: DashboardApp | None = None
 
@@ -734,12 +751,7 @@ dashboard: DashboardApp | None = None
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     """Manage application lifecycle."""
-    log_file = Path("/logs/dashboard.log")
-    try:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        setup_logging("dashboard", log_file=log_file)
-    except OSError:
-        setup_logging("dashboard")
+    _configure_logging()
     setup_telemetry("dashboard")
     instrument_fastapi_app(_app)
     instrument_httpx()
@@ -1054,7 +1066,7 @@ app.mount("/", StaticFiles(directory=str(static_dir), html=True), name="static")
 
 def main() -> None:  # pragma: no cover
     """Entry point for the GrooveMap operations-console service."""
-    setup_logging("dashboard", log_file=Path("/logs/dashboard.log"))
+    _configure_logging()
     print(STARTUP_BANNER)
     uvicorn.run(
         "dashboard.dashboard:app",
