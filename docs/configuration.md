@@ -1,5 +1,7 @@
 # Operations-console configuration
 
+This page is for people deploying the console. It lists every environment variable the console reads, with its default and what it does. For a local run, only the datastore variables below are required.
+
 Deployment owns runtime composition and supplies configuration through environment variables
 and secret files. The console reads credentials with the `<VARIABLE>_FILE` convention when a
 matching file variable is present; the plain variable is the fallback.
@@ -58,7 +60,7 @@ derived from the live feed.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `GRAFANA_URL` | unset | Browser-facing base URL of Grafana, such as `https://grafana.example.net`. Alert links and the deep links use it. |
-| `GRAFANA_API_URL` | `GRAFANA_URL` | Base URL the console server uses to reach Grafana's Alertmanager API, such as `http://grafana:3000` on the compose network. Set it when the server and the browser reach Grafana at different addresses. |
+| `GRAFANA_API_URL` | `GRAFANA_URL` (the Platform Health Grafana check defaults to `http://grafana:3000` instead) | Base URL the console server uses to reach Grafana's Alertmanager API, such as `http://grafana:3000` on the compose network. Set it when the server and the browser reach Grafana at different addresses. |
 | `GRAFANA_TOKEN_FILE` | unset | Path to a file holding a Grafana service-account token with read access to alert rules and the Alertmanager API (`alert.instances:read`). Only the file form is read; there is no plain-variable fallback. |
 
 The console asks `{GRAFANA_API_URL}/api/alertmanager/grafana/api/v2/alerts` (active, not silenced, not
@@ -170,5 +172,5 @@ Behind a reverse proxy:
 | `GROOVEMAP_SOURCE_REVISION` | unset | Full source revision used for the browser-visible corresponding-source link; the image build injects it. |
 
 Telemetry uses the standard OpenTelemetry variables documented in the
-[repository README](../README.md#telemetry). When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, the
+[telemetry page](telemetry.md). When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, the
 shared runtime installs no-op telemetry providers.

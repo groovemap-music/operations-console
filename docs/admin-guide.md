@@ -1,5 +1,30 @@
 # Operations-console administrator guide
 
+This guide is for the operators of a running GrooveMap stack. It explains how to sign in to the
+operations console, read its live views, and use its admin actions: triggering extractions,
+purging dead-letter queues, and reviewing history and audit records. For deployment settings see
+[configuration](configuration.md); for how the console is built see [architecture](architecture.md).
+
+## Quick start
+
+1. Create an admin account (next section).
+2. Open `http://<host>:8003` and sign in.
+3. Read the **Overview** tab first. The attention bar under the header lists anything that needs you.
+
+## The tabs
+
+| Tab | Use it to |
+| --- | --- |
+| Overview | Watch queues, consumers, platform services, and run progress live. |
+| Extractions | Trigger a Discogs or MusicBrainz extraction and read the run history. |
+| DLQ Management | Inspect and purge dead-letter queues. |
+| User Activity | See user and sync statistics from `catalog-api`. |
+| Storage | See storage measurements supplied by `catalog-api`, and datastore health. |
+| Queue Trends / System Health | Chart queue depth and service health over time. |
+| Audit Log | Review admin actions, filterable by action, operator, and page. |
+| Extraction Analysis | Inspect an extraction version's data-quality results. |
+| Ledger | Read how catalog identity changed over time. |
+
 ## Creating an admin account
 
 Admin accounts are created via the `catalog-admin-setup` CLI tool inside the API container:
@@ -254,7 +279,7 @@ the first reading.
 
 ## Triggering an extraction
 
-Use **Trigger Discogs Extraction** or **Trigger MusicBrainz Extraction** in the admin panel.
+Use **Trigger Discogs** or **Trigger MusicBrainz** in the Extractions tab.
 The console sends these requests through fixed proxy routes; `catalog-api` owns authorization
 and dispatches the trigger to the selected source-owned producer.
 
@@ -283,10 +308,6 @@ If an extraction is already running, the trigger returns an error — wait for i
 
 The Extractions history table shows each run's source. Runs recorded without a source show
 "not recorded"; the console never guesses one.
-
-**Release order:** this console change ships before `catalog-api` 9066cb7. Once catalog-api
-requires `source`, a console that sends none gets 422 on the Discogs trigger. The new console
-works against both the old and the new catalog-api.
 
 ## DLQ management
 
@@ -380,10 +401,9 @@ every number from that upstream route. The ranked list is capped at 10 names; wh
 distinct names exist upstream the panel shows a **truncated** notice under the table. The
 counts themselves are always exact.
 
-**What changed from the earlier reading.** This panel previously counted discogs-ingestion
-`format-not-recognized` data-quality violations for one extraction version. The Discogs
-numbers moved when it switched to the route above, and the two readings are not expected to
-agree:
+**How to read the counts.** Older versions of this panel counted discogs-ingestion
+`format-not-recognized` data-quality violations for one extraction version. The current
+reading differs from that count in these ways:
 
 - It is a **release** count, not an occurrence count. The taxonomy de-duplicates each
   release's `unmapped` list, so a release naming one unrecognized format twice contributes

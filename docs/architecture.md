@@ -19,6 +19,8 @@ flowchart LR
     Console -->|Prometheus /metrics/detailed :15692| RabbitMQ
     Console -->|statistics| Neo4j
     Console -->|statistics| Postgres
+    Console -->|history queries| VictoriaMetrics[(VictoriaMetrics)]
+    Console -->|firing alerts, optional| Grafana[Grafana]
 ```
 
 ## Repository boundary
