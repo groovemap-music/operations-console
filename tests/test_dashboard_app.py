@@ -1636,6 +1636,45 @@ class TestLifespanFunction:
                 response = client.get("/health")
                 assert response.status_code == 200
 
+    def test_logging_is_configured_once_per_process(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """main() and the lifespan share one setup, whichever runs first and however often."""
+        import dashboard.dashboard as module
+
+        monkeypatch.setattr(module, "_logging_configured", False)
+        with patch("dashboard.dashboard.setup_logging") as mock_setup_logging:
+            module._configure_logging()  # the `operations-console` path: main() first
+            module._configure_logging()  # then the lifespan, which must not set up again
+        mock_setup_logging.assert_called_once()
+
+    def test_lifespan_configures_logging_without_main_and_not_after_it(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The real lifespan sets logging up for a directly loaded app, but not again after main()."""
+        import dashboard.dashboard as module
+
+        config = Mock(neo4j_host="bolt://test:7687", neo4j_username="neo4j", neo4j_password="test")
+        config.postgres_host, config.postgres_database = "localhost:5432", "testdb"
+        config.postgres_username, config.postgres_password = "test", "test"
+
+        def run_lifespan() -> None:
+            with (
+                patch("dashboard.dashboard.get_config", return_value=config),
+                patch("dashboard.dashboard.AsyncResilientNeo4jDriver", return_value=AsyncMock()),
+                patch("dashboard.dashboard.AsyncResilientPostgreSQL", return_value=AsyncMock()),
+                patch("asyncio.create_task", side_effect=_close_and_mock_task),
+                patch.object(DashboardApp, "collect_metrics_loop", new_callable=AsyncMock),
+                TestClient(module.app),
+            ):
+                pass
+
+        with patch("dashboard.dashboard.setup_logging") as mock_setup_logging:
+            monkeypatch.setattr(module, "_logging_configured", False)
+            run_lifespan()  # `uvicorn dashboard.dashboard:app`: nothing ran main()
+            assert mock_setup_logging.call_count == 1
+
+            monkeypatch.setattr(module, "_logging_configured", False)
+            module._configure_logging()  # `operations-console`: main() configures first
+            run_lifespan()
+            assert mock_setup_logging.call_count == 2
+
     def test_main_prints_ascii_art(self, capsys: pytest.CaptureFixture[str]) -> None:
         """Test that the main function prints the ASCII art banner."""
         with (
@@ -1656,10 +1695,13 @@ class TestLifespanFunction:
 class TestMainEntryPoint:
     """Test the main() entry point."""
 
-    def test_main_entry_point_calls_uvicorn(self) -> None:
-        """Test that main() calls setup_logging and uvicorn.run."""
+    def test_main_entry_point_calls_uvicorn(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Test that main() sets up logging and runs uvicorn."""
         from pathlib import Path
 
+        import dashboard.dashboard as module
+
+        monkeypatch.setattr(module, "_logging_configured", False)
         with (
             patch("dashboard.dashboard.setup_logging") as mock_setup_logging,
             patch("dashboard.dashboard.uvicorn") as mock_uvicorn,

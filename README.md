@@ -15,7 +15,7 @@ just setup
 export NEO4J_HOST=localhost NEO4J_USERNAME=neo4j NEO4J_PASSWORD=<password>
 export POSTGRES_HOST=localhost POSTGRES_USERNAME=<user> POSTGRES_PASSWORD=<password> POSTGRES_DATABASE=<database>
 export SESSION_COOKIE_SECURE=false   # only for plain-HTTP access from a host other than localhost
-uv run uvicorn dashboard.dashboard:app --port 8003
+uv run operations-console
 ```
 
 Open `http://localhost:8003`. Signing in needs a running `catalog-api` and an admin account; see the [administrator guide](docs/admin-guide.md#creating-an-admin-account). `GET /health` answers without a session.
@@ -42,7 +42,7 @@ The stable repository interface is:
 
 ## Runtime
 
-The service listens on port 8003. In production the deployment repository supplies its RabbitMQ, Neo4j, PostgreSQL, and catalog API connections; credentials come from its secret mechanism and are never committed here. The container runs `operations-console`, which is the same app started with uvicorn, and writes logs to `/logs/dashboard.log`. The exact environment and `_FILE` interfaces are listed in the [configuration guide](docs/configuration.md).
+The service listens on port 8003. In production the deployment repository supplies its RabbitMQ, Neo4j, PostgreSQL, and catalog API connections; credentials come from its secret mechanism and are never committed here. The container runs the same `operations-console` entry point and writes logs to `/logs/dashboard.log`; when that path is not writable (a local run without `/logs`), logging stays on the console with one warning. Set `LOG_FILE` to choose another path, or empty to disable the file. The exact environment and `_FILE` interfaces are listed in the [configuration guide](docs/configuration.md).
 
 The container build injects its full Git revision into both the OCI metadata and the console's visible source/legal link. A released console therefore links to the corresponding source tree for the exact running revision. Dependency and first-party trademark notices are recorded in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) and [NOTICE](NOTICE).
 

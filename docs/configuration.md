@@ -167,6 +167,7 @@ Behind a reverse proxy:
 | `CORS_ORIGINS` | unset (no CORS) | Comma-separated origins allowed read-only, cross-origin access: `GET` with an `Authorization` header only, never credentials (the session cookie) or the `X-GrooveMap-Console` header. The console's own pages are same-origin and need none of it. |
 | `FORWARDED_ALLOW_IPS` | `127.0.0.1` | uvicorn's own setting: the proxy addresses whose `X-Forwarded-Proto` and `X-Forwarded-For` it trusts, which the admin proxy forwards to `catalog-api`. |
 | `LOG_LEVEL` | `INFO` | Uvicorn log level. |
+| `LOG_FILE` | `/logs/dashboard.log` | Overrides the log file path; empty disables file logging. If the file cannot be opened (for example no `/logs` locally), the shared runtime keeps console logging and emits one warning instead of failing. |
 | `LOG_FILE_MAX_BYTES` | `104857600` (100 MiB) | Size, in bytes, at which the `/logs/dashboard.log` file sink rolls over. Read by the shared runtime's `setup_logging` at handler-construction time; a non-numeric or non-positive override falls back to the default. |
 | `LOG_FILE_BACKUP_COUNT` | `5` | Number of rotated `/logs/dashboard.log` backups the shared runtime retains. Same override rules as `LOG_FILE_MAX_BYTES`. |
 | `GROOVEMAP_SOURCE_REVISION` | unset | Full source revision used for the browser-visible corresponding-source link; the image build injects it. |

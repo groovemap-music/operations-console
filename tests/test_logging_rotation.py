@@ -70,3 +70,25 @@ def test_dashboard_log_file_handler_defaults_are_bounded_not_unbounded(tmp_path:
                 handler.close()
         root_logger.handlers = previous_handlers
         root_logger.setLevel(previous_level)
+
+
+def test_dashboard_unwritable_log_dir_falls_back_to_console(tmp_path: Path) -> None:
+    """An uncreatable log directory (no /logs locally) keeps console logging instead of raising."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory")
+    log_file = blocker / "dashboard.log"
+
+    root_logger = logging.getLogger()
+    previous_handlers = list(root_logger.handlers)
+    previous_level = root_logger.level
+    try:
+        setup_logging("dashboard", log_file=log_file)
+
+        assert not [handler for handler in root_logger.handlers if isinstance(handler, RotatingFileHandler)]
+        assert root_logger.handlers
+    finally:
+        for handler in root_logger.handlers:
+            if handler not in previous_handlers:
+                handler.close()
+        root_logger.handlers = previous_handlers
+        root_logger.setLevel(previous_level)
