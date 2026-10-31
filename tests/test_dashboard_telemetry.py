@@ -274,6 +274,17 @@ class TestProbeSpansHideCredentials:
                 assert "abc123" not in str(value), key
                 assert "token" not in str(value), key
 
+    def test_a_span_url_that_reads_two_ways_is_dropped_whole(self, spans: SpanCollector) -> None:
+        console_telemetry.redact_outbound_urls()
+        tracer = spans.provider.get_tracer("t")
+        for url in ("http://user:p/ss@h:1", "http://u:p?x@h:1", "http://u@x:p@h:1"):
+            with tracer.start_as_current_span("c", attributes={"url.full": url, "http.url": url}):
+                pass
+        for span in spans.spans():
+            assert span.attributes is not None
+            assert span.attributes["url.full"] == "<redacted url>"
+            assert span.attributes["http.url"] == "<redacted url>"
+
     def test_install_is_idempotent_and_skips_a_provider_that_cannot_take_processors(self, spans: SpanCollector) -> None:
         assert console_telemetry.redact_outbound_urls() is True
         assert console_telemetry.redact_outbound_urls() is False
