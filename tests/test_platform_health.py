@@ -1,6 +1,7 @@
 """Platform service health: the checks, their concurrency, the jobs, and what a down service raises."""
 
 import asyncio
+import logging
 import time
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -196,6 +197,64 @@ class TestTargets:
         assert detector.observe(_platform_reading(("cadvisor", "observability", "disabled"), at=2)) == []
         assert detector.observe(_platform_reading(("cadvisor", "observability", "unconfigured"), at=4)) == []
         assert detector.observe(_platform_reading(("cadvisor", "observability", "healthy"), at=6)) == []
+
+
+class TestEndpointRedaction:
+    SECRET_URL = "http://user:s3cret@pg.lan:9187/metrics?token=abc123#frag"
+
+    @pytest.mark.parametrize(
+        ("target", "shown"),
+        [
+            ("http://user:s3cret@pg.lan:9187/metrics?token=abc123#frag", "http://pg.lan:9187/metrics"),
+            ("https://pg.lan/?apikey=x", "https://pg.lan/"),
+            ("http://[::1]:9100/", "http://[::1]:9100/"),
+            ("user:pw@valkey.lan:6379", "valkey.lan:6379"),
+            # Plain targets are unchanged.
+            ("http://grafana:3000/api/health", "http://grafana:3000/api/health"),
+            ("http://postgres-exporter:9187/", "http://postgres-exporter:9187/"),
+            ("valkey:6379", "valkey:6379"),
+        ],
+    )
+    def test_redact_url(self, target: str, shown: str) -> None:
+        assert ph.redact_url(target) == shown
+
+    def test_the_defaults_are_unchanged_by_redaction(self) -> None:
+        for probe in ph.build_probes("http://rabbitmq:15692"):
+            if probe.kind != ph.KIND_VALKEY_PING and "?" not in probe.target:
+                assert ph.redact_url(probe.target) == probe.target
+
+    @pytest.mark.asyncio
+    async def test_the_api_reading_hides_credentials_but_the_probe_uses_the_full_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POSTGRES_EXPORTER_MODE", "shared")
+        monkeypatch.setenv("POSTGRES_EXPORTER_URL", "http://user:s3cret@pg.lan:9187/base?token=abc123")
+        requested: list[str] = []
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            requested.append(str(request.url))
+            return httpx.Response(200)
+
+        reading = await _check(_probe("postgres-exporter"), answer)
+        assert reading.endpoint == "http://pg.lan:9187/base"
+        assert "s3cret" in requested[0]
+        assert "abc123" in requested[0]
+        assert "s3cret" not in reading.model_dump_json()
+        assert "abc123" not in reading.model_dump_json()
+
+    @pytest.mark.asyncio
+    async def test_error_text_and_logs_do_not_carry_the_secret(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+        monkeypatch.setenv("POSTGRES_EXPORTER_MODE", "shared")
+        monkeypatch.setenv("POSTGRES_EXPORTER_URL", "http://user:s3cret@pg.lan:9187/base?token=abc123")
+
+        def down(_r: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("cannot connect to http://user:s3cret@pg.lan:9187/?token=abc123 (refused)")
+
+        with caplog.at_level(logging.DEBUG):
+            reading = await _check(_probe("postgres-exporter"), down)
+        assert reading.state == "failed"
+        assert reading.error == "cannot connect to http://pg.lan:9187/ (refused)"
+        assert "s3cret" not in reading.model_dump_json()
+        assert "s3cret" not in caplog.text
+        assert "abc123" not in caplog.text
 
 
 class TestChecks:

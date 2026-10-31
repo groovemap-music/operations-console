@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from os import getenv
 from typing import Any, Final
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from pydantic import BaseModel, model_validator
@@ -200,6 +201,34 @@ def build_probes(rabbitmq_prometheus_url: str) -> list[Probe]:
 _REDIS_UP = re.compile(r"^redis_up\s+(\S+)\s*$", re.MULTILINE)
 
 
+_URL_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"<>)]+")
+
+
+def redact_url(target: str) -> str:
+    """``target`` as ``scheme://host[:port]/path``: no userinfo, query or fragment.
+
+    The one place every surfaced probe address passes through (API, WebSocket, UI, error text),
+    because an operator's shared target may carry ``user:pass@`` or ``?token=``. Probes keep
+    using the full URL. A bare ``host:port`` has only its userinfo and query to lose.
+    """
+    if "://" not in target:
+        return target.split("?", 1)[0].split("#", 1)[0].rpartition("@")[2]
+    try:
+        parts = urlsplit(target)
+        host = parts.hostname or ""
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = host if parts.port is None else f"{host}:{parts.port}"
+    except ValueError:
+        return "<invalid url>"
+    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+
+
+def redact_text(text: str) -> str:
+    """``text`` with every URL in it passed through ``redact_url``."""
+    return _URL_IN_TEXT.sub(lambda match: redact_url(match.group(0)), text)
+
+
 def _reading(probe: Probe, status: str, error: str | None = None) -> PlatformService:
     seen = datetime.now(UTC) if status not in (UNREACHABLE, DISABLED, UNCONFIGURED) else None
     return PlatformService(
@@ -207,9 +236,9 @@ def _reading(probe: Probe, status: str, error: str | None = None) -> PlatformSer
         group=probe.group,
         status=status,
         last_seen=seen,
-        error=error,
+        error=redact_text(error) if error else error,
         mode=probe.mode,
-        endpoint=probe.target or None,
+        endpoint=redact_url(probe.target) if probe.target else None,
     )
 
 
