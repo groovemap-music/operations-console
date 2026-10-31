@@ -32,6 +32,7 @@ LEVEL_WARNING = "warning"
 LEVEL_ERROR = "error"
 
 # A service in either status is not serving; every other status (healthy, starting, extracting) is.
+_SERVICE_INACTIVE = frozenset({"disabled", "unconfigured"})
 _SERVICE_DOWN = frozenset({"unhealthy", "unknown", "unreachable"})
 
 # The platform group whose outage is a warning rather than an error: the stack serves without it.
@@ -130,6 +131,10 @@ class EventDetector:
         """Platform services; a datastore row is left to ``_datastores_of``, which reports it once."""
         for service in platform:
             if service.source != "probe":
+                continue
+            if service.status in _SERVICE_INACTIVE:
+                # Turned off or never given a target: neither down nor recovered, and the next probe is a new baseline.
+                self._platform.pop(service.name, None)
                 continue
             serving = service.status not in _SERVICE_DOWN
             previous = self._platform.get(service.name)
