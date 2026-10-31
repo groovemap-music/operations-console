@@ -34,7 +34,7 @@ import httpx
 from pydantic import BaseModel, model_validator
 
 from dashboard import telemetry as console_telemetry
-from dashboard.url_redaction import redact_text, redact_url
+from dashboard.url_redaction import redact_text, redact_url, scrub
 
 
 HEALTHY = "healthy"
@@ -134,6 +134,10 @@ class Probe:
     note: str | None = None  # what the operator sees for a skipped probe
 
 
+# host:port, with an IPv6 address in brackets; no userinfo, scheme, path or query.
+_HOST_PORT = re.compile(r"(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]|\[[0-9A-Fa-f:.]+\]):[0-9]{1,5}")
+
+
 def join_probe_path(base: str, path: str) -> str:
     """``path`` (which may carry its own query) joined onto ``base``'s path, keeping ``base``'s userinfo and query.
 
@@ -183,6 +187,9 @@ def _probe(
     else:
         given = given or default
     if kind == KIND_VALKEY_PING:
+        if not _HOST_PORT.fullmatch(given) or not 0 < int(given.rpartition(":")[2]) < 65536:
+            # Fixed text: the value may hold credentials, so it is never echoed.
+            return Probe(name, group, "", kind, mode, UNCONFIGURED, f"{url_env} is not a valid host:port")
         return Probe(name, group, given, kind, mode)
     return Probe(name, group, join_probe_path(given, path), kind, mode)
 
@@ -222,7 +229,7 @@ def _reading(probe: Probe, status: str, error: str | None = None) -> PlatformSer
         group=probe.group,
         status=status,
         last_seen=seen,
-        error=redact_text(error) if error else error,
+        error=redact_text(scrub(error, probe.target)) if error else error,
         mode=probe.mode,
         endpoint=redact_url(probe.target) if probe.target else None,
     )
@@ -244,7 +251,7 @@ async def _http_check(client: httpx.AsyncClient, probe: Probe) -> PlatformServic
 
 async def _valkey_ping(probe: Probe) -> PlatformService:
     host, _, port = probe.target.rpartition(":")
-    reader, writer = await asyncio.open_connection(host, int(port))
+    reader, writer = await asyncio.open_connection(host.strip("[]"), int(port))
     try:
         writer.write(b"PING\r\n")
         await writer.drain()

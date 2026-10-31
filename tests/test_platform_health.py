@@ -257,6 +257,72 @@ class TestEndpointRedaction:
         assert "abc123" not in caplog.text
 
 
+class TestSecretsNeverSurface:
+    """The probe's own target is scrubbed in every form, whatever the URL looks like."""
+
+    @staticmethod
+    def _error_text(secret_target: str, message: str) -> str:
+        probe = ph.Probe("x", "observability", secret_target)
+        return ph._reading(probe, "unreachable", message).model_dump_json()
+
+    def test_odd_characters_in_the_password(self) -> None:
+        target = "http://admin:p@ss'w\"o)rd<1>@pg.lan:9187/m?token=t0k3n"
+        out = self._error_text(target, f"boom connecting to {target} failed; password p@ss'w\"o)rd<1> rejected, query token=t0k3n")
+        for secret in ("p@ss", 'w\\"o', "rd<1>", "t0k3n", "admin"):
+            assert secret not in out
+
+    def test_percent_encoded_forms_are_scrubbed_too(self) -> None:
+        out = self._error_text("http://u:p%40ss%27@h.lan:1/", "saw u:p%40ss%27 and u:p@ss'")
+        assert "p%40ss" not in out
+        assert "p@ss" not in out
+
+    def test_a_scheme_less_target_with_userinfo_and_query(self) -> None:
+        out = self._error_text("user:pw123@valkey.lan:6379?auth=zz9", "connect user:pw123@valkey.lan:6379?auth=zz9 refused; pw123")
+        assert "pw123" not in out
+        assert "zz9" not in out
+        assert "user:" not in out
+
+    def test_an_unparseable_url_is_replaced_whole(self) -> None:
+        target = "http://u:sEcr3t@[::1:9187/x?k=v4lue"  # unbalanced bracket: urlsplit rejects it
+        assert ph.redact_url(target) == "<redacted url>"
+        out = self._error_text(target, f"bad url {target}")
+        assert "sEcr3t" not in out
+        assert "v4lue" not in out
+
+    def test_the_text_net_takes_the_whole_token_of_a_url_it_was_not_told_about(self) -> None:
+        text = "failed: https://a:b'c@h.lan/p?x=1'2 (retrying), see http://[bad/?q=9."
+        shown = ph.redact_text(text)
+        assert "b'c" not in shown
+        assert "x=1" not in shown
+        assert "q=9" not in shown
+        assert shown.startswith("failed: https://h.lan/p")
+
+
+class TestValkeyAddress:
+    @pytest.mark.parametrize("address", ["valkey:6379", "valkey.lan:6379", "10.0.0.5:6380", "[::1]:6379"])
+    def test_a_valid_address_is_probed(self, address: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VALKEY_HEALTH_ADDRESS", address)
+        probe = _probe("valkey")
+        assert (probe.skipped, probe.target) == (None, address)
+
+    @pytest.mark.parametrize(
+        "address", ["user:pw@valkey:6379", "valkey", "valkey:99999", "valkey:0", "valkey:6379?auth=s3", "redis://valkey:6379", "val key:1", ":6379"]
+    )
+    def test_a_malformed_address_is_unconfigured_with_a_fixed_message(self, address: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VALKEY_HEALTH_ADDRESS", address)
+        probe = _probe("valkey")
+        assert (probe.skipped, probe.target) == ("unconfigured", "")
+        assert probe.note == "VALKEY_HEALTH_ADDRESS is not a valid host:port"
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_shared_address_never_reaches_the_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VALKEY_MODE", "shared")
+        monkeypatch.setenv("VALKEY_HEALTH_ADDRESS", "user:hunter2@valkey:6379")
+        reading = await ph.check_probe(None, _probe("valkey"))  # type: ignore[arg-type]
+        assert (reading.state, reading.endpoint) == ("unconfigured", None)
+        assert "hunter2" not in reading.model_dump_json()
+
+
 class TestPathJoining:
     def test_the_path_joins_before_the_query_and_the_query_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("CADVISOR_URL", "http://user:pw@cadvisor.lan:8081/prefix/?token=abc")
