@@ -298,6 +298,74 @@ class TestSecretsNeverSurface:
         assert shown.startswith("failed: https://h.lan/p")
 
 
+_AMBIGUOUS = [
+    ("http://user:p/ss@h:1", "p/ss"),
+    ("http://u:p?x@h:1", "x@h"),
+    ("http://u:p#x@h:1", "x@h"),
+    ("http://u@x:p@h:1", "x:p"),
+    ("http://u:pa\\ss@h:1", "pa\\ss"),
+    ("http://u:pa\tss@h:1", "pass"),
+]
+_ENCODED = [
+    ("http://user:p%2Fss@h.lan:1/m", "http://h.lan:1/m", "p%2Fss"),
+    ("http://u:p%3Fx@h.lan:1", "http://h.lan:1", "p%3Fx"),
+    ("http://u:p%23x@h.lan:1", "http://h.lan:1", "p%23x"),
+    ("http://u%40x:p@h.lan:1", "http://h.lan:1", "u%40x"),
+]
+
+
+class TestAmbiguousTargets:
+    @pytest.mark.parametrize(("target", "secret"), _AMBIGUOUS)
+    def test_redaction_fails_closed(self, target: str, secret: str) -> None:
+        assert ph.is_ambiguous(target)
+        assert ph.redact_url(target) == "<redacted url>"
+        assert ph.scrub(f"cannot reach {target} ({secret})", target) == "<redacted url>"
+        assert secret not in ph.redact_text(f"error: {target}.")
+
+    @pytest.mark.parametrize("target", ["user:p/ss@h:1", "u:p?x@h:1", "u:p#x@h:1", "u@x:p@h:1"])
+    def test_scheme_less_ambiguous_targets_fail_closed(self, target: str) -> None:
+        assert ph.redact_url(target) == "<redacted url>"
+
+    @pytest.mark.parametrize(("target", "shown", "secret"), _ENCODED)
+    def test_percent_encoded_userinfo_is_unambiguous_and_redacts(self, target: str, shown: str, secret: str) -> None:
+        assert not ph.is_ambiguous(target)
+        assert ph.redact_url(target) == shown
+        assert secret not in ph.scrub(f"failed {target} with {secret}", target)
+
+    @pytest.mark.parametrize(("target", "_secret"), _AMBIGUOUS)
+    @pytest.mark.asyncio
+    async def test_an_ambiguous_configured_target_is_unconfigured_and_never_echoed(
+        self, target: str, _secret: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("POSTGRES_EXPORTER_MODE", "shared")
+        monkeypatch.setenv("POSTGRES_EXPORTER_URL", target)
+
+        def refuse(_r: httpx.Request) -> httpx.Response:
+            raise AssertionError("an ambiguous target must not be probed")
+
+        reading = await _check(_probe("postgres-exporter"), refuse)
+        assert (reading.state, reading.endpoint) == ("unconfigured", None)
+        assert reading.error == "POSTGRES_EXPORTER_URL is not an unambiguous http(s) URL (percent-encode credentials)"
+        assert target not in reading.model_dump_json()
+
+    @pytest.mark.asyncio
+    async def test_an_encoded_credentialed_target_is_probed_and_redacted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POSTGRES_EXPORTER_MODE", "shared")
+        monkeypatch.setenv("POSTGRES_EXPORTER_URL", "http://user:p%2Fss@pg.lan:9187")
+        reading = await _check(_probe("postgres-exporter"), lambda _r: httpx.Response(200))
+        assert (reading.state, reading.endpoint) == ("shared", "http://pg.lan:9187/")
+        assert "p%2Fss" not in reading.model_dump_json()
+
+    def test_a_target_without_an_http_scheme_is_unconfigured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CADVISOR_URL", "cadvisor.lan:8080")
+        assert _probe("cadvisor").skipped == "unconfigured"
+
+    def test_the_defaults_and_plain_targets_are_not_ambiguous(self) -> None:
+        for probe in ph.build_probes("http://rabbitmq:15692"):
+            if probe.kind != ph.KIND_VALKEY_PING:
+                assert not ph.is_ambiguous(probe.target)
+
+
 class TestValkeyAddress:
     @pytest.mark.parametrize("address", ["valkey:6379", "valkey.lan:6379", "10.0.0.5:6380", "[::1]:6379"])
     def test_a_valid_address_is_probed(self, address: str, monkeypatch: pytest.MonkeyPatch) -> None:
