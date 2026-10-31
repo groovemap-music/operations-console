@@ -3,6 +3,19 @@
 All notable changes to this repository will be recorded here by Commitizen from
 Conventional Commits.
 
+## v0.3.0 (2026-10-31)
+
+### Feat
+
+- **platform-health**: configurable probe targets with shared, disabled and unconfigured states
+
+### Fix
+
+- **platform-health**: reject ambiguous userinfo in targets and fail closed on split disagreement
+- **platform-health**: scrub the probe's own target from errors and validate the Valkey address
+- **platform-health**: redact probe URLs in spans and join probe paths before the query
+- **platform-health**: strip userinfo and query from surfaced probe endpoints
+
 ## v0.2.0 (2026-10-31)
 
 ### Feat
