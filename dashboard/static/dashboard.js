@@ -163,7 +163,10 @@ const Attention = (() => {
     const SERVICE_OK = new Set(['healthy', 'extracting', 'active']);
     const SERVICE_UNHEALTHY = 'unhealthy';
     const DATASTORE_OK = 'healthy';
-    const PLATFORM_OK = 'healthy';
+    // Not a problem: healthy, or a service the operator turned off (disabled). `unconfigured` is a
+    // warning of its own (a needed target nobody gave), never an unreachable one.
+    const PLATFORM_OK = new Set(['healthy', 'disabled']);
+    const PLATFORM_UNCONFIGURED = 'unconfigured';
     const TAB_OVERVIEW = 'overview';
     const TAB_STORAGE = 'storage';
     const RANK = { crit: 0, warn: 1 };
@@ -216,11 +219,11 @@ const Attention = (() => {
     // Platform services outside the pipelines. A datastore row is skipped: `datastoreItems` raises it.
     // Observability being down is a warning (the stack still serves); an application or the broker is critical.
     function platformItems(platform) {
-        return (platform || []).filter(service => service.source !== 'datastore' && service.status !== PLATFORM_OK).map(service => ({
+        return (platform || []).filter(service => service.source !== 'datastore' && !PLATFORM_OK.has(service.status)).map(service => ({
             id: `platform:${service.name}`,
-            severity: service.group === 'observability' ? 'warn' : 'crit',
-            kind: service.status === 'unhealthy' ? 'platform-unhealthy' : 'platform-unreachable',
-            text: `${service.name} is ${service.status}`,
+            severity: service.status === PLATFORM_UNCONFIGURED || service.group === 'observability' ? 'warn' : 'crit',
+            kind: service.status === PLATFORM_UNCONFIGURED ? 'platform-unconfigured' : service.status === 'unhealthy' ? 'platform-unhealthy' : 'platform-unreachable',
+            text: service.status === PLATFORM_UNCONFIGURED ? `${service.name} is not configured` : `${service.name} is ${service.status}`,
             target: { type: 'platform', service: service.name },
         }));
     }
@@ -1391,12 +1394,20 @@ class Dashboard {
 
     // ─── Platform health: every long-running service outside the pipelines, and the jobs ─────
 
-    _platformBadge(status) {
+    // Badge for a service. The API's `state` (healthy, failed, shared, disabled, unconfigured) leads;
+    // a failed one is told apart by `status` (Unhealthy answered badly, Unreachable did not answer).
+    // Disabled and unconfigured are never drawn as failures.
+    _platformBadge(service) {
+        const state = service.state || service.status;
+        if (state === 'failed' || state === 'unhealthy' || state === 'unreachable') {
+            return service.status === 'unreachable' ? ['ph-bad', 'Unreachable'] : ['ph-bad', 'Unhealthy'];
+        }
         return {
             healthy: ['ph-ok', 'Healthy'],
-            unhealthy: ['ph-bad', 'Unhealthy'],
-            unreachable: ['ph-bad', 'Unreachable'],
-        }[status] || ['ph-unknown', status || 'Unknown'];
+            shared: ['ph-shared', 'Shared'],
+            disabled: ['ph-off', 'Disabled'],
+            unconfigured: ['ph-unknown', 'Not configured'],
+        }[state] || ['ph-unknown', state || 'Unknown'];
     }
 
     // One list per group, one row per service; a row's id is stable so an attention item can lead to it.
@@ -1406,11 +1417,14 @@ class Dashboard {
         for (const list of section.querySelectorAll('[data-platform-group]')) {
             const group = list.dataset.platformGroup;
             const rows = platform.filter(service => service.group === group).map(service => {
-                const [tone, label] = this._platformBadge(service.status);
-                return this._el('li', { id: `platform-${service.name}`, cls: 'ph-row', attrs: { 'data-state': service.status, 'data-service': service.name } },
+                const [tone, label] = this._platformBadge(service);
+                // A shared service shows the endpoint it is probed at; a failed one also says what went wrong.
+                const shared = service.mode === 'shared' && service.endpoint ? `shared at ${service.endpoint}` : '';
+                const detail = [service.error, shared].filter(Boolean).join(' · ');
+                return this._el('li', { id: `platform-${service.name}`, cls: 'ph-row', attrs: { 'data-state': service.state || service.status, 'data-status': service.status, 'data-mode': service.mode || 'local', 'data-service': service.name } },
                     this._el('span', { cls: 'ph-name', text: service.name }),
                     this._el('span', { cls: `ph-badge ${tone}`, text: label }),
-                    this._el('span', { cls: 'ph-detail', text: service.error || '' }));
+                    this._el('span', { cls: 'ph-detail', text: detail }));
             });
             list.replaceChildren(...rows);
         }

@@ -33,13 +33,29 @@ unless `NEO4J_TLS_VERIFY` is explicitly `false`, `0`, or `no`.
 | `SESSION_CACHE_SECONDS` | `30` | How long a confirmed admin session is trusted before the console asks `catalog-api` again. Must be a finite number: `nan`, `inf`, or a non-number fails startup. Clamped to 0–30; `0` validates every request. Only positive answers are cached, and never past the session's own expiry. |
 | `SESSION_COOKIE_SECURE` | `true` | Whether the admin [session cookie](#admin-session-cookie-and-reverse-proxies) is `Secure`. The default fails closed: the cookie is `Secure` whatever scheme the console itself sees, so a TLS-terminating proxy in front of it needs no setting. Set `false` only when browsers reach the console over plain HTTP on a host other than `localhost`, such as `http://<host>:8003`; the cookie then travels unencrypted. `true`/`1`/`yes` and `false`/`0`/`no` are accepted; any other value fails startup. |
 
-The Platform Health section ([admin guide](admin-guide.md#platform-health)) checks the services on their compose ports; no variable is needed for the defaults. It reuses `RABBITMQ_PROMETHEUS_URL`, `VICTORIA_METRICS_URL` and `GRAFANA_API_URL` (server-side only; `GRAFANA_URL` is browser-facing and is not used), and these optional overrides exist for a deployment that moves a target:
+The Platform Health section ([admin guide](admin-guide.md#platform-health)) checks the services on their compose addresses; no variable is needed for the defaults. Every probe has a **mode** and a **URL**:
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `VICTORIA_TRACES_URL` | `http://victoria-traces:10428` | Base URL checked at `/health`. |
-| `OTEL_COLLECTOR_HEALTH_URL` | `http://otel-collector:13133` | The collector's `health_check` extension. |
-| `VALKEY_HEALTH_ADDRESS` | `valkey:6379` | `host:port` answered with a `PING`. |
+- `<NAME>_MODE` is `local` (default: the stack's own service), `shared` (a service the deployment shares, probed at the URL you give; the row is labeled Shared and shows the endpoint) or `disabled` (not run, not probed, not an error). Any other value reads as not configured. `<NAME>` is the service name upper-cased with `-` as `_`.
+- The URL variable is a base URL (the probe appends its own path, shown below), except `OTEL_COLLECTOR_HEALTH_URL` and `VALKEY_HEALTH_ADDRESS`. In `local` mode an unset URL falls back to the default, which is the compose address checked before these variables existed. In `shared` mode there is no default: a `shared` service with no URL is **not configured**, which is not the same as failed.
+- `RABBITMQ_PROMETHEUS_URL`, `VICTORIA_METRICS_URL` and `GRAFANA_API_URL` are the same variables the console already uses for queue metrics, history and alerts. In `shared` mode Grafana falls back to `GRAFANA_URL` when `GRAFANA_API_URL` is unset, as the alerts do. A disabled probe only stops the health check; it does not stop other features from reading the same URL. `GRAFANA_URL` and `TRACES_URL` are browser-facing link bases and are never probed.
+
+| Service | Mode variable | URL variable | Default (`local`) | Path probed |
+| --- | --- | --- | --- | --- |
+| catalog-api | `CATALOG_API_MODE` | `CATALOG_API_HEALTH_URL` | `http://api:8005` | `/health` |
+| explore | `EXPLORE_MODE` | `EXPLORE_HEALTH_URL` | `http://explore:8007` | `/health` |
+| insights | `INSIGHTS_MODE` | `INSIGHTS_HEALTH_URL` | `http://insights:8009` | `/health` |
+| valkey | `VALKEY_MODE` | `VALKEY_HEALTH_ADDRESS` | `valkey:6379` | `host:port`, answered with a `PING` |
+| rabbitmq | `RABBITMQ_MODE` | `RABBITMQ_PROMETHEUS_URL` | `http://rabbitmq:15692` | `/metrics/detailed?family=node_coarse_metrics` |
+| victoria-metrics | `VICTORIA_METRICS_MODE` | `VICTORIA_METRICS_URL` | `http://victoria-metrics:8428` | `/health` |
+| victoria-traces | `VICTORIA_TRACES_MODE` | `VICTORIA_TRACES_URL` | `http://victoria-traces:10428` | `/health` |
+| otel-collector | `OTEL_COLLECTOR_MODE` | `OTEL_COLLECTOR_HEALTH_URL` | `http://otel-collector:13133` | the URL itself (`health_check` extension) |
+| grafana | `GRAFANA_MODE` | `GRAFANA_API_URL` | `http://grafana:3000` | `/api/health` |
+| postgres-exporter | `POSTGRES_EXPORTER_MODE` | `POSTGRES_EXPORTER_URL` | `http://postgres-exporter:9187` | `/` |
+| valkey-exporter | `VALKEY_EXPORTER_MODE` | `VALKEY_EXPORTER_URL` | `http://valkey-exporter:9121` | `/metrics` |
+| cadvisor | `CADVISOR_MODE` | `CADVISOR_URL` | `http://cadvisor:8080` | `/healthz` |
+| node-exporter | `NODE_EXPORTER_MODE` | `NODE_EXPORTER_URL` | `http://node-exporter:9100` | `/` |
+
+For example, with PostgreSQL and its exporter shared on another host and the local exporter not run: `POSTGRES_EXPORTER_MODE=shared` and `POSTGRES_EXPORTER_URL=http://db.lan:9187`, or `POSTGRES_EXPORTER_MODE=disabled`.
 
 The console reads the embeddings job's last load from `public.artist_embeddings` with its existing PostgreSQL connection; its role needs `SELECT` on that table, and without it the job reads "not monitored here".
 

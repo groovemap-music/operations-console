@@ -3,8 +3,14 @@
 The ingest pipelines report their own health (``PIPELINE_CONFIGS``). Everything else the compose
 stack runs, the applications, the datastores and broker, and the observability stack, is checked
 here, each by the endpoint its own healthcheck or operator documentation names, reached over the
-shared ``groovemap`` network. Each check ends in one of three states: ``healthy``, ``unhealthy``
+shared ``groovemap`` network. Each check ends in one of three statuses: ``healthy``, ``unhealthy``
 (it answered, but not with a healthy answer), or ``unreachable`` (it did not answer in time).
+
+Every probe also has a mode, set by ``<NAME>_MODE``: ``local`` (the stack's own service at its
+compose address, the default), ``shared`` (a service the deployment shares, at the URL the operator
+gives) or ``disabled`` (not run, not probed). A ``shared`` probe with no URL is ``unconfigured``.
+The operator-facing ``state`` folds mode and status together: healthy, failed, shared, disabled or
+unconfigured. A disabled or unconfigured service is never probed and never reads as unreachable.
 
 Every check runs at once and is bounded by ``PROBE_TIMEOUT_SECONDS`` as a whole, so one slow
 target costs the poll that long, never the sum of the targets.
@@ -24,7 +30,7 @@ from os import getenv
 from typing import Any, Final
 
 import httpx
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from dashboard import telemetry as console_telemetry
 
@@ -51,16 +57,55 @@ KIND_HTTP = "http"
 KIND_VALKEY_PING = "valkey-ping"
 KIND_VALKEY_EXPORTER = "valkey-exporter"
 
+# Statuses of a service that was not probed: the operator turned it off, or never said where it is.
+DISABLED = "disabled"
+UNCONFIGURED = "unconfigured"
+
+MODE_LOCAL = "local"
+MODE_SHARED = "shared"
+MODE_DISABLED = "disabled"
+MODES: Final = (MODE_LOCAL, MODE_SHARED, MODE_DISABLED)
+
+# The operator-facing state of a service, derived from its mode and status.
+STATE_HEALTHY = "healthy"
+STATE_FAILED = "failed"
+STATE_SHARED = "shared"
+STATE_DISABLED = "disabled"
+STATE_UNCONFIGURED = "unconfigured"
+
 
 class PlatformService(BaseModel):
-    """One long-running service's health."""
+    """One long-running service's health.
+
+    ``status`` is the reading (healthy, unhealthy, unreachable, or disabled / unconfigured when it
+    was not probed); ``mode`` is the operator's choice (local, shared, disabled); ``state`` folds
+    the two for display; ``endpoint`` is the address actually probed, None when nothing was.
+    """
 
     name: str
     group: str
-    status: str  # healthy, unhealthy, unreachable
+    status: str
     last_seen: datetime | None
     error: str | None
     source: str = SOURCE_PROBE
+    mode: str = MODE_LOCAL
+    state: str = ""
+    endpoint: str | None = None
+
+    @model_validator(mode="after")
+    def _derive_state(self) -> PlatformService:
+        if not self.state:
+            self.state = state_of(self.mode, self.status)
+        return self
+
+
+def state_of(mode: str, status: str) -> str:
+    """The state shown for a service in ``mode`` whose reading is ``status``."""
+    if status in (DISABLED, UNCONFIGURED):
+        return status
+    if status != HEALTHY:
+        return STATE_FAILED
+    return STATE_SHARED if mode == MODE_SHARED else STATE_HEALTHY
 
 
 class JobStatus(BaseModel):
@@ -80,12 +125,51 @@ class Probe:
 
     name: str
     group: str
-    target: str  # a URL for the http kinds, "host:port" for the Valkey ping
+    target: str  # a URL for the http kinds, "host:port" for the Valkey ping; "" when not probed
     kind: str = KIND_HTTP
+    mode: str = MODE_LOCAL
+    skipped: str | None = None  # DISABLED or UNCONFIGURED: the probe is not run
+    note: str | None = None  # what the operator sees for a skipped probe
 
 
 def _env_url(name: str, default: str) -> str:
     return getenv(name, "").strip().rstrip("/") or default
+
+
+def _mode(name: str) -> str | None:
+    """``<NAME>_MODE`` (default local); None when it is set to something that is not a mode."""
+    value = getenv(f"{name}_MODE", "").strip().lower() or MODE_LOCAL
+    return value if value in MODES else None
+
+
+def _probe(
+    name: str,
+    group: str,
+    url_env: str,
+    default: str,
+    path: str = "",
+    kind: str = KIND_HTTP,
+    shared_fallback: str = "",
+) -> Probe:
+    """One probe from ``<NAME>_MODE`` and its URL variable ``url_env``.
+
+    ``local`` probes ``url_env``, else ``default`` (today's compose address). ``shared`` needs an
+    endpoint, ``url_env`` or ``shared_fallback``, and has no default: a missing one is ``unconfigured``
+    rather than a guess. ``disabled`` is never probed. ``path`` is appended to the base URL.
+    """
+    mode_env = f"{name.upper().replace('-', '_')}_MODE"
+    mode = _mode(name.upper().replace("-", "_"))
+    if mode is None:
+        return Probe(name, group, "", kind, MODE_LOCAL, UNCONFIGURED, f"{mode_env}={getenv(mode_env, '').strip()!r} is not local, shared or disabled")
+    if mode == MODE_DISABLED:
+        return Probe(name, group, "", kind, mode, DISABLED, f"disabled by {mode_env}")
+    given = _env_url(url_env, "")
+    if mode == MODE_SHARED:
+        given = given or (_env_url(shared_fallback, "") if shared_fallback else "")
+        if not given:
+            return Probe(name, group, "", kind, mode, UNCONFIGURED, f"shared, but no endpoint: set {url_env}")
+        return Probe(name, group, given + path, kind, mode)
+    return Probe(name, group, (given or default) + path, kind, mode)
 
 
 def build_probes(rabbitmq_prometheus_url: str) -> list[Probe]:
@@ -95,23 +179,21 @@ def build_probes(rabbitmq_prometheus_url: str) -> list[Probe]:
     (see the bead comment). ``catalog-api`` health is on 8005, its API on 8004. ``postgres`` and
     ``neo4j`` are not probed here: the console already holds connections to both.
     """
-    victoria_metrics = _env_url("VICTORIA_METRICS_URL", "http://victoria-metrics:8428")
-    grafana = _env_url("GRAFANA_API_URL", "http://grafana:3000")
     return [
-        Probe("catalog-api", GROUP_APPLICATIONS, "http://api:8005/health"),
-        Probe("explore", GROUP_APPLICATIONS, "http://explore:8007/health"),
-        Probe("insights", GROUP_APPLICATIONS, "http://insights:8009/health"),
-        Probe("valkey", GROUP_DATA, getenv("VALKEY_HEALTH_ADDRESS", "valkey:6379"), KIND_VALKEY_PING),
+        _probe("catalog-api", GROUP_APPLICATIONS, "CATALOG_API_HEALTH_URL", "http://api:8005", "/health"),
+        _probe("explore", GROUP_APPLICATIONS, "EXPLORE_HEALTH_URL", "http://explore:8007", "/health"),
+        _probe("insights", GROUP_APPLICATIONS, "INSIGHTS_HEALTH_URL", "http://insights:8009", "/health"),
+        _probe("valkey", GROUP_DATA, "VALKEY_HEALTH_ADDRESS", "valkey:6379", kind=KIND_VALKEY_PING),
         # The broker's Prometheus plugin, one small metric family: the console already scrapes it.
-        Probe("rabbitmq", GROUP_DATA, f"{rabbitmq_prometheus_url}/metrics/detailed?family=node_coarse_metrics"),
-        Probe("victoria-metrics", GROUP_OBSERVABILITY, f"{victoria_metrics}/health"),
-        Probe("victoria-traces", GROUP_OBSERVABILITY, _env_url("VICTORIA_TRACES_URL", "http://victoria-traces:10428") + "/health"),
-        Probe("otel-collector", GROUP_OBSERVABILITY, _env_url("OTEL_COLLECTOR_HEALTH_URL", "http://otel-collector:13133")),
-        Probe("grafana", GROUP_OBSERVABILITY, f"{grafana}/api/health"),
-        Probe("postgres-exporter", GROUP_OBSERVABILITY, "http://postgres-exporter:9187/"),
-        Probe("valkey-exporter", GROUP_OBSERVABILITY, "http://valkey-exporter:9121/metrics", KIND_VALKEY_EXPORTER),
-        Probe("cadvisor", GROUP_OBSERVABILITY, "http://cadvisor:8080/healthz"),
-        Probe("node-exporter", GROUP_OBSERVABILITY, "http://node-exporter:9100/"),
+        _probe("rabbitmq", GROUP_DATA, "RABBITMQ_PROMETHEUS_URL", rabbitmq_prometheus_url, "/metrics/detailed?family=node_coarse_metrics"),
+        _probe("victoria-metrics", GROUP_OBSERVABILITY, "VICTORIA_METRICS_URL", "http://victoria-metrics:8428", "/health"),
+        _probe("victoria-traces", GROUP_OBSERVABILITY, "VICTORIA_TRACES_URL", "http://victoria-traces:10428", "/health"),
+        _probe("otel-collector", GROUP_OBSERVABILITY, "OTEL_COLLECTOR_HEALTH_URL", "http://otel-collector:13133"),
+        _probe("grafana", GROUP_OBSERVABILITY, "GRAFANA_API_URL", "http://grafana:3000", "/api/health", shared_fallback="GRAFANA_URL"),
+        _probe("postgres-exporter", GROUP_OBSERVABILITY, "POSTGRES_EXPORTER_URL", "http://postgres-exporter:9187", "/"),
+        _probe("valkey-exporter", GROUP_OBSERVABILITY, "VALKEY_EXPORTER_URL", "http://valkey-exporter:9121", "/metrics", KIND_VALKEY_EXPORTER),
+        _probe("cadvisor", GROUP_OBSERVABILITY, "CADVISOR_URL", "http://cadvisor:8080", "/healthz"),
+        _probe("node-exporter", GROUP_OBSERVABILITY, "NODE_EXPORTER_URL", "http://node-exporter:9100", "/"),
     ]
 
 
@@ -119,8 +201,16 @@ _REDIS_UP = re.compile(r"^redis_up\s+(\S+)\s*$", re.MULTILINE)
 
 
 def _reading(probe: Probe, status: str, error: str | None = None) -> PlatformService:
-    seen = datetime.now(UTC) if status != UNREACHABLE else None
-    return PlatformService(name=probe.name, group=probe.group, status=status, last_seen=seen, error=error)
+    seen = datetime.now(UTC) if status not in (UNREACHABLE, DISABLED, UNCONFIGURED) else None
+    return PlatformService(
+        name=probe.name,
+        group=probe.group,
+        status=status,
+        last_seen=seen,
+        error=error,
+        mode=probe.mode,
+        endpoint=probe.target or None,
+    )
 
 
 async def _http_check(client: httpx.AsyncClient, probe: Probe) -> PlatformService:
@@ -156,7 +246,12 @@ async def _valkey_ping(probe: Probe) -> PlatformService:
 
 
 async def check_probe(client: httpx.AsyncClient, probe: Probe, timeout: float = PROBE_TIMEOUT_SECONDS) -> PlatformService:
-    """Run one check, bounded as a whole by ``timeout``; any failure to answer is ``unreachable``."""
+    """Run one check, bounded as a whole by ``timeout``; any failure to answer is ``unreachable``.
+
+    A disabled or unconfigured probe is not run: it reports that, with no error status.
+    """
+    if probe.skipped is not None:
+        return _reading(probe, probe.skipped, probe.note)
     with console_telemetry.poll_span(probe.name) as poll:
         try:
             if probe.kind == KIND_VALKEY_PING:
