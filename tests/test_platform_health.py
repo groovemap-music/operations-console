@@ -1,6 +1,7 @@
 """Platform service health: the checks, their concurrency, the jobs, and what a down service raises."""
 
 import asyncio
+import logging
 import time
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -196,6 +197,146 @@ class TestTargets:
         assert detector.observe(_platform_reading(("cadvisor", "observability", "disabled"), at=2)) == []
         assert detector.observe(_platform_reading(("cadvisor", "observability", "unconfigured"), at=4)) == []
         assert detector.observe(_platform_reading(("cadvisor", "observability", "healthy"), at=6)) == []
+
+
+class TestEndpointRedaction:
+    SECRET_URL = "http://user:s3cret@pg.lan:9187/metrics?token=abc123#frag"
+
+    @pytest.mark.parametrize(
+        ("target", "shown"),
+        [
+            ("http://user:s3cret@pg.lan:9187/metrics?token=abc123#frag", "http://pg.lan:9187/metrics"),
+            ("https://pg.lan/?apikey=x", "https://pg.lan/"),
+            ("http://[::1]:9100/", "http://[::1]:9100/"),
+            ("user:pw@valkey.lan:6379", "valkey.lan:6379"),
+            # Plain targets are unchanged.
+            ("http://grafana:3000/api/health", "http://grafana:3000/api/health"),
+            ("http://postgres-exporter:9187/", "http://postgres-exporter:9187/"),
+            ("valkey:6379", "valkey:6379"),
+        ],
+    )
+    def test_redact_url(self, target: str, shown: str) -> None:
+        assert ph.redact_url(target) == shown
+
+    def test_the_defaults_are_unchanged_by_redaction(self) -> None:
+        for probe in ph.build_probes("http://rabbitmq:15692"):
+            if probe.kind != ph.KIND_VALKEY_PING and "?" not in probe.target:
+                assert ph.redact_url(probe.target) == probe.target
+
+    @pytest.mark.asyncio
+    async def test_the_api_reading_hides_credentials_but_the_probe_uses_the_full_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POSTGRES_EXPORTER_MODE", "shared")
+        monkeypatch.setenv("POSTGRES_EXPORTER_URL", "http://user:s3cret@pg.lan:9187/base?token=abc123")
+        requested: list[str] = []
+
+        def answer(request: httpx.Request) -> httpx.Response:
+            requested.append(str(request.url))
+            return httpx.Response(200)
+
+        reading = await _check(_probe("postgres-exporter"), answer)
+        assert reading.endpoint == "http://pg.lan:9187/base/"
+        assert "s3cret" in requested[0]
+        assert "abc123" in requested[0]
+        assert "s3cret" not in reading.model_dump_json()
+        assert "abc123" not in reading.model_dump_json()
+
+    @pytest.mark.asyncio
+    async def test_error_text_and_logs_do_not_carry_the_secret(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+        monkeypatch.setenv("POSTGRES_EXPORTER_MODE", "shared")
+        monkeypatch.setenv("POSTGRES_EXPORTER_URL", "http://user:s3cret@pg.lan:9187/base?token=abc123")
+
+        def down(_r: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("cannot connect to http://user:s3cret@pg.lan:9187/?token=abc123 (refused)")
+
+        with caplog.at_level(logging.DEBUG):
+            reading = await _check(_probe("postgres-exporter"), down)
+        assert reading.state == "failed"
+        assert reading.error == "cannot connect to http://pg.lan:9187/ (refused)"
+        assert "s3cret" not in reading.model_dump_json()
+        assert "s3cret" not in caplog.text
+        assert "abc123" not in caplog.text
+
+
+class TestSecretsNeverSurface:
+    """The probe's own target is scrubbed in every form, whatever the URL looks like."""
+
+    @staticmethod
+    def _error_text(secret_target: str, message: str) -> str:
+        probe = ph.Probe("x", "observability", secret_target)
+        return ph._reading(probe, "unreachable", message).model_dump_json()
+
+    def test_odd_characters_in_the_password(self) -> None:
+        target = "http://admin:p@ss'w\"o)rd<1>@pg.lan:9187/m?token=t0k3n"
+        out = self._error_text(target, f"boom connecting to {target} failed; password p@ss'w\"o)rd<1> rejected, query token=t0k3n")
+        for secret in ("p@ss", 'w\\"o', "rd<1>", "t0k3n", "admin"):
+            assert secret not in out
+
+    def test_percent_encoded_forms_are_scrubbed_too(self) -> None:
+        out = self._error_text("http://u:p%40ss%27@h.lan:1/", "saw u:p%40ss%27 and u:p@ss'")
+        assert "p%40ss" not in out
+        assert "p@ss" not in out
+
+    def test_a_scheme_less_target_with_userinfo_and_query(self) -> None:
+        out = self._error_text("user:pw123@valkey.lan:6379?auth=zz9", "connect user:pw123@valkey.lan:6379?auth=zz9 refused; pw123")
+        assert "pw123" not in out
+        assert "zz9" not in out
+        assert "user:" not in out
+
+    def test_an_unparseable_url_is_replaced_whole(self) -> None:
+        target = "http://u:sEcr3t@[::1:9187/x?k=v4lue"  # unbalanced bracket: urlsplit rejects it
+        assert ph.redact_url(target) == "<redacted url>"
+        out = self._error_text(target, f"bad url {target}")
+        assert "sEcr3t" not in out
+        assert "v4lue" not in out
+
+    def test_the_text_net_takes_the_whole_token_of_a_url_it_was_not_told_about(self) -> None:
+        text = "failed: https://a:b'c@h.lan/p?x=1'2 (retrying), see http://[bad/?q=9."
+        shown = ph.redact_text(text)
+        assert "b'c" not in shown
+        assert "x=1" not in shown
+        assert "q=9" not in shown
+        assert shown.startswith("failed: https://h.lan/p")
+
+
+class TestValkeyAddress:
+    @pytest.mark.parametrize("address", ["valkey:6379", "valkey.lan:6379", "10.0.0.5:6380", "[::1]:6379"])
+    def test_a_valid_address_is_probed(self, address: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VALKEY_HEALTH_ADDRESS", address)
+        probe = _probe("valkey")
+        assert (probe.skipped, probe.target) == (None, address)
+
+    @pytest.mark.parametrize(
+        "address", ["user:pw@valkey:6379", "valkey", "valkey:99999", "valkey:0", "valkey:6379?auth=s3", "redis://valkey:6379", "val key:1", ":6379"]
+    )
+    def test_a_malformed_address_is_unconfigured_with_a_fixed_message(self, address: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VALKEY_HEALTH_ADDRESS", address)
+        probe = _probe("valkey")
+        assert (probe.skipped, probe.target) == ("unconfigured", "")
+        assert probe.note == "VALKEY_HEALTH_ADDRESS is not a valid host:port"
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_shared_address_never_reaches_the_api(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VALKEY_MODE", "shared")
+        monkeypatch.setenv("VALKEY_HEALTH_ADDRESS", "user:hunter2@valkey:6379")
+        reading = await ph.check_probe(None, _probe("valkey"))  # type: ignore[arg-type]
+        assert (reading.state, reading.endpoint) == ("unconfigured", None)
+        assert "hunter2" not in reading.model_dump_json()
+
+
+class TestPathJoining:
+    def test_the_path_joins_before_the_query_and_the_query_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CADVISOR_URL", "http://user:pw@cadvisor.lan:8081/prefix/?token=abc")
+        assert _probe("cadvisor").target == "http://user:pw@cadvisor.lan:8081/prefix/healthz?token=abc"
+
+    def test_a_query_in_the_probe_path_is_merged_with_the_targets(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("RABBITMQ_PROMETHEUS_URL", "http://broker:15692?auth=1")
+        assert _probe("rabbitmq").target == "http://broker:15692/metrics/detailed?auth=1&family=node_coarse_metrics"
+
+    def test_a_trailing_slash_or_no_path_is_handled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VICTORIA_METRICS_URL", "http://vm.lan:8428/")
+        assert _probe("victoria-metrics").target == "http://vm.lan:8428/health"
+        monkeypatch.setenv("OTEL_COLLECTOR_HEALTH_URL", "http://otel.lan:13133/health?x=1")
+        assert _probe("otel-collector").target == "http://otel.lan:13133/health?x=1"
 
 
 class TestChecks:

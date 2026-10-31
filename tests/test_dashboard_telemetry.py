@@ -244,6 +244,41 @@ def _instrumented_client_factory(handler: Any) -> Any:
     return factory
 
 
+class TestProbeSpansHideCredentials:
+    """A probe of a credentialed shared target must not export userinfo or a query string on any span."""
+
+    @pytest.mark.asyncio
+    async def test_no_span_attribute_carries_userinfo_or_query(self, spans: SpanCollector, monkeypatch: pytest.MonkeyPatch) -> None:
+        from dashboard import platform_health as ph
+
+        monkeypatch.setenv("POSTGRES_EXPORTER_MODE", "shared")
+        monkeypatch.setenv("POSTGRES_EXPORTER_URL", "http://user:s3cret@pg.lan:9187/base?token=abc123")
+        probe = next(p for p in ph.build_probes("http://rabbitmq:15692") if p.name == "postgres-exporter")
+        requested: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requested.append(str(request.url))
+            return httpx.Response(200)
+
+        spans.provider.add_span_processor(console_telemetry.RedactUrlSpanProcessor())
+        with patch("httpx.AsyncClient", side_effect=_instrumented_client_factory(handler)):
+            reading = (await ph.poll_platform([probe]))[0]
+
+        assert reading.state == "shared"
+        assert "token=abc123" in requested[0]
+        finished = spans.spans()
+        assert any(span.attributes and "url.full" in span.attributes for span in finished)
+        for span in finished:
+            for key, value in (span.attributes or {}).items():
+                assert "s3cret" not in str(value), key
+                assert "abc123" not in str(value), key
+                assert "token" not in str(value), key
+
+    def test_install_is_idempotent_and_skips_a_provider_that_cannot_take_processors(self, spans: SpanCollector) -> None:
+        assert console_telemetry.redact_outbound_urls() is True
+        assert console_telemetry.redact_outbound_urls() is False
+
+
 class TestPollSpans:
     """`console.poll {target}` — one root span per polled target, the poll's work inside it."""
 

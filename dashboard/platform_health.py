@@ -28,11 +28,13 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from os import getenv
 from typing import Any, Final
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 from pydantic import BaseModel, model_validator
 
 from dashboard import telemetry as console_telemetry
+from dashboard.url_redaction import redact_text, redact_url, scrub
 
 
 HEALTHY = "healthy"
@@ -132,8 +134,22 @@ class Probe:
     note: str | None = None  # what the operator sees for a skipped probe
 
 
-def _env_url(name: str, default: str) -> str:
-    return getenv(name, "").strip().rstrip("/") or default
+# host:port, with an IPv6 address in brackets; no userinfo, scheme, path or query.
+_HOST_PORT = re.compile(r"(?:[A-Za-z0-9]|[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]|\[[0-9A-Fa-f:.]+\]):[0-9]{1,5}")
+
+
+def join_probe_path(base: str, path: str) -> str:
+    """``path`` (which may carry its own query) joined onto ``base``'s path, keeping ``base``'s userinfo and query.
+
+    Never string concatenation: a base with a query would otherwise swallow the path into the query.
+    """
+    if not path:
+        return base
+    added_path, _, added_query = path.partition("?")
+    parts = urlsplit(base)
+    joined_path = parts.path.rstrip("/") + added_path
+    query = "&".join(part for part in (parts.query, added_query) if part)
+    return urlunsplit((parts.scheme, parts.netloc, joined_path, query, parts.fragment))
 
 
 def _mode(name: str) -> str | None:
@@ -163,13 +179,19 @@ def _probe(
         return Probe(name, group, "", kind, MODE_LOCAL, UNCONFIGURED, f"{mode_env}={getenv(mode_env, '').strip()!r} is not local, shared or disabled")
     if mode == MODE_DISABLED:
         return Probe(name, group, "", kind, mode, DISABLED, f"disabled by {mode_env}")
-    given = _env_url(url_env, "")
+    given = getenv(url_env, "").strip()
     if mode == MODE_SHARED:
-        given = given or (_env_url(shared_fallback, "") if shared_fallback else "")
+        given = given or (getenv(shared_fallback, "").strip() if shared_fallback else "")
         if not given:
             return Probe(name, group, "", kind, mode, UNCONFIGURED, f"shared, but no endpoint: set {url_env}")
-        return Probe(name, group, given + path, kind, mode)
-    return Probe(name, group, (given or default) + path, kind, mode)
+    else:
+        given = given or default
+    if kind == KIND_VALKEY_PING:
+        if not _HOST_PORT.fullmatch(given) or not 0 < int(given.rpartition(":")[2]) < 65536:
+            # Fixed text: the value may hold credentials, so it is never echoed.
+            return Probe(name, group, "", kind, mode, UNCONFIGURED, f"{url_env} is not a valid host:port")
+        return Probe(name, group, given, kind, mode)
+    return Probe(name, group, join_probe_path(given, path), kind, mode)
 
 
 def build_probes(rabbitmq_prometheus_url: str) -> list[Probe]:
@@ -207,9 +229,9 @@ def _reading(probe: Probe, status: str, error: str | None = None) -> PlatformSer
         group=probe.group,
         status=status,
         last_seen=seen,
-        error=error,
+        error=redact_text(scrub(error, probe.target)) if error else error,
         mode=probe.mode,
-        endpoint=probe.target or None,
+        endpoint=redact_url(probe.target) if probe.target else None,
     )
 
 
@@ -229,7 +251,7 @@ async def _http_check(client: httpx.AsyncClient, probe: Probe) -> PlatformServic
 
 async def _valkey_ping(probe: Probe) -> PlatformService:
     host, _, port = probe.target.rpartition(":")
-    reader, writer = await asyncio.open_connection(host, int(port))
+    reader, writer = await asyncio.open_connection(host.strip("[]"), int(port))
     try:
         writer.write(b"PING\r\n")
         await writer.drain()
