@@ -34,7 +34,7 @@ import httpx
 from pydantic import BaseModel, model_validator
 
 from dashboard import telemetry as console_telemetry
-from dashboard.url_redaction import redact_text, redact_url, scrub
+from dashboard.url_redaction import is_ambiguous, redact_text, redact_url, scrub
 
 
 HEALTHY = "healthy"
@@ -191,6 +191,9 @@ def _probe(
             # Fixed text: the value may hold credentials, so it is never echoed.
             return Probe(name, group, "", kind, mode, UNCONFIGURED, f"{url_env} is not a valid host:port")
         return Probe(name, group, given, kind, mode)
+    if is_ambiguous(given) or urlsplit(given).scheme not in ("http", "https"):
+        # Fixed text: the value may hold credentials, so it is never echoed. Percent-encode the userinfo.
+        return Probe(name, group, "", kind, mode, UNCONFIGURED, f"{url_env} is not an unambiguous http(s) URL (percent-encode credentials)")
     return Probe(name, group, join_probe_path(given, path), kind, mode)
 
 
