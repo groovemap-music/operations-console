@@ -215,8 +215,25 @@ against the Discogs pipeline.
 
 Below the pipelines, the Overview's **Platform Health** section shows every long-running service
 the stack runs besides the ingest pipelines, in three groups. Each row is **Healthy**, **Unhealthy**
-(it answered, but not with a healthy answer, and the row says what it answered) or **Unreachable**
-(no answer within 3 seconds). All checks run at once, every two seconds, over the `groovemap` network.
+(it answered, but not with a healthy answer, and the row says what it answered), **Unreachable**
+(no answer within 3 seconds), **Shared**, **Disabled** or **Not configured**. All checks run at once,
+every two seconds, over the `groovemap` network.
+
+Each service's target and mode are set by environment variables (see
+[configuration](configuration.md)); the table below lists the
+defaults. The mode decides the state shown, and the API (`platform[]` in `/api/metrics` and the
+WebSocket payload) carries `mode`, `state` and `endpoint` next to `status`:
+
+| State | Mode | Meaning | `status` |
+|---|---|---|---|
+| healthy | local | the stack's own service answered | `healthy` |
+| failed | local or shared | the configured target is unhealthy or did not answer; the row says why | `unhealthy` / `unreachable` |
+| shared | shared | answered at the shared endpoint, which the row shows; the stack's own service is not expected | `healthy` |
+| disabled | disabled | the operator turned it off: not probed, not an error, no attention item or event | `disabled` |
+| not configured | shared (or an invalid mode) | needed but no target given: not probed, a warning rather than a failure | `unconfigured` |
+
+`endpoint` is the address actually probed (null when nothing was). Only **failed** reads as
+Unhealthy or Unreachable.
 
 | Group | Service | Checked by |
 |---|---|---|

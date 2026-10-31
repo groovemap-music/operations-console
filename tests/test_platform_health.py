@@ -85,6 +85,119 @@ class TestProbes:
         assert _probe("grafana").target == "http://grafana:3000/api/health"
 
 
+_ALL_PROBES = (
+    "catalog-api",
+    "explore",
+    "insights",
+    "valkey",
+    "rabbitmq",
+    "victoria-metrics",
+    "victoria-traces",
+    "otel-collector",
+    "grafana",
+    "postgres-exporter",
+    "valkey-exporter",
+    "cadvisor",
+    "node-exporter",
+)
+
+
+class TestTargets:
+    """Every probe's URL and mode come from the environment; the defaults are today's targets."""
+
+    def test_the_defaults_are_local_and_probe_the_compose_addresses(self) -> None:
+        probes = {p.name: p for p in ph.build_probes("http://rabbitmq:15692")}
+        assert {p.mode for p in probes.values()} == {"local"}
+        assert {p.skipped for p in probes.values()} == {None}
+        assert probes["postgres-exporter"].target == "http://postgres-exporter:9187/"
+        assert probes["valkey-exporter"].target == "http://valkey-exporter:9121/metrics"
+
+    @pytest.mark.parametrize("name", _ALL_PROBES)
+    def test_every_probe_can_be_disabled_and_is_then_not_probed(self, name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(f"{name.upper().replace('-', '_')}_MODE", "disabled")
+        probe = _probe(name)
+        assert (probe.mode, probe.skipped, probe.target) == ("disabled", "disabled", "")
+
+    @pytest.mark.parametrize("name", _ALL_PROBES)
+    def test_a_shared_probe_with_no_endpoint_is_unconfigured(self, name: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(f"{name.upper().replace('-', '_')}_MODE", "shared")
+        probe = _probe(name)
+        assert (probe.mode, probe.skipped, probe.target) == ("shared", "unconfigured", "")
+
+    def test_a_shared_probe_uses_the_given_endpoint_and_the_probes_path(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POSTGRES_EXPORTER_MODE", "shared")
+        monkeypatch.setenv("POSTGRES_EXPORTER_URL", "http://pg-shared.lan:9187/")
+        monkeypatch.setenv("CADVISOR_URL", "http://cadvisor.lan:8081")
+        probes = {p.name: p for p in ph.build_probes("http://rabbitmq:15692")}
+        assert (probes["postgres-exporter"].mode, probes["postgres-exporter"].target) == ("shared", "http://pg-shared.lan:9187/")
+        assert (probes["cadvisor"].mode, probes["cadvisor"].target) == ("local", "http://cadvisor.lan:8081/healthz")
+
+    def test_shared_grafana_falls_back_to_the_browser_facing_url_as_the_alerts_do(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("GRAFANA_MODE", "shared")
+        monkeypatch.delenv("GRAFANA_API_URL", raising=False)
+        monkeypatch.setenv("GRAFANA_URL", "https://grafana.example.net")
+        assert _probe("grafana").target == "https://grafana.example.net/api/health"
+        monkeypatch.setenv("GRAFANA_API_URL", "http://grafana.lan:3000")
+        assert _probe("grafana").target == "http://grafana.lan:3000/api/health"
+
+    def test_a_mode_that_is_not_one_is_unconfigured_and_says_so(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CADVISOR_MODE", "remote")
+        probe = _probe("cadvisor")
+        assert probe.skipped == "unconfigured"
+        assert probe.note is not None
+        assert "CADVISOR_MODE" in probe.note
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_probe_reads_disabled_without_a_request(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POSTGRES_EXPORTER_MODE", "disabled")
+
+        def refuse(_r: httpx.Request) -> httpx.Response:
+            raise AssertionError("a disabled probe must not be requested")
+
+        reading = await _check(_probe("postgres-exporter"), refuse)
+        assert (reading.status, reading.state, reading.mode, reading.endpoint) == ("disabled", "disabled", "disabled", None)
+        assert reading.error == "disabled by POSTGRES_EXPORTER_MODE"
+
+    @pytest.mark.asyncio
+    async def test_an_unconfigured_probe_is_not_unreachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("NODE_EXPORTER_MODE", "shared")
+        reading = await _check(_probe("node-exporter"), lambda _r: httpx.Response(200))
+        assert (reading.status, reading.state, reading.endpoint) == ("unconfigured", "unconfigured", None)
+        assert reading.error == "shared, but no endpoint: set NODE_EXPORTER_URL"
+
+    @pytest.mark.asyncio
+    async def test_a_healthy_shared_probe_shows_the_endpoint_it_probed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POSTGRES_EXPORTER_MODE", "shared")
+        monkeypatch.setenv("POSTGRES_EXPORTER_URL", "http://pg-shared.lan:9187")
+        reading = await _check(_probe("postgres-exporter"), lambda _r: httpx.Response(200))
+        assert (reading.status, reading.state, reading.mode, reading.endpoint) == ("healthy", "shared", "shared", "http://pg-shared.lan:9187/")
+
+    @pytest.mark.asyncio
+    async def test_a_shared_probe_that_does_not_answer_has_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("POSTGRES_EXPORTER_MODE", "shared")
+        monkeypatch.setenv("POSTGRES_EXPORTER_URL", "http://pg-shared.lan:9187")
+
+        def down(_r: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("refused")
+
+        reading = await _check(_probe("postgres-exporter"), down)
+        assert (reading.status, reading.state, reading.mode) == ("unreachable", "failed", "shared")
+
+    @pytest.mark.asyncio
+    async def test_a_local_probe_is_healthy_or_failed(self) -> None:
+        ok = await _check(_probe("grafana"), lambda _r: httpx.Response(200))
+        bad = await _check(_probe("grafana"), lambda _r: httpx.Response(503))
+        assert (ok.state, ok.endpoint) == ("healthy", "http://grafana:3000/api/health")
+        assert (bad.state, bad.status) == ("failed", "unhealthy")
+
+    def test_a_disabled_or_unconfigured_service_raises_no_event(self) -> None:
+        detector = EventDetector()
+        detector.observe(_platform_reading(("cadvisor", "observability", "healthy"), at=0))
+        assert detector.observe(_platform_reading(("cadvisor", "observability", "disabled"), at=2)) == []
+        assert detector.observe(_platform_reading(("cadvisor", "observability", "unconfigured"), at=4)) == []
+        assert detector.observe(_platform_reading(("cadvisor", "observability", "healthy"), at=6)) == []
+
+
 class TestChecks:
     @pytest.mark.asyncio
     async def test_a_200_is_healthy(self) -> None:

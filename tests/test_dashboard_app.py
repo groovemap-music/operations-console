@@ -253,7 +253,7 @@ class TestDashboardAppMetrics:
     @pytest.mark.asyncio
     async def test_collect_all_metrics(self) -> None:
         """Test collecting all metrics."""
-        mock_config = Mock()
+        mock_config = Mock(rabbitmq_prometheus_url="http://rabbitmq:15692")
 
         with patch("dashboard.dashboard.get_config", return_value=mock_config):
             app = DashboardApp()
