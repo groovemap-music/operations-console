@@ -753,6 +753,7 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
     """Manage application lifecycle."""
     _configure_logging()
     setup_telemetry("dashboard")
+    console_telemetry.redact_outbound_urls()
     instrument_fastapi_app(_app)
     instrument_httpx()
     # The lifespan already runs on the server's event loop, so this is the first place in the

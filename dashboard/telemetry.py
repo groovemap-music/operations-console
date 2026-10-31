@@ -26,16 +26,19 @@ import asyncio
 import logging
 import os
 import time
+import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from threading import RLock
 from typing import TYPE_CHECKING, Any
 
 from common import get_meter, get_tracer
-from common.telemetry import provider_generation
+from common.telemetry import provider_generation, tracer_provider
 from opentelemetry.context import Context
 from opentelemetry.metrics import CallbackOptions, Observation
 from opentelemetry.trace import Status, StatusCode
+
+from dashboard.url_redaction import redact_url
 
 
 if TYPE_CHECKING:
@@ -148,6 +151,57 @@ class PollOutcome:
         self.value = POLL_OUTCOME_FAILURE
         if error is not None:
             self.error_type = type(error).__name__
+
+
+# Span attributes that hold a request URL. The installed httpx instrumentation hides userinfo and a
+# short list of signature parameters, not an arbitrary ``?token=``, and traces go to a shared store.
+_URL_ATTRIBUTES = ("url.full", "http.url")
+
+
+try:  # the SDK is an optional extra; its processors are duck-typed, but the base supplies hooks it may add
+    from opentelemetry.sdk.trace import SpanProcessor as _SpanProcessorBase
+except ImportError:  # pragma: no cover
+    _SpanProcessorBase = object  # type: ignore[assignment,misc]
+
+_redacted_providers: weakref.WeakSet[Any] = weakref.WeakSet()
+
+
+class RedactUrlSpanProcessor(_SpanProcessorBase):
+    """Rewrites URL attributes to ``scheme://host[:port]/path`` as each span starts, before any exporter sees it."""
+
+    def on_start(self, span: Any, parent_context: Context | None = None) -> None:  # noqa: ARG002
+        """Replace any URL attribute the span was created with."""
+        attributes = getattr(span, "attributes", None) or {}
+        for key in _URL_ATTRIBUTES:
+            value = attributes.get(key)
+            if isinstance(value, str):
+                clean = redact_url(value)
+                if clean != value:
+                    span.set_attribute(key, clean)
+
+    def on_end(self, span: Any) -> None:
+        """Nothing to do: the attribute was fixed when the span started."""
+
+    def shutdown(self) -> None:
+        """Nothing to release."""
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:  # noqa: ARG002
+        """Nothing is buffered."""
+        return True
+
+
+def redact_outbound_urls() -> bool:
+    """Install `RedactUrlSpanProcessor` on the live tracer provider; False when there is none to extend.
+
+    Idempotent per provider. Call it after ``setup_telemetry``.
+    """
+    provider = tracer_provider()
+    add = getattr(provider, "add_span_processor", None)
+    if add is None or provider in _redacted_providers:
+        return False
+    add(RedactUrlSpanProcessor())
+    _redacted_providers.add(provider)
+    return True
 
 
 @contextmanager

@@ -34,6 +34,7 @@ import httpx
 from pydantic import BaseModel, model_validator
 
 from dashboard import telemetry as console_telemetry
+from dashboard.url_redaction import redact_text, redact_url
 
 
 HEALTHY = "healthy"
@@ -133,8 +134,18 @@ class Probe:
     note: str | None = None  # what the operator sees for a skipped probe
 
 
-def _env_url(name: str, default: str) -> str:
-    return getenv(name, "").strip().rstrip("/") or default
+def join_probe_path(base: str, path: str) -> str:
+    """``path`` (which may carry its own query) joined onto ``base``'s path, keeping ``base``'s userinfo and query.
+
+    Never string concatenation: a base with a query would otherwise swallow the path into the query.
+    """
+    if not path:
+        return base
+    added_path, _, added_query = path.partition("?")
+    parts = urlsplit(base)
+    joined_path = parts.path.rstrip("/") + added_path
+    query = "&".join(part for part in (parts.query, added_query) if part)
+    return urlunsplit((parts.scheme, parts.netloc, joined_path, query, parts.fragment))
 
 
 def _mode(name: str) -> str | None:
@@ -164,13 +175,16 @@ def _probe(
         return Probe(name, group, "", kind, MODE_LOCAL, UNCONFIGURED, f"{mode_env}={getenv(mode_env, '').strip()!r} is not local, shared or disabled")
     if mode == MODE_DISABLED:
         return Probe(name, group, "", kind, mode, DISABLED, f"disabled by {mode_env}")
-    given = _env_url(url_env, "")
+    given = getenv(url_env, "").strip()
     if mode == MODE_SHARED:
-        given = given or (_env_url(shared_fallback, "") if shared_fallback else "")
+        given = given or (getenv(shared_fallback, "").strip() if shared_fallback else "")
         if not given:
             return Probe(name, group, "", kind, mode, UNCONFIGURED, f"shared, but no endpoint: set {url_env}")
-        return Probe(name, group, given + path, kind, mode)
-    return Probe(name, group, (given or default) + path, kind, mode)
+    else:
+        given = given or default
+    if kind == KIND_VALKEY_PING:
+        return Probe(name, group, given, kind, mode)
+    return Probe(name, group, join_probe_path(given, path), kind, mode)
 
 
 def build_probes(rabbitmq_prometheus_url: str) -> list[Probe]:
@@ -199,34 +213,6 @@ def build_probes(rabbitmq_prometheus_url: str) -> list[Probe]:
 
 
 _REDIS_UP = re.compile(r"^redis_up\s+(\S+)\s*$", re.MULTILINE)
-
-
-_URL_IN_TEXT = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"<>)]+")
-
-
-def redact_url(target: str) -> str:
-    """``target`` as ``scheme://host[:port]/path``: no userinfo, query or fragment.
-
-    The one place every surfaced probe address passes through (API, WebSocket, UI, error text),
-    because an operator's shared target may carry ``user:pass@`` or ``?token=``. Probes keep
-    using the full URL. A bare ``host:port`` has only its userinfo and query to lose.
-    """
-    if "://" not in target:
-        return target.split("?", 1)[0].split("#", 1)[0].rpartition("@")[2]
-    try:
-        parts = urlsplit(target)
-        host = parts.hostname or ""
-        if ":" in host:
-            host = f"[{host}]"
-        netloc = host if parts.port is None else f"{host}:{parts.port}"
-    except ValueError:
-        return "<invalid url>"
-    return urlunsplit((parts.scheme, netloc, parts.path, "", ""))
-
-
-def redact_text(text: str) -> str:
-    """``text`` with every URL in it passed through ``redact_url``."""
-    return _URL_IN_TEXT.sub(lambda match: redact_url(match.group(0)), text)
 
 
 def _reading(probe: Probe, status: str, error: str | None = None) -> PlatformService:

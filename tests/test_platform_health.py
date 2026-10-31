@@ -234,7 +234,7 @@ class TestEndpointRedaction:
             return httpx.Response(200)
 
         reading = await _check(_probe("postgres-exporter"), answer)
-        assert reading.endpoint == "http://pg.lan:9187/base"
+        assert reading.endpoint == "http://pg.lan:9187/base/"
         assert "s3cret" in requested[0]
         assert "abc123" in requested[0]
         assert "s3cret" not in reading.model_dump_json()
@@ -255,6 +255,22 @@ class TestEndpointRedaction:
         assert "s3cret" not in reading.model_dump_json()
         assert "s3cret" not in caplog.text
         assert "abc123" not in caplog.text
+
+
+class TestPathJoining:
+    def test_the_path_joins_before_the_query_and_the_query_is_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("CADVISOR_URL", "http://user:pw@cadvisor.lan:8081/prefix/?token=abc")
+        assert _probe("cadvisor").target == "http://user:pw@cadvisor.lan:8081/prefix/healthz?token=abc"
+
+    def test_a_query_in_the_probe_path_is_merged_with_the_targets(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("RABBITMQ_PROMETHEUS_URL", "http://broker:15692?auth=1")
+        assert _probe("rabbitmq").target == "http://broker:15692/metrics/detailed?auth=1&family=node_coarse_metrics"
+
+    def test_a_trailing_slash_or_no_path_is_handled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("VICTORIA_METRICS_URL", "http://vm.lan:8428/")
+        assert _probe("victoria-metrics").target == "http://vm.lan:8428/health"
+        monkeypatch.setenv("OTEL_COLLECTOR_HEALTH_URL", "http://otel.lan:13133/health?x=1")
+        assert _probe("otel-collector").target == "http://otel.lan:13133/health?x=1"
 
 
 class TestChecks:
