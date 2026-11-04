@@ -10,7 +10,19 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from dashboard.dashboard import PIPELINE_CONFIGS, DashboardApp, DatabaseInfo, PipelineMetrics, QueueInfo, ServiceStatus, SystemMetrics
+from dashboard.dashboard import (
+    ACTIVE_POLL_SECONDS,
+    IDLE_POLL_SECONDS,
+    PIPELINE_CONFIGS,
+    VIEWER_GRACE_SECONDS,
+    DashboardApp,
+    DatabaseInfo,
+    PipelineMetrics,
+    QueueInfo,
+    ServiceStatus,
+    SystemMetrics,
+)
+from dashboard.platform_health import poll_platform
 
 
 if TYPE_CHECKING:
@@ -740,9 +752,9 @@ class TestDashboardAppDataCollection:
         second = _queue_body(published=150, acked=70)
 
         with patch("dashboard.dashboard.time.monotonic", side_effect=[1000.0, 1002.0]):
-            with patch("httpx.AsyncClient", return_value=self._scrape(first)):
+            with patch.object(app, "_http", self._scrape(first)):
                 before = await app.get_queue_info("groovemap")
-            with patch("httpx.AsyncClient", return_value=self._scrape(second)):
+            with patch.object(app, "_http", self._scrape(second)):
                 after = await app.get_queue_info("groovemap")
 
         assert (before[0].message_rate, before[0].ack_rate) == (None, None)
@@ -756,7 +768,7 @@ class TestDashboardAppDataCollection:
 
         with patch("dashboard.dashboard.time.monotonic", side_effect=[0.0, 2.0, 4.0]):
             for body in bodies:
-                with patch("httpx.AsyncClient", return_value=self._scrape(body)):
+                with patch.object(app, "_http", self._scrape(body)):
                     queue = (await app.get_queue_info("groovemap"))[0]
                 rates.append((queue.message_rate, queue.ack_rate))
 
@@ -774,7 +786,7 @@ class TestDashboardAppDataCollection:
         app = self._queue_app()
         with patch("dashboard.dashboard.time.monotonic", side_effect=[0.0, 2.0, 4.0]):
             for body in bodies:
-                with patch("httpx.AsyncClient", return_value=self._scrape(body)):
+                with patch.object(app, "_http", self._scrape(body)):
                     queues = await app.get_queue_info("groovemap")
                 payloads.append(PipelineMetrics(services=[], queues=queues or []).model_dump(mode="json")["queues"][0])
 
@@ -788,7 +800,7 @@ class TestDashboardAppDataCollection:
 
         with patch("dashboard.dashboard.time.monotonic", side_effect=[0.0, 2.0, 4.0]):
             for body in bodies:
-                with patch("httpx.AsyncClient", return_value=self._scrape(body)):
+                with patch.object(app, "_http", self._scrape(body)):
                     results.append(await app.get_queue_info("groovemap"))
 
         assert results[1] == []
@@ -801,9 +813,9 @@ class TestDashboardAppDataCollection:
         idle = 'rabbitmq_detailed_queue_messages{vhost="/",queue="groovemap-q"} 0\n'
 
         with patch("dashboard.dashboard.time.monotonic", side_effect=[0.0, 2.0]):
-            with patch("httpx.AsyncClient", return_value=self._scrape(idle)):
+            with patch.object(app, "_http", self._scrape(idle)):
                 await app.get_queue_info("groovemap")
-            with patch("httpx.AsyncClient", return_value=self._scrape(_queue_body(published=10, acked=4))):
+            with patch.object(app, "_http", self._scrape(_queue_body(published=10, acked=4))):
                 queue = (await app.get_queue_info("groovemap"))[0]
 
         assert (queue.message_rate, queue.ack_rate) == (5.0, 2.0)
@@ -821,9 +833,9 @@ class TestDashboardAppDataCollection:
         )
 
         with patch("dashboard.dashboard.time.monotonic", side_effect=[0.0, 3.0]):
-            with patch("httpx.AsyncClient", return_value=self._scrape(body)):
+            with patch.object(app, "_http", self._scrape(body)):
                 await app.get_queue_info("groovemap")
-            with patch("httpx.AsyncClient", return_value=self._scrape(later)):
+            with patch.object(app, "_http", self._scrape(later)):
                 queue = (await app.get_queue_info("groovemap"))[0]
 
         assert queue.message_rate == 10.0
@@ -900,13 +912,11 @@ class TestDashboardAppDataCollection:
             app.postgres_conn = mock_postgres_conn
 
             # Mock Neo4j session
-            mock_neo4j_result1 = AsyncMock()
-            mock_neo4j_result1.single = AsyncMock(return_value=None)
             mock_neo4j_result2 = AsyncMock()
             mock_neo4j_result2.single = AsyncMock(return_value={"nodeCount": 1000, "relCount": 500})
 
             mock_neo4j_session = AsyncMock()
-            mock_neo4j_session.run = AsyncMock(side_effect=[mock_neo4j_result1, mock_neo4j_result2])
+            mock_neo4j_session.run = AsyncMock(side_effect=[mock_neo4j_result2])
             mock_neo4j_session.__aenter__ = AsyncMock(return_value=mock_neo4j_session)
             mock_neo4j_session.__aexit__ = AsyncMock(return_value=None)
 
@@ -923,6 +933,8 @@ class TestDashboardAppDataCollection:
             assert databases[1].name == "Neo4j"
             assert databases[1].status == "healthy"
             assert "1,000 nodes" in databases[1].size
+            # The stats call proves the server answers; there is no separate per-cycle liveness statement.
+            mock_neo4j_session.run.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_get_database_info_postgres_size_gb(self) -> None:
@@ -1128,21 +1140,18 @@ class TestDashboardAppDataCollection:
             app.neo4j_driver = AsyncMock()
             app.postgres_conn = None
 
-            # dbms.components succeeds, but apoc.meta.stats fails
-            mock_neo4j_result1 = AsyncMock()
-            mock_neo4j_result1.single = AsyncMock(return_value={"name": "neo4j", "versions": ["5.0"]})
-            mock_neo4j_result1.consume = AsyncMock()
+            # apoc.meta.stats fails (not installed); the trivial liveness probe succeeds
+            mock_probe = AsyncMock()
+            mock_probe.consume = AsyncMock()
+            statements: list[str] = []
 
             mock_neo4j_session = AsyncMock()
-            call_count = 0
 
             async def mock_run(query: str, **_kwargs: object) -> AsyncMock:
-                nonlocal call_count
-                call_count += 1
-                if "dbms.components" in query:
-                    return mock_neo4j_result1
-                # apoc.meta.stats — simulate not installed
-                raise Exception("No procedure with the name `apoc.meta.stats`")
+                statements.append(query)
+                if "apoc.meta.stats" in query:
+                    raise Exception("No procedure with the name `apoc.meta.stats`")
+                return mock_probe
 
             mock_neo4j_session.run = mock_run
             mock_neo4j_session.__aenter__ = AsyncMock(return_value=mock_neo4j_session)
@@ -1157,6 +1166,8 @@ class TestDashboardAppDataCollection:
             assert neo4j_db.size == "unknown (APOC unavailable)"
             assert "0 nodes" not in neo4j_db.size
             assert "0 relationships" not in neo4j_db.size
+            assert [q.split("(")[0].strip() for q in statements] == ["CALL apoc.meta.stats", "RETURN 1 AS up"]
+            assert not any("dbms.components" in q for q in statements)
 
     @pytest.mark.asyncio
     async def test_get_database_info_neo4j_apoc_stats_returns_no_row(self) -> None:
@@ -1175,18 +1186,12 @@ class TestDashboardAppDataCollection:
             app.neo4j_driver = AsyncMock()
             app.postgres_conn = None
 
-            mock_neo4j_result1 = AsyncMock()
-            mock_neo4j_result1.single = AsyncMock(return_value={"name": "neo4j", "versions": ["5.0"]})
-            mock_neo4j_result1.consume = AsyncMock()
-
             mock_apoc_result = AsyncMock()
             mock_apoc_result.single = AsyncMock(return_value=None)
 
             mock_neo4j_session = AsyncMock()
 
-            async def mock_run(query: str, **_kwargs: object) -> AsyncMock:
-                if "dbms.components" in query:
-                    return mock_neo4j_result1
+            async def mock_run(_query: str, **_kwargs: object) -> AsyncMock:
                 return mock_apoc_result
 
             mock_neo4j_session.run = mock_run
@@ -1721,3 +1726,76 @@ class TestMainEntryPoint:
             reload=False,
             log_level="info",
         )
+
+
+class TestIdleLoadReduction:
+    """The loop runs at the live rate only for a viewer, and polls through one long-lived client."""
+
+    @staticmethod
+    def _app() -> DashboardApp:
+        with patch("dashboard.dashboard.get_config", return_value=Mock(rabbitmq_prometheus_url="http://rabbitmq:15692")):
+            return DashboardApp()
+
+    @pytest.mark.asyncio
+    async def test_idle_wait_is_the_idle_interval_in_active_ticks(self) -> None:
+        app = self._app()
+        with patch("dashboard.dashboard.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            await app._wait_for_next_cycle()
+        assert sleep.await_count == int(IDLE_POLL_SECONDS / ACTIVE_POLL_SECONDS)
+        assert all(call.args == (ACTIVE_POLL_SECONDS,) for call in sleep.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_websocket_viewer_restores_the_live_rate(self) -> None:
+        app = self._app()
+        app.websocket_connections.add(Mock())
+        with patch("dashboard.dashboard.asyncio.sleep", new_callable=AsyncMock) as sleep:
+            await app._wait_for_next_cycle()
+        sleep.assert_awaited_once_with(ACTIVE_POLL_SECONDS)
+
+    @pytest.mark.asyncio
+    async def test_viewer_arriving_mid_wait_ends_it_within_one_tick(self) -> None:
+        app = self._app()
+        ticks = 0
+
+        async def arrive(_seconds: float) -> None:
+            nonlocal ticks
+            ticks += 1
+            if ticks == 3:
+                app.websocket_connections.add(Mock())
+
+        with patch("dashboard.dashboard.asyncio.sleep", side_effect=arrive):
+            await app._wait_for_next_cycle()
+        assert ticks == 3
+
+    @pytest.mark.asyncio
+    async def test_recent_snapshot_read_counts_as_a_viewer_until_the_grace_ends(self) -> None:
+        app = self._app()
+        assert not app.has_viewers()
+        with patch("dashboard.dashboard.time.monotonic", return_value=1000.0):
+            app.note_snapshot_read()
+        with patch("dashboard.dashboard.time.monotonic", return_value=1000.0 + VIEWER_GRACE_SECONDS - 1):
+            assert app.has_viewers()
+        with patch("dashboard.dashboard.time.monotonic", return_value=1000.0 + VIEWER_GRACE_SECONDS + 1):
+            assert not app.has_viewers()
+
+    @pytest.mark.asyncio
+    async def test_one_client_serves_every_poll_and_shutdown_closes_it(self) -> None:
+        app = self._app()
+        response = Mock(status_code=200, text="")
+        response.json = Mock(return_value={"status": "healthy"})
+        with patch("httpx.AsyncClient") as client_class:
+            client_class.return_value.get = AsyncMock(return_value=response)
+            client_class.return_value.aclose = AsyncMock()
+            for _ in range(3):
+                await app.get_service_statuses([("a", "http://a/health"), ("b", "http://b/health")])
+                await app.get_queue_info("groovemap")
+            assert client_class.call_count == 1
+            await app.shutdown()
+            client_class.return_value.aclose.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_platform_poll_uses_the_given_client_without_building_one(self) -> None:
+        client = AsyncMock()
+        with patch("httpx.AsyncClient") as client_class:
+            assert await poll_platform([], client=client) == []
+        client_class.assert_not_called()
