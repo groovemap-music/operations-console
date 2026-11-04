@@ -290,10 +290,20 @@ async def check_probe(client: httpx.AsyncClient, probe: Probe, timeout: float = 
             return _reading(probe, UNREACHABLE, str(error) or type(error).__name__)
 
 
-async def poll_platform(probes: list[Probe], timeout: float = PROBE_TIMEOUT_SECONDS) -> list[PlatformService]:
-    """Check every probe at once and return the readings in probe order."""
-    async with httpx.AsyncClient(timeout=timeout) as client:
+async def poll_platform(
+    probes: list[Probe],
+    timeout: float = PROBE_TIMEOUT_SECONDS,
+    client: httpx.AsyncClient | None = None,
+) -> list[PlatformService]:
+    """Check every probe at once and return the readings in probe order.
+
+    A caller that polls repeatedly passes its own long-lived ``client``; each probe is still bounded
+    as a whole by ``timeout``. Without one, a client lives for this call only.
+    """
+    if client is not None:
         return list(await asyncio.gather(*(check_probe(client, probe, timeout) for probe in probes)))
+    async with httpx.AsyncClient(timeout=timeout) as owned:
+        return list(await asyncio.gather(*(check_probe(owned, probe, timeout) for probe in probes)))
 
 
 def datastore_services(databases: list[Any]) -> list[PlatformService]:

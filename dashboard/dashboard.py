@@ -302,6 +302,17 @@ PIPELINE_CONFIGS: dict[str, dict] = {
 }
 
 
+# Cadence of the background collection loop. With a viewer (an open WebSocket, or a recent HTTP read of
+# the snapshot) it stays at the two-second live rate. With nobody watching, nothing consumes the readings
+# but the event backlog, so it drops to the idle rate; a viewer arriving ends the wait within one active tick.
+ACTIVE_POLL_SECONDS = 2.0
+IDLE_POLL_SECONDS = 30.0
+# How long an HTTP read of the snapshot keeps the loop at the active rate.
+VIEWER_GRACE_SECONDS = 30.0
+# Timeout of the one long-lived client shared by the service and RabbitMQ polls.
+HTTP_TIMEOUT_SECONDS = 5.0
+
+
 def _topology_pipelines() -> list[dict[str, Any]]:
     pipelines: list[dict[str, Any]] = build_topology(PIPELINE_CONFIGS)["pipelines"]
     return pipelines
@@ -327,6 +338,8 @@ class DashboardApp:
         self.update_task: asyncio.Task | None = None
         self._db_info_lock: asyncio.Lock | None = None
         self._job_cache: tuple[float, list[JobStatus]] | None = None
+        self._http: httpx.AsyncClient | None = None
+        self._last_snapshot_read = float("-inf")
 
     @property
     def websocket_connections(self) -> set[WebSocket]:
@@ -344,6 +357,30 @@ class DashboardApp:
     @_ws_lock.setter
     def _ws_lock(self, lock: asyncio.Lock | None) -> None:
         self.websockets.lock = lock
+
+    @property
+    def http(self) -> httpx.AsyncClient:
+        """The one long-lived client for every poll, so connections are reused instead of rebuilt each cycle."""
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=HTTP_TIMEOUT_SECONDS)
+        return self._http
+
+    def note_snapshot_read(self) -> None:
+        """Record that an HTTP client just read the snapshot, so the loop stays live for a while."""
+        self._last_snapshot_read = time.monotonic()
+
+    def has_viewers(self) -> bool:
+        """Whether anyone is watching: an open WebSocket, or an HTTP read of the snapshot within the grace window."""
+        return bool(self.websocket_connections) or time.monotonic() - self._last_snapshot_read < VIEWER_GRACE_SECONDS
+
+    async def _wait_for_next_cycle(self) -> None:
+        """Sleep until the next collection: one active tick with viewers, else the idle interval cut short by a viewer."""
+        waited = 0.0
+        while True:
+            await asyncio.sleep(ACTIVE_POLL_SECONDS)
+            waited += ACTIVE_POLL_SECONDS
+            if self.has_viewers() or waited >= IDLE_POLL_SECONDS:
+                return
 
     async def startup(self) -> None:
         """Initialize connections on startup."""
@@ -386,6 +423,10 @@ class DashboardApp:
                 self.update_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await self.update_task
+
+            if self._http is not None:
+                await self._http.aclose()
+                self._http = None
 
             if self.neo4j_driver:
                 console_telemetry.reset_neo4j_gauges()
@@ -431,7 +472,7 @@ class DashboardApp:
                     console_telemetry.POLL_TARGET_LOOP, console_telemetry.POLL_OUTCOME_SUCCESS, time.perf_counter() - loop_start
                 )
 
-                await asyncio.sleep(2)  # Update every 2 seconds
+                await self._wait_for_next_cycle()
 
             except asyncio.CancelledError:
                 break
@@ -481,7 +522,7 @@ class DashboardApp:
 
     async def get_platform_health(self) -> list[PlatformService]:
         """Check every long-running platform service at once."""
-        return await poll_platform(build_probes(self.config.rabbitmq_prometheus_url))
+        return await poll_platform(build_probes(self.config.rabbitmq_prometheus_url), client=self.http)
 
     async def get_job_status(self) -> list[JobStatus]:
         """One-shot jobs: the last embeddings load from its durable record, the rest as not monitored.
@@ -544,9 +585,8 @@ class DashboardApp:
                 return ServiceStatus(name=name, status="unknown", last_seen=None, current_task=None, progress=None, error=str(error))
 
     async def get_service_statuses(self, service_configs: list[tuple[str, str]]) -> list[ServiceStatus]:
-        """Poll the services at once through one shared client; the readings keep configuration order."""
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            return list(await asyncio.gather(*(self._poll_service(client, name, url) for name, url in service_configs)))
+        """Poll the services at once through the shared client; the readings keep configuration order."""
+        return list(await asyncio.gather(*(self._poll_service(self.http, name, url) for name, url in service_configs)))
 
     async def get_queue_info(self, prefix: str) -> list[QueueInfo] | None:
         """Read live queue metrics for queues under ``prefix`` from the RabbitMQ Prometheus endpoint.
@@ -556,8 +596,7 @@ class DashboardApp:
         """
         with console_telemetry.poll_span(console_telemetry.POLL_TARGET_RABBITMQ) as poll:
             try:
-                async with httpx.AsyncClient(timeout=5.0) as client:
-                    response = await client.get(f"{self.config.rabbitmq_prometheus_url}/metrics/detailed", params=scrape_params(prefix))
+                response = await self.http.get(f"{self.config.rabbitmq_prometheus_url}/metrics/detailed", params=scrape_params(prefix))
                 if response.status_code != 200:
                     poll.failed()
                     logger.warning(f"⚠️ RabbitMQ Prometheus endpoint returned status {response.status_code}. Queue metrics unavailable.")
@@ -654,9 +693,6 @@ class DashboardApp:
             with console_telemetry.poll_span(console_telemetry.POLL_TARGET_NEO4J) as poll:
                 try:
                     async with self.neo4j_driver.session() as session:
-                        result = await session.run("CALL dbms.components() YIELD name, versions")
-                        await result.single()
-
                         # Get database size — fall back to an "unknown" marker if APOC
                         # is not installed. node_count/rel_count stay None (never a
                         # fabricated 0) so a fully-populated graph can never render as
@@ -673,9 +709,14 @@ class DashboardApp:
                             rel_count = stats["relCount"] if stats else None
                         except Exception:
                             # APOC not installed — avoid full graph scan which is too
-                            # expensive for the 2-second metrics loop on large datasets
+                            # expensive for the metrics loop on large datasets. The stats call
+                            # no longer doubles as the liveness check, so prove the server
+                            # answers with a trivial statement; if it is down this raises and
+                            # the reading is unhealthy, as before.
                             node_count = None
                             rel_count = None
+                            probe = await session.run("RETURN 1 AS up")
+                            await probe.consume()
 
                         size = (
                             f"{node_count:,} nodes, {rel_count:,} relationships"
@@ -838,6 +879,8 @@ async def health_check() -> JSONResponse:
 @app.get("/api/metrics", dependencies=_SESSION_REQUIRED)
 async def get_metrics() -> JSONResponse:
     """Get current system metrics."""
+    if dashboard:
+        dashboard.note_snapshot_read()
     if dashboard and dashboard.latest_metrics:
         return JSONResponse(content=dashboard.latest_metrics.model_dump(mode="json"))
     elif dashboard:
@@ -870,6 +913,7 @@ async def get_queues() -> JSONResponse:
     """
     if not dashboard or not dashboard.latest_metrics:
         return JSONResponse(content={})
+    dashboard.note_snapshot_read()
     result: dict[str, list[dict[str, Any]] | None] = {}
     for pipeline_name, pipeline in dashboard.latest_metrics.pipelines.items():
         if not pipeline.queues_available:
