@@ -52,6 +52,16 @@ HEALTHY = """
 """
 
 
+# HEALTHY, except Graphinator's masters queue is empty and idle: the type finished.
+MASTERS_DONE = HEALTHY.replace(
+    "const ack = ci === 0 ? 400 : 800;",
+    "const ack = ci === 0 ? 400 : 800; const done = ci === 0 && q.entity === 'masters';",
+).replace(
+    "messages: 5000, messages_ready: 4800, messages_unacknowledged: 200, consumers: 1, message_rate: ack, ack_rate: ack",
+    "messages: done ? 0 : 5000, messages_ready: done ? 0 : 4800, messages_unacknowledged: done ? 0 : 200, consumers: 1, message_rate: done ? 0 : ack, ack_rate: done ? 0 : ack",
+)
+
+
 @pytest.fixture(autouse=True)
 def settle_progress_routes(page: Page) -> Iterator[None]:
     """Let the in-flight /api/progress handlers finish or abort before the page is closed.
@@ -69,7 +79,7 @@ def serve_runs(page: Page, runs: list[dict]) -> None:
     page.route("**/admin/api/extractions", lambda route: route.fulfill(json={"extractions": runs, "total": len(runs), "offset": 0, "limit": 20}))
 
 
-def serve_progress(page: Page, *, releases_ratio: float | None = 0.4) -> list[str]:
+def serve_progress(page: Page, *, releases_ratio: float | None = 0.4, masters_done: bool = False) -> list[str]:
     """Answer /api/progress the way the console derives it from VictoriaMetrics: every entity expects
     1,000,000 records and every queue has loaded 400,000 since the run started. Returns the URLs asked."""
     asked: list[str] = []
@@ -83,6 +93,8 @@ def serve_progress(page: Page, *, releases_ratio: float | None = 0.4) -> list[st
         entities = [
             {"entity": e, "extracted": 400000, "file_progress": None, "expected": None}
             if e == "releases" and releases_ratio is None
+            else {"entity": e, "extracted": 1000000, "file_progress": 1.0, "expected": 1000000}
+            if e == "masters" and masters_done
             else {"entity": e, "extracted": 400000, "file_progress": 0.4, "expected": 1000000}
             for e in pipeline["entity_types"]
         ]
@@ -92,11 +104,13 @@ def serve_progress(page: Page, *, releases_ratio: float | None = 0.4) -> list[st
                 "consumer": c["name"],
                 "entity": q["entity"],
                 "baseline": 10,
-                "loaded": 400000,
-                "points": [[(STARTED + timedelta(hours=1)).isoformat(), 200000], [end.isoformat(), 400000]],
+                # A finished type loaded a few records under expected: some were skipped.
+                "loaded": loaded,
+                "points": [[(STARTED + timedelta(hours=1)).isoformat(), loaded // 2], [end.isoformat(), loaded]],
             }
             for c in pipeline["consumers"]
             for q in c["queues"]
+            for loaded in [999990 if masters_done and c["name"] == "graphinator" and q["entity"] == "masters" else 400000]
         ]
         body = {"pipeline": pipeline_id, "start": STARTED.isoformat(), "end": end.isoformat(), "entities": entities, "queues": queues}
         route.fulfill(body=json.dumps(body), content_type="application/json")
@@ -133,6 +147,29 @@ class TestRunProgress:
         # No MusicBrainz run is recorded, so its matrix has no headline.
         expect(page.locator('[data-run-headline="musicbrainz"]')).to_be_hidden()
         assert any("/api/progress/discogs?start=" in url and "end=" not in url for url in asked)
+
+    def test_a_type_that_finished_under_expected_no_longer_hides_the_finish_time(self, page: Page) -> None:
+        serve_runs(page, [RUNNING])
+        serve_progress(page, masters_done=True)
+        open_console(page, DESKTOP, MASTERS_DONE)
+        headline = page.locator('[data-run-headline="discogs"]')
+        # Graphinator's masters file is fully read and its queue empty, ten records under expected
+        # and no longer acknowledging: done. The 25 minutes come from the releases still running.
+        expect(headline).to_have_text("Finishes in 25m, bottleneck Graphinator")
+        expect(headline).to_have_attribute("data-kind", "finishes")
+
+    def test_only_a_complete_file_with_an_empty_queue_counts_as_finished(self, page: Page) -> None:
+        serve_runs(page, [RUNNING])
+        serve_progress(page)
+        open_console(page, DESKTOP, HEALTHY)
+        base = {"expected": 1000000, "loaded": 999990, "meanAck": 0, "fileProgress": 1, "queueDepth": 0}
+        eta = lambda **over: page.evaluate("cell => RunProgress.eta(cell)", {**base, **over})  # noqa: E731
+        assert eta() == 0
+        # Still running with no ack rate stays unknown: records queued, or the file not fully read.
+        assert eta(queueDepth=40) is None
+        assert eta(queueDepth=None) is None
+        assert eta(fileProgress=0.99) is None
+        assert eta(fileProgress=None) is None
 
     def test_a_stalled_consumer_means_the_run_cannot_finish(self, page: Page) -> None:
         serve_runs(page, [RUNNING])
