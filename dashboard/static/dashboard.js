@@ -377,12 +377,15 @@ const RunProgress = (() => {
 
     // Seconds until a consumer has loaded every expected record of one entity at its 5-minute mean
     // ack rate: 0 once nothing remains, and null, never Infinity, when the remaining work is
-    // unknown or nothing is being acknowledged (a null or zero rate).
-    function eta({ expected, loaded, dlqDepth = 0, meanAck }) {
+    // unknown or nothing is being acknowledged (a null or zero rate). A cell whose file is fully
+    // read and whose queue is empty is finished, even a few records under expected (skipped
+    // records are never published, so its ack rate stays 0 for good): its ETA is 0.
+    function eta({ expected, loaded, dlqDepth = 0, meanAck, fileProgress = null, queueDepth = null }) {
         if (expected === null || expected === undefined || loaded === null || loaded === undefined) return null;
         const remaining = Math.max(0, expected - loaded - (dlqDepth || 0));
         if (remaining < 1) return 0;
-        return meanAck > 0 ? remaining / meanAck : null;
+        if (meanAck > 0) return remaining / meanAck;
+        return fileProgress !== null && fileProgress >= 1 && queueDepth === 0 ? 0 : null;
     }
 
     // The slowest of a consumer's cells; null when any of them has no ETA.
@@ -1979,7 +1982,7 @@ class Dashboard {
                 health: model.health, dlq: model.dlq,
                 expected: totals?.expected ?? null, extracted: totals?.extracted ?? null, fileProgress: totals?.file_progress ?? null,
                 loaded: acked?.loaded ?? null, points: acked?.points || [],
-                dlqDepth: model.dlqLast?.messages ?? 0, meanAck: QueueHealth.meanAckRate(model.samples),
+                dlqDepth: model.dlqLast?.messages ?? 0, queueDepth: model.last?.messages ?? null, meanAck: QueueHealth.meanAckRate(model.samples),
                 gap: RunProgress.gap({ entityLabel, consumerLabel: consumer.label, totals, acked }),
             }];
         }));
