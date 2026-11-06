@@ -805,10 +805,10 @@
 
                 <!-- Each pipeline is an entity x consumer matrix, drawn by dashboard.js from /api/topology
                      and filled from live metrics, with the run's ETA headline above it. -->
-                <div id="pipelines" class="space-y-4"></div>
+                <div id="pipelines" class="space-y-6"></div>
 
                 <!-- Per pipeline: the extraction run's burn-up and per entity x consumer bars, drawn by dashboard.js. -->
-                <div id="run-progress" class="space-y-4" hidden></div>
+                <div id="run-progress" class="space-y-6" hidden></div>
             </div>
 
             <!-- Queue detail drawer: opened from a matrix cell, filled by dashboard.js. -->
@@ -850,7 +850,7 @@
                 <div class="flex-1 border-t b-theme"></div>
             </div>
 
-            <div id="platform-health" class="space-y-4">
+            <div id="platform-health" class="space-y-6">
                 <section class="ph-group" aria-labelledby="ph-applications"><h3 id="ph-applications">Applications</h3><ul class="ph-list" data-platform-group="applications"></ul></section>
                 <section class="ph-group" aria-labelledby="ph-data"><h3 id="ph-data">Data</h3><ul class="ph-list" data-platform-group="data"></ul></section>
                 <section class="ph-group" aria-labelledby="ph-observability"><h3 id="ph-observability">Observability</h3><ul class="ph-list" data-platform-group="observability"></ul></section>
@@ -1455,7 +1455,7 @@
             </section>
 
             <!-- ── Sub-view: Single Version Report ─────────────────── -->
-            <div id="ea-view-report">
+            <div id="ea-view-report" class="space-y-6">
 
                 <!-- Pipeline status cards -->
                 <section class="dashboard-card p-6 space-y-4">
@@ -1596,7 +1596,7 @@
             </div><!-- /ea-view-report -->
 
             <!-- ── Sub-view: Version Comparison ────────────────────── -->
-            <div id="ea-view-compare" style="display:none">
+            <div id="ea-view-compare" class="space-y-6" style="display:none">
                 <section class="dashboard-card p-6 space-y-4">
                     <h3 class="text-sm font-semibold flex items-center gap-2 border-b b-theme pb-4">
                         <span class="material-symbols-outlined text-sm t-dim">compare_arrows</span> Version Comparison
@@ -1637,7 +1637,7 @@
             </div><!-- /ea-view-compare -->
 
             <!-- ── Sub-view: Prompt Generator ──────────────────────── -->
-            <div id="ea-view-prompt" style="display:none">
+            <div id="ea-view-prompt" class="space-y-6" style="display:none">
                 <section class="dashboard-card p-6 space-y-4">
                     <div class="flex items-center justify-between border-b b-theme pb-4">
                         <h3 class="text-sm font-semibold flex items-center gap-2">
