@@ -105,11 +105,13 @@ const QueueHealth = (() => {
         return { direction: change > 0 ? 'rising' : 'falling', change };
     }
 
-    // A work queue: critical when the server reports it stalled or without a consumer, otherwise ok
-    // and drawn quietly. A filling queue during an extraction is not an alarm.
+    // A work queue: critical when the server reports it stalled or without a consumer (except an
+    // expected wait for its terminal marker), otherwise ok and drawn quietly. A filling queue during an extraction is not an alarm.
     function assessQueue(samples) {
         const last = latest(samples);
         if (!last) return { state: 'unknown', kind: 'missing', label: 'not reported' };
+        // An expected wait for the terminal marker is drawn quietly; every other condition is critical.
+        if (last.condition && last.condition.kind === 'awaiting-marker') return { state: 'ok', kind: 'awaiting-marker', label: last.condition.label };
         if (last.condition) return { state: 'crit', kind: last.condition.kind, label: last.condition.label };
         if (last.messages === 0) return { state: 'ok', kind: 'drained', label: 'drained' };
         return { state: 'ok', kind: 'flowing', label: 'flowing' };
@@ -1550,6 +1552,7 @@ class Dashboard {
         const arrow = { rising: ' ↑', falling: ' ↓', steady: '' }[trend.direction];
         count.textContent = last ? `${QueueHealth.formatCount(last.messages)}${arrow}` : '—';
         if (unavailable) meta.textContent = 'unavailable';
+        else if (health.kind === 'awaiting-marker') meta.textContent = health.label;
         else meta.textContent = last ? this._lagText(lag) : 'not reported';
 
         dlqBadge.className = 'mx-dlq';

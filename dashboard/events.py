@@ -48,6 +48,12 @@ GAP_SECONDS = 30
 
 KIND_NO_CONSUMER = "no-consumer"
 KIND_STALLED = "stalled"
+# A work queue with no consumer whose service lists its type in `awaiting_extraction_complete`:
+# the consumer is cancelled until the terminal marker arrives, which is expected, not a fault.
+KIND_AWAITING_MARKER = "awaiting-marker"
+# The loader redelivers a parked marker within MARKER_CHECK_INTERVAL (5 s) plus one resubscribe.
+# A listed type still without a consumer after this long is a fault again.
+AWAITING_MARKER_SECONDS = 60
 
 
 def _duration(seconds: float) -> str:
@@ -70,6 +76,10 @@ class EventDetector:
 
     dead_letter_queues: frozenset[str] = frozenset()
     work_queues: frozenset[str] = frozenset()
+    # work queue -> (consuming service, entity type), to match a queue with its service's awaiting list.
+    queue_owners: dict[str, tuple[str, str]] = field(default_factory=dict)
+    # How long a listed type may wait for its marker before it is a fault again.
+    awaiting_marker_seconds: float = AWAITING_MARKER_SECONDS
     capacity: int = EVENT_RING_SIZE
     ring: deque[dict[str, Any]] = field(init=False)
     _next_id: int = field(default=1, init=False)
@@ -83,6 +93,8 @@ class EventDetector:
     _zero_since: dict[tuple[str, str], datetime] = field(default_factory=dict, init=False)
     _seen_at: dict[tuple[str, str], datetime] = field(default_factory=dict, init=False)
     _conditions: dict[tuple[str, str], str | None] = field(default_factory=dict, init=False)
+    # Per work queue: when the current run of "no consumer, but listed as awaiting its marker" began.
+    _awaiting_since: dict[tuple[str, str], datetime] = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         """Size the ring."""
@@ -193,7 +205,7 @@ class EventDetector:
         does a broker scrape failure or a gap of more than ``GAP_SECONDS`` between readings.
         """
         if not pipeline.queues_available:
-            for state in (self._zero_since, self._seen_at, self._conditions):
+            for state in (self._zero_since, self._seen_at, self._conditions, self._awaiting_since):
                 for key in [key for key in state if key[0] == pipeline_id]:
                     del state[key]
             return
@@ -209,9 +221,13 @@ class EventDetector:
                 self._zero_since.setdefault(key, at)
             else:
                 self._zero_since.pop(key, None)
-            condition = self._condition_of(queue, (at - self._zero_since[key]).total_seconds() if key in self._zero_since else 0)
+            awaiting_for = self._awaiting_marker_for(pipeline, pipeline_id, queue, at)
+            condition = self._condition_of(
+                queue, (at - self._zero_since[key]).total_seconds() if key in self._zero_since else 0, awaiting_for, self.awaiting_marker_seconds
+            )
             queue.condition = condition
-            kind = condition.kind if condition else None
+            # An expected wait is not announced as a problem, and ending it is not a recovery.
+            kind = condition.kind if condition and condition.kind != KIND_AWAITING_MARKER else None
             known = key in self._conditions
             previous = self._conditions.get(key)
             self._conditions[key] = kind
@@ -222,12 +238,37 @@ class EventDetector:
             else:
                 found.append((LEVEL_INFO, "queue-recovered", queue.name, f"{queue.name} is {'drained' if queue.messages == 0 else 'flowing'}"))
 
+    def _awaiting_marker_for(self, pipeline: Any, pipeline_id: str, queue: Any, at: datetime) -> float | None:
+        """Seconds this queue has been an expected wait for its marker, or None when it is not one.
+
+        Only a queue with a backlog and no consumer, whose consuming service answered and lists the
+        queue's type in ``awaiting_extraction_complete``. A service that does not report the field
+        (an older version), did not answer, or does not list the type leaves it a real fault.
+        """
+        key = (pipeline_id, queue.name)
+        owner = self.queue_owners.get(queue.name)
+        listed = False
+        if owner is not None and queue.messages > 0 and queue.consumers == 0:
+            service = next((service for service in pipeline.services if service.name == owner[0]), None)
+            awaiting = getattr(service, "awaiting_extraction_complete", None)
+            listed = isinstance(awaiting, list) and owner[1] in awaiting
+        if not listed:
+            self._awaiting_since.pop(key, None)
+            return None
+        return (at - self._awaiting_since.setdefault(key, at)).total_seconds()
+
     @staticmethod
-    def _condition_of(queue: Any, zero_seconds: float) -> QueueCondition | None:
+    def _condition_of(
+        queue: Any, zero_seconds: float, awaiting_seconds: float | None = None, awaiting_bound: float = AWAITING_MARKER_SECONDS
+    ) -> QueueCondition | None:
         from dashboard.dashboard import QueueCondition  # noqa: PLC0415 - dashboard imports this module
 
         if queue.messages > 0 and queue.consumers == 0:
-            return QueueCondition(kind=KIND_NO_CONSUMER, label="NO CONSUMER")
+            if awaiting_seconds is None:
+                return QueueCondition(kind=KIND_NO_CONSUMER, label="NO CONSUMER")
+            if awaiting_seconds < awaiting_bound:
+                return QueueCondition(kind=KIND_AWAITING_MARKER, label="awaiting extraction_complete")
+            return QueueCondition(kind=KIND_NO_CONSUMER, label=f"NO CONSUMER · marker waiting {_duration(awaiting_seconds)}")
         if queue.messages > 0 and queue.consumers > 0 and zero_seconds >= STALL_SECONDS:
             span = f"{_duration(STALL_LABEL_CAP_SECONDS)}+" if zero_seconds >= STALL_LABEL_CAP_SECONDS else _duration(zero_seconds)
             return QueueCondition(kind=KIND_STALLED, label=f"STALLED · no acks {span}")

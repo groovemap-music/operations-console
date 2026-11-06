@@ -36,6 +36,8 @@ _CONFIG = DashboardConfig(
     postgres_database="test",
 )
 
+PARKED_MARKER_BOUND_SECONDS = 6.0
+
 _MUSICBRAINZ_SERVICES = {"extractor-musicbrainz", "brainzgraphinator", "brainztableinator"}
 
 # Readings are built on each call from `console.*`, never bound at import: a test that reloads
@@ -54,11 +56,20 @@ _QUEUE_READINGS: dict[str, list[tuple[str, int, int, int, float, float]]] = {
 class MockDashboardApp(DashboardApp):
     """The real dashboard aggregation and broadcast loop over fixed collector readings."""
 
-    def __init__(self, include_musicbrainz: bool = True) -> None:
-        """Initialise without reading datastore configuration from the environment."""
+    def __init__(self, include_musicbrainz: bool = True, parked_marker: bool = False) -> None:
+        """Initialise without reading datastore configuration from the environment.
+
+        ``parked_marker`` is the end of a load: both Discogs consumers of ``artists`` are cancelled with
+        the terminal marker queued. Graphinator lists the type in ``awaiting_extraction_complete``;
+        Tableinator is a service version that does not report the field. The expected-wait bound is
+        6 s, so a browser can watch it lapse.
+        """
         with patch("dashboard.dashboard.get_config", return_value=_CONFIG):
             super().__init__()
         self.include_musicbrainz = include_musicbrainz
+        self.parked_marker = parked_marker
+        if parked_marker:
+            self.events.awaiting_marker_seconds = PARKED_MARKER_BOUND_SECONDS
 
     async def startup(self) -> None:
         """Take the first reading, then run the real collection loop; no datastore clients are opened.
@@ -95,6 +106,7 @@ class MockDashboardApp(DashboardApp):
                     current_task=None,
                     progress=None,
                     error=None if deployed else "not deployed",
+                    awaiting_extraction_complete=["artists"] if self.parked_marker and name == "graphinator" else None,
                 )
             )
         return statuses
@@ -103,7 +115,13 @@ class MockDashboardApp(DashboardApp):
         """Fixed queue readings for the pipeline behind ``prefix``."""
         return [
             console.QueueInfo(
-                name=name, messages=messages, messages_ready=ready, messages_unacknowledged=unacked, consumers=1, message_rate=rate, ack_rate=ack
+                name=name,
+                messages=messages,
+                messages_ready=ready,
+                messages_unacknowledged=unacked,
+                consumers=0 if self.parked_marker and name.endswith("-artists") and prefix == DISCOGS_EXCHANGE_PREFIX else 1,
+                message_rate=rate,
+                ack_rate=ack,
             )
             for name, messages, ready, unacked, rate, ack in _QUEUE_READINGS.get(prefix, [])
         ]
@@ -128,11 +146,11 @@ class MockDashboardApp(DashboardApp):
         ]
 
 
-def _lifespan(include_musicbrainz: bool) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
+def _lifespan(include_musicbrainz: bool, parked_marker: bool = False) -> Callable[[FastAPI], AbstractAsyncContextManager[None]]:
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
         previous = console.dashboard
-        console.dashboard = MockDashboardApp(include_musicbrainz=include_musicbrainz)
+        console.dashboard = MockDashboardApp(include_musicbrainz=include_musicbrainz, parked_marker=parked_marker)
         await console.dashboard.startup()
         await console.session_gate.start()
         try:
@@ -145,7 +163,7 @@ def _lifespan(include_musicbrainz: bool) -> Callable[[FastAPI], AbstractAsyncCon
     return lifespan
 
 
-def create_test_app(include_musicbrainz: bool = True) -> FastAPI:
+def create_test_app(include_musicbrainz: bool = True, parked_marker: bool = False) -> FastAPI:
     """Create the console app with the production routes and a fixed metrics source."""
     app = console.ConsoleApp(
         docs_url=None,
@@ -154,7 +172,7 @@ def create_test_app(include_musicbrainz: bool = True) -> FastAPI:
         title="GrooveMap Dashboard",
         version="0.1.0",
         default_response_class=JSONResponse,
-        lifespan=_lifespan(include_musicbrainz),
+        lifespan=_lifespan(include_musicbrainz, parked_marker),
     )
     app.add_exception_handler(SessionRejected, session_rejected_handler)
     app.router.routes.extend(console.app.router.routes)
@@ -169,3 +187,8 @@ def create_test_app_with_musicbrainz() -> FastAPI:
 def create_test_app_without_musicbrainz() -> FastAPI:
     """Create the console test app with no MusicBrainz service answering: its pipeline is down."""
     return create_test_app(include_musicbrainz=False)
+
+
+def create_test_app_with_parked_marker() -> FastAPI:
+    """Create the console test app at the end of a load: ``artists`` consumers cancelled, marker queued."""
+    return create_test_app(parked_marker=True)
