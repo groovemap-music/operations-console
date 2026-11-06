@@ -14,8 +14,10 @@ WORK = "acme-discogs-graphinator-artists"
 _CLOCK = [datetime(2026, 1, 1, tzinfo=UTC)]
 
 
-def _service(name: str, status: str = "healthy") -> ServiceStatus:
-    return ServiceStatus(name=name, status=status, last_seen=None, current_task=None, progress=None, error=None)
+def _service(name: str, status: str = "healthy", awaiting: list[str] | None = None) -> ServiceStatus:
+    return ServiceStatus(
+        name=name, status=status, last_seen=None, current_task=None, progress=None, error=None, awaiting_extraction_complete=awaiting
+    )
 
 
 def _queue(name: str, messages: int = 0, consumers: int = 1, ack_rate: float | None = None) -> QueueInfo:
@@ -30,12 +32,14 @@ def _reading(
     queues: list[QueueInfo] | None = None,
     available: bool = True,
     databases: dict[str, str] | None = None,
+    awaiting: list[str] | None = None,
+    step: int = 2,
 ) -> SystemMetrics:
-    _CLOCK[0] += timedelta(seconds=2)
+    _CLOCK[0] += timedelta(seconds=step)
     return SystemMetrics(
         pipelines={
             "discogs": PipelineMetrics(
-                services=[_service(name, status) for name, status in (services or {"graphinator": "healthy"}).items()],
+                services=[_service(name, status, awaiting) for name, status in (services or {"graphinator": "healthy"}).items()],
                 queues=queues or [],
                 queues_available=available,
             )
@@ -53,7 +57,7 @@ def _kinds(events: list[dict[str, Any]]) -> list[str]:
 
 
 def _detector() -> EventDetector:
-    return EventDetector(dead_letter_queues=frozenset({DLQ}), work_queues=frozenset({WORK}))
+    return EventDetector(dead_letter_queues=frozenset({DLQ}), work_queues=frozenset({WORK}), queue_owners={WORK: ("graphinator", "artists")})
 
 
 class TestBaseline:
@@ -126,6 +130,97 @@ class TestDeadLetterQueues:
         detector.observe(_reading(queues=[_queue(DLQ, 3)]))
         assert _kinds(detector.observe(_reading(available=False))) == ["queues-unavailable"]
         assert _kinds(detector.observe(_reading(queues=[_queue(DLQ, 90)]))) == ["queues-available"]
+
+
+class TestAwaitingExtractionComplete:
+    """A parked extraction_complete is an expected wait, but only while the service says so, and not for long."""
+
+    def _condition(self, detector: EventDetector, *, awaiting: list[str] | None, messages: int = 8, step: int = 2) -> Any:
+        reading = _reading(queues=[_queue(WORK, messages, consumers=0)], awaiting=awaiting, step=step)
+        events = detector.observe(reading)
+        return reading.pipelines["discogs"].queues[0].condition, events
+
+    def test_a_listed_type_with_no_consumer_is_an_expected_wait_not_a_fault(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue(WORK, 0, consumers=1, ack_rate=3.0)]))
+        condition, events = self._condition(detector, awaiting=["artists"])
+        assert (condition.kind, condition.label) == ("awaiting-marker", "awaiting extraction_complete")
+        assert events == []  # announced as neither a problem nor a recovery
+        condition, events = self._condition(detector, awaiting=["artists"])
+        assert condition.kind == "awaiting-marker"
+        assert detector.observe(_reading(queues=[_queue(WORK, 0, consumers=0)])) == []
+
+    def test_a_type_that_is_not_listed_stays_critical(self) -> None:
+        detector = _detector()
+        for awaiting in ([], ["releases", "masters"]):
+            condition, _ = self._condition(detector, awaiting=awaiting)
+            assert condition.kind == "no-consumer"
+
+    def test_a_service_that_does_not_report_the_field_stays_critical(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue(WORK, 0, consumers=1, ack_rate=3.0)]))
+        condition, events = self._condition(detector, awaiting=None)
+        assert condition.kind == "no-consumer"
+        assert _kinds(events) == ["queue-no-consumer"]
+
+    def test_the_wait_becomes_a_fault_again_after_the_bound(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue(WORK, 0, consumers=1, ack_rate=3.0)]))
+        condition, events = self._condition(detector, awaiting=["artists"], step=30)
+        assert (condition.kind, events) == ("awaiting-marker", [])
+        condition, events = self._condition(detector, awaiting=["artists"], step=29)  # 29 s in
+        assert (condition.kind, events) == ("awaiting-marker", [])
+        condition, events = self._condition(detector, awaiting=["artists"], step=30)  # 59 s in
+        assert (condition.kind, events) == ("awaiting-marker", [])
+        condition, events = self._condition(detector, awaiting=["artists"], step=2)  # 61 s in
+        assert (condition.kind, condition.label) == ("no-consumer", "NO CONSUMER · marker waiting 1m")
+        assert [(e["kind"], e["level"]) for e in events] == [("queue-no-consumer", "error")]
+        _, events = self._condition(detector, awaiting=["artists"])
+        assert events == []  # raised once
+
+    def test_a_new_wait_gets_a_fresh_bound(self) -> None:
+        detector = _detector()
+        detector.observe(_reading(queues=[_queue(WORK, 0, consumers=1, ack_rate=3.0)]))
+        self._condition(detector, awaiting=["artists"], step=50)
+        detector.observe(_reading(queues=[_queue(WORK, 0, consumers=0)], awaiting=[]))  # marker settled
+        condition, _ = self._condition(detector, awaiting=["artists"], step=50)
+        assert condition.kind == "awaiting-marker"
+
+    def test_the_condition_reaches_every_client_in_the_reading(self) -> None:
+        detector = _detector()
+        reading = _reading(queues=[_queue(WORK, 8, consumers=0)], awaiting=["artists"])
+        detector.observe(reading)
+        assert reading.model_dump()["pipelines"]["discogs"]["queues"][0]["condition"] == {
+            "kind": "awaiting-marker",
+            "label": "awaiting extraction_complete",
+        }
+
+
+class TestPollingTheAwaitingList:
+    """A service's /health list is read only when it is a list of type names; anything else is "does not report"."""
+
+    @staticmethod
+    def _awaiting(body: dict[str, Any] | Exception) -> list[str] | None:
+        client = AsyncMock()
+        if isinstance(body, Exception):
+            client.get = AsyncMock(side_effect=body)
+        else:
+            response = MagicMock(status_code=200)
+            response.json.return_value = body
+            client.get = AsyncMock(return_value=response)
+        return asyncio.run(DashboardApp._poll_service(client, "graphinator", "http://graphinator:8001/health")).awaiting_extraction_complete
+
+    def test_a_list_is_kept_and_an_empty_one_is_not_absence(self) -> None:
+        assert self._awaiting({"status": "healthy", "awaiting_extraction_complete": ["artists"]}) == ["artists"]
+        assert self._awaiting({"status": "healthy", "awaiting_extraction_complete": []}) == []
+
+    def test_a_missing_or_malformed_field_means_the_service_does_not_report_it(self) -> None:
+        assert self._awaiting({"status": "healthy"}) is None
+        assert self._awaiting({"status": "healthy", "awaiting_extraction_complete": "artists"}) is None
+        assert self._awaiting({"status": "healthy", "awaiting_extraction_complete": ["artists", 3]}) is None
+
+    def test_a_service_that_does_not_answer_reports_nothing(self) -> None:
+        assert self._awaiting(RuntimeError("down")) is None
 
 
 class TestWorkQueueConditions:

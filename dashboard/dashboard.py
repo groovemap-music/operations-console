@@ -138,12 +138,15 @@ class ServiceStatus(BaseModel):
     error: str | None
     extraction_progress: dict[str, int] | None = None  # extractor only: per-type counts + total
     last_extraction_time: dict[str, float | None] | None = None  # extractor only: seconds since last activity
+    # Loaders and enrichers only: types whose consumer is cancelled until their extraction_complete
+    # arrives. None means the service does not report the field, which is not an empty list.
+    awaiting_extraction_complete: list[str] | None = None
 
 
 class QueueCondition(BaseModel):
     """A work queue's standing problem, decided by the server's EventDetector."""
 
-    kind: str  # "no-consumer" or "stalled"
+    kind: str  # "no-consumer", "stalled", or "awaiting-marker" (an expected wait, not a fault)
     label: str  # what the matrix and the attention bar print, e.g. "STALLED · no acks 2m"
 
 
@@ -318,6 +321,13 @@ def _topology_pipelines() -> list[dict[str, Any]]:
     return pipelines
 
 
+def _type_list(value: Any) -> list[str] | None:
+    """A service's list of type names, or None when it is absent or not a list of strings."""
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return list(value)
+    return None
+
+
 class DashboardApp:
     """Main dashboard application."""
 
@@ -332,6 +342,12 @@ class DashboardApp:
             work_queues=frozenset(
                 queue["name"] for pipeline in _topology_pipelines() for consumer in pipeline["consumers"] for queue in consumer["queues"]
             ),
+            queue_owners={
+                queue["name"]: (consumer["name"], queue["entity"])
+                for pipeline in _topology_pipelines()
+                for consumer in pipeline["consumers"]
+                for queue in consumer["queues"]
+            },
         )
         self.neo4j_driver: AsyncResilientNeo4jDriver | None = None
         self.postgres_conn: AsyncResilientPostgreSQL | None = None
@@ -579,6 +595,7 @@ class DashboardApp:
                     error=None,
                     extraction_progress=data.get("extraction_progress"),
                     last_extraction_time=data.get("last_extraction_time"),
+                    awaiting_extraction_complete=_type_list(data.get("awaiting_extraction_complete")),
                 )
             except Exception as error:
                 poll.failed(error)
