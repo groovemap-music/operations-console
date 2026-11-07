@@ -3,6 +3,22 @@
 All notable changes to this repository will be recorded here by Commitizen from
 Conventional Commits.
 
+## v0.3.1 (2026-11-06)
+
+### Release notes
+
+No schema change. A parked extraction_complete shows as an expected wait, not NO CONSUMER, and turns critical again after 60 s or when a service doesn't report the field. Console tabs share one card spacing, and idle polling load is lower.
+
+### Fix
+
+- **dashboard**: show a parked extraction_complete as an expected wait, not NO CONSUMER
+- **dashboard**: treat a finished cell as done in the pipeline finish estimate
+- **dashboard**: use one card spacing on every console tab
+
+### Perf
+
+- **dashboard**: cut the console's idle polling load
+
 ## v0.3.0 (2026-10-31)
 
 ### Feat
