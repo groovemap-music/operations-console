@@ -181,6 +181,15 @@ class TestLedgerTab:
         split = page.locator(f'[data-edition="{LEDGER_SPLIT_EDITION}"]')
         expect(split.locator(".ledger-disagreement")).to_have_text("Work disagreement")
         expect(split.locator("dd button.ledger-work-link")).to_have_text(LEDGER_OTHER_WORK)
+        evidence = edition.locator(".ledger-evidence")
+        expect(evidence.locator("summary")).to_have_text("Alias evidence (2)")
+        evidence.locator("summary").click()
+        expect(evidence.locator("tbody tr")).to_have_count(2)
+        expect(evidence.locator("tbody tr").nth(0)).to_contain_text("discogs")
+        expect(evidence.locator("tbody tr").nth(1)).to_contain_text("musicbrainz")
+        expect(edition.locator(".ledger-detail").first).to_contain_text("Source ref 20261024-001001")
+        expect(edition.locator(".ledger-detail").first).to_contain_text("Decision ref backfill-1")
+        expect(split.locator(".ledger-evidence")).to_contain_text("No alias evidence recorded.")
 
         backfilled = page.locator('#ledger-work .ledger-events li[data-dated-from="musicbrainz_fullexport"]')
         expect(backfilled).to_have_count(1)
@@ -209,6 +218,14 @@ class TestLedgerTab:
         assert size["chart"][0] <= PHONE["width"]
         page.click(f'#ledger-works-body tr[data-work="{LEDGER_WORK}"] button.ledger-work-link')
         expect(page.locator(f'[data-edition="{LEDGER_EDITION}"] .ledger-events li')).to_have_count(3)
+        evidence = page.locator(f'[data-edition="{LEDGER_EDITION}"] .ledger-evidence')
+        evidence.locator("summary").click()
+        expect(evidence.locator("tbody tr")).to_have_count(2)
+        scroll = evidence.locator(".ledger-evidence-scroll").evaluate(
+            "el => ({ clientWidth: el.clientWidth, scrollWidth: el.scrollWidth, right: el.getBoundingClientRect().right })"
+        )
+        assert scroll["scrollWidth"] > scroll["clientWidth"], scroll
+        assert scroll["right"] <= PHONE["width"] + 1, scroll
 
         faults = page.evaluate(LAYOUT_FAULTS)
         assert faults["overflow"] == 0, faults

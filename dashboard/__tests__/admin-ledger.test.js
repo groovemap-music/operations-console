@@ -86,7 +86,18 @@ const WORK_PAYLOAD = {
                 { provider: 'musicbrainz', external_id: MBID, names_discogs_release: '900001' },
             ],
             former_items: [{ gm_id: FORMER, superseded_at: '2026-09-02T12:00:00Z', cause: 'catalog_reattachment', decision_ref: 'a-7' }],
-            evidence: [],
+            evidence: [
+                {
+                    provider: 'discogs', external_id: '900001', source: 'synthetic fixture import',
+                    held_by: 'synthetic-alias-holder', valid_from: '2026-08-01T02:00:00Z', valid_to: null,
+                    opened_by: 'fixture-loader', closed_by: null,
+                },
+                {
+                    provider: 'musicbrainz', external_id: MBID, source: 'synthetic fixture review',
+                    held_by: null, valid_from: '2026-08-02T02:00:00Z', valid_to: '2026-09-03T12:00:00Z',
+                    opened_by: 'fixture-reviewer', closed_by: 'fixture-closer',
+                },
+            ],
             events: [
                 LINK_ADDED,
                 { at: '2026-08-01T02:00:00Z', type: 'minted', item: EDITION, providers: ['discogs'], dated_from: 'groovemap', rule: 'ADR 0009' },
@@ -464,15 +475,81 @@ describe('the Ledger tab', () => {
             });
             const events = [...linked.querySelectorAll('.ledger-events li')];
             expect(events.map((event) => event.dataset.type)).toEqual(['link_added', 'minted', 'reattached', 'link_changed']);
-            expect(events[0].querySelector('.ledger-detail').textContent).toBe(`musicbrainz ${MBID}: Discogs none to 900001`);
-            expect(events[2].querySelector('.ledger-detail').textContent).toBe(`${FORMER} into ${EDITION}; moved collection_items 2`);
+            expect(events[0].querySelector('.ledger-detail').textContent).toBe(`musicbrainz ${MBID}: Discogs none to 900001 · Source ref 20261024-001001 · Decision ref b-1`);
+            expect(events[2].querySelector('.ledger-detail').textContent).toBe(`${FORMER} into ${EDITION}; moved collection_items 2 · Decision ref a-7`);
             expect(events[2].querySelector('.ledger-badge').title).toBe('ADR 0014 section 8');
+
+            const evidence = linked.querySelector('.ledger-evidence');
+            expect(evidence.querySelector('summary').textContent).toBe('Alias evidence (2)');
+            expect(evidence.querySelectorAll('tbody tr')).toHaveLength(2);
+            expect(evidence.querySelectorAll('tbody tr')[0].textContent).toBe('discogs900001synthetic fixture importsynthetic-alias-holder2026-08-01 02:00 UTC—fixture-loader—');
+            expect(evidence.querySelectorAll('tbody tr')[1].textContent).toBe(`musicbrainz${MBID}synthetic fixture review—2026-08-02 02:00 UTC2026-09-03 12:00 UTCfixture-reviewerfixture-closer`);
+            expect(evidence.querySelector('summary').parentElement.open).toBe(false);
 
             expect(split.querySelector('.ledger-badge').textContent).toBe('split');
             expect(split.querySelector('.ledger-disagreement').textContent).toBe('Work disagreement');
             const other = split.querySelector('dd button.ledger-work-link');
             expect(other.textContent).toBe(OTHER_WORK);
             expect(split.textContent).toContain('No events at this time.');
+            expect(split.querySelector('.ledger-evidence summary').textContent).toBe('Alias evidence (0)');
+            expect(split.querySelector('.ledger-evidence p').textContent).toBe('No alias evidence recorded.');
+        });
+
+        it('checks twenty distinct synthetic identity rendering scenarios against the current view', () => {
+            const scenarios = [
+                { name: 'open Discogs alias', state: 'linked', evidence: [{ provider: 'discogs', external_id: '900101', source: 'ingest', held_by: 'recording', valid_from: '2026-08-01T02:00:00Z', valid_to: null, opened_by: 'loader', closed_by: null }], expected: [['discogs', '900101', 'ingest', 'recording', '2026-08-01 02:00 UTC', '—', 'loader', '—']] },
+                { name: 'closed MusicBrainz alias', state: 'linked', evidence: [{ provider: 'musicbrainz', external_id: MBID, source: 'review', held_by: 'release group', valid_from: '2026-08-02T02:00:00Z', valid_to: '2026-09-03T12:00:00Z', opened_by: 'reviewer', closed_by: 'closer' }], expected: [['musicbrainz', MBID, 'review', 'release group', '2026-08-02 02:00 UTC', '2026-09-03 12:00 UTC', 'reviewer', 'closer']] },
+                { name: 'explicit empty evidence on linked edition', state: 'linked', evidence: [], expected: [] },
+                { name: 'two providers on one edition', state: 'linked', evidence: [{ provider: 'discogs', external_id: '900202', source: 'merge', held_by: 'release', valid_from: '2026-08-03T00:00:00Z' }, { provider: 'musicbrainz', external_id: 'mbid-2', source: 'backfill', held_by: 'group', valid_from: '2026-08-04T00:00:00Z' }], expected: [['discogs', '900202', 'merge', 'release', '2026-08-03 00:00 UTC', '—', '—', '—'], ['musicbrainz', 'mbid-2', 'backfill', 'group', '2026-08-04 00:00 UTC', '—', '—', '—']] },
+                { name: 'split edition has its own evidence', state: 'split', evidence: [{ provider: 'discogs', external_id: '900303', source: 'split review', valid_from: '2026-08-05T00:00:00Z' }], expected: [['discogs', '900303', 'split review', '—', '2026-08-05 00:00 UTC', '—', '—', '—']] },
+                { name: 'unresolved edition', state: 'unresolved', evidence: [{ provider: 'discogs', external_id: '900404', source: 'reconcile', held_by: 'candidate', valid_from: '2026-08-06T00:00:00Z' }], expected: [['discogs', '900404', 'reconcile', 'candidate', '2026-08-06 00:00 UTC', '—', '—', '—']] },
+                { name: 'linked edition carries a former item', state: 'linked', former_items: [{ gm_id: FORMER, superseded_at: '2026-08-07T00:00:00Z', cause: 'reattached' }], evidence: [{ provider: 'discogs', external_id: '900505', source: 'reattachment', valid_from: '2026-08-07T00:00:00Z' }], expected: [['discogs', '900505', 'reattachment', '—', '2026-08-07 00:00 UTC', '—', '—', '—']] },
+                { name: 'full-export dated reference', state: 'linked', events: [{ ...LINK_ADDED, dated_from: 'musicbrainz_fullexport' }], evidence: [{ provider: 'musicbrainz', external_id: 'mbid-8', source: 'full export', valid_from: '2026-08-08T00:00:00Z' }], expected: [['musicbrainz', 'mbid-8', 'full export', '—', '2026-08-08 00:00 UTC', '—', '—', '—']] },
+                { name: 'recorded event reference', state: 'linked', events: [{ ...LINK_ADDED, dated_from: 'groovemap' }], evidence: [{ provider: 'discogs', external_id: '900909', source: 'recorded link', valid_from: '2026-08-09T00:00:00Z' }], expected: [['discogs', '900909', 'recorded link', '—', '2026-08-09 00:00 UTC', '—', '—', '—']] },
+                { name: 'only validity end missing', state: 'linked', evidence: [{ provider: 'discogs', external_id: '901010', source: 'open alias', valid_from: '2026-08-10T00:00:00Z' }], expected: [['discogs', '901010', 'open alias', '—', '2026-08-10 00:00 UTC', '—', '—', '—']] },
+                { name: 'missing provider', state: 'linked', evidence: [{ external_id: '901111', source: 'partial', valid_from: '2026-08-11T00:00:00Z' }], expected: [['—', '901111', 'partial', '—', '2026-08-11 00:00 UTC', '—', '—', '—']] },
+                { name: 'missing external id', state: 'linked', evidence: [{ provider: 'discogs', source: 'partial', valid_from: '2026-08-12T00:00:00Z' }], expected: [['discogs', '—', 'partial', '—', '2026-08-12 00:00 UTC', '—', '—', '—']] },
+                { name: 'missing source', state: 'linked', evidence: [{ provider: 'musicbrainz', external_id: 'mbid-13', valid_from: '2026-08-13T00:00:00Z' }], expected: [['musicbrainz', 'mbid-13', '—', '—', '2026-08-13 00:00 UTC', '—', '—', '—']] },
+                { name: 'missing holder and opener', state: 'linked', evidence: [{ provider: 'discogs', external_id: '901414', source: 'automated', valid_from: '2026-08-14T00:00:00Z', closed_by: 'curator' }], expected: [['discogs', '901414', 'automated', '—', '2026-08-14 00:00 UTC', '—', '—', 'curator']] },
+                { name: 'empty strings count as missing', state: 'linked', evidence: [{ provider: '', external_id: '', source: '', held_by: '', valid_from: '', valid_to: '', opened_by: '', closed_by: '' }], expected: [['—', '—', '—', '—', '—', '—', '—', '—']] },
+                { name: 'hostile provider text remains text', state: 'linked', evidence: [{ provider: '<img src=x>', external_id: '901616', source: 'manual', valid_from: '2026-08-16T00:00:00Z' }], expected: [['<img src=x>', '901616', 'manual', '—', '2026-08-16 00:00 UTC', '—', '—', '—']] },
+                { name: 'hostile external text remains text', state: 'linked', evidence: [{ provider: 'discogs', external_id: '<svg onload=x>', source: 'manual', valid_from: '2026-08-17T00:00:00Z' }], expected: [['discogs', '<svg onload=x>', 'manual', '—', '2026-08-17 00:00 UTC', '—', '—', '—']] },
+                { name: 'non-ASCII provider labels', state: 'linked', evidence: [{ provider: 'discogs/日本語', external_id: '901818', source: 'éléments', valid_from: '2026-08-18T00:00:00Z' }], expected: [['discogs/日本語', '901818', 'éléments', '—', '2026-08-18 00:00 UTC', '—', '—', '—']] },
+                { name: 'long source wraps as plain text', state: 'linked', evidence: [{ provider: 'musicbrainz', external_id: 'mbid-19', source: 'synthetic source '.repeat(10), valid_from: '2026-08-19T00:00:00Z' }], expected: [['musicbrainz', 'mbid-19', 'synthetic source '.repeat(10), '—', '2026-08-19 00:00 UTC', '—', '—', '—']] },
+                { name: 'same provider has distinct evidence sources', state: 'musicbrainz_only', evidence: [{ provider: 'musicbrainz', external_id: 'mbid-20a', source: 'first source', valid_from: '2026-08-20T00:00:00Z' }, { provider: 'musicbrainz', external_id: 'mbid-20b', source: 'second source', valid_from: '2026-08-21T00:00:00Z' }], expected: [['musicbrainz', 'mbid-20a', 'first source', '—', '2026-08-20 00:00 UTC', '—', '—', '—'], ['musicbrainz', 'mbid-20b', 'second source', '—', '2026-08-21 00:00 UTC', '—', '—', '—']] },
+            ];
+
+            expect(scenarios).toHaveLength(20);
+            scenarios.forEach((scenario) => {
+                const article = app._ledgerEdition({
+                    gm_id: EDITION, state: scenario.state, provider_rows: [], works: [],
+                    former_items: scenario.former_items || [], events: scenario.events || [], evidence: scenario.evidence,
+                }, WORK);
+                const details = article.querySelector('.ledger-evidence');
+                expect(details.querySelector('summary').textContent, scenario.name).toBe(`Alias evidence (${scenario.evidence.length})`);
+                expect([...details.querySelectorAll('tbody tr')].map((row) => [...row.cells].map((cell) => cell.textContent)), scenario.name).toEqual(scenario.expected);
+                if (scenario.expected.length === 0) expect(details.textContent, scenario.name).toContain('No alias evidence recorded.');
+            });
+        });
+
+        it('escapes hostile evidence and renders missing fields explicitly', async () => {
+            const hostile = '<img src=x onerror="globalThis.pwned=1">';
+            installFetch({
+                work: {
+                    ...WORK_PAYLOAD,
+                    editions: [{
+                        ...WORK_PAYLOAD.editions[0],
+                        evidence: [{ provider: 'discogs', external_id: hostile, source: hostile }],
+                    }],
+                },
+            });
+            await app.openLedgerWork(WORK);
+            const edition = document.querySelector(`[data-edition="${EDITION}"]`);
+            const row = edition.querySelector('.ledger-evidence tbody tr');
+            expect(row.cells[1].textContent).toBe(hostile);
+            expect(row.cells[2].textContent).toBe(hostile);
+            expect([...row.cells].slice(3).every((cell) => cell.textContent === '—')).toBe(true);
+            expect(document.querySelector('#tab-ledger img')).toBeNull();
         });
 
         it('opens the other work of a disagreement from the edition', async () => {
@@ -505,12 +582,14 @@ describe('the Ledger tab', () => {
                 work: {
                     ...WORK_PAYLOAD,
                     work: { ...WORK_PAYLOAD.work, gm_id: hostile },
-                    editions: [{ ...WORK_PAYLOAD.editions[0], gm_id: hostile, events: [{ ...LINK_ADDED, external_id: hostile }] }],
+                    editions: [{ ...WORK_PAYLOAD.editions[0], gm_id: hostile, events: [{ ...LINK_ADDED, external_id: hostile, source_ref: hostile, decision_ref: hostile }] }],
                 },
             });
             await app.openLedgerWork(WORK);
             expect(document.querySelector('#tab-ledger img')).toBeNull();
             expect(text('ledger-work-id')).toBe(hostile);
+            expect(document.querySelector('.ledger-events li[data-type="link_added"] .ledger-detail').textContent).toContain(`Source ref ${hostile} · Decision ref ${hostile}`);
+            expect(document.querySelector('.ledger-evidence tbody tr td:nth-child(2)').textContent).toBe('900001');
         });
 
         it('shows a missing work and closes', async () => {

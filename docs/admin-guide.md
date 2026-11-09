@@ -473,7 +473,12 @@ or change a filter. It does not auto-refresh, except to ask again while the ledg
   transaction time, and **Now** returns to the present. Each edition shows its state
   (`not_recorded`, `discogs_only`, `musicbrainz_only`, `unresolved`, `split`, or `linked`),
   its primary work and any other work parent, its provider rows, the items superseded into it,
-  and its events. Hover over an event type to see the rule that produces it. **Work
+  and its events. Each edition also has a collapsed **Alias evidence** table for the API's
+  provider, external ID, source, holder, validity window, and opener/closer fields; missing
+  values and an explicitly empty evidence list are shown as such. Event `source_ref` and
+  `decision_ref` values appear as plain references in event details. The console does not
+  fetch audit bodies from those references. Hover over an event type to see the rule that
+  produces it. **Work
   disagreement** marks an edition whose Discogs master and MusicBrainz release group resolve to
   different works; the Discogs side is listed first as the primary work. Choosing the other
   work opens it.
@@ -507,3 +512,9 @@ Every event carries `dated_from`, and the tab shows both values differently:
 
 A MusicBrainz row keeps no history of its Discogs link. A past `unresolved` or `split` state is
 therefore computed from today's link.
+
+The evidence rendering checks include 20 named synthetic records across the two providers.
+The earlier console view showed provider rows and event descriptions but omitted the evidence
+rows and their event references. These synthetic checks compare the new field display and
+visibility against that earlier view; they do not represent 20 real identity decisions or
+establish usefulness to operators.
