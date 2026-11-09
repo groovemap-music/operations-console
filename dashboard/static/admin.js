@@ -3289,9 +3289,49 @@ class AdminLedger extends AdminContracts {
                 ['Provider rows', rows.length ? rows.join('; ') : '—'],
                 ['Former items', former],
             ]),
+            this._ledgerEvidence(edition.evidence),
             this._ledgerEvents(edition.events, 'Events'),
         );
         return article;
+    }
+
+    _ledgerEvidence(evidence) {
+        const rows = Array.isArray(evidence) ? evidence : [];
+        const details = _el('details', 'ledger-evidence');
+        const summary = _el('summary', 'text-xs font-semibold t-muted cursor-pointer', `Alias evidence (${rows.length})`);
+        details.appendChild(summary);
+        if (rows.length === 0) {
+            details.appendChild(_el('p', 'text-xs t-muted mt-2', 'No alias evidence recorded.'));
+            return details;
+        }
+
+        const tableWrap = _el('div', 'ledger-evidence-scroll');
+        const table = _el('table', 'ledger-evidence-table');
+        const head = _el('thead');
+        const headingRow = _el('tr');
+        const columns = ['Provider', 'External ID', 'Source', 'Held by', 'Valid from', 'Valid to', 'Opened by', 'Closed by'];
+        columns.forEach(label => headingRow.appendChild(_el('th', null, label)));
+        head.appendChild(headingRow);
+        const body = _el('tbody');
+        rows.forEach(row => {
+            const tr = _el('tr');
+            const values = [
+                row.provider,
+                row.external_id,
+                row.source,
+                row.held_by,
+                row.valid_from ? _ledgerTime(row.valid_from) : null,
+                row.valid_to ? _ledgerTime(row.valid_to) : null,
+                row.opened_by,
+                row.closed_by,
+            ];
+            values.forEach(value => tr.appendChild(_el('td', null, value == null || value === '' ? '—' : String(value))));
+            body.appendChild(tr);
+        });
+        table.append(head, body);
+        tableWrap.appendChild(table);
+        details.appendChild(tableWrap);
+        return details;
     }
 
     // A work id; one other than the open work opens it.
@@ -3351,28 +3391,33 @@ class AdminLedger extends AdminContracts {
     }
 
     _ledgerEventDetail(event) {
+        const references = [
+            event.source_ref ? `Source ref ${event.source_ref}` : null,
+            event.decision_ref ? `Decision ref ${event.decision_ref}` : null,
+        ].filter(Boolean);
+        const suffix = references.length ? ` · ${references.join(' · ')}` : '';
         switch (event.type) {
         case 'minted':
-            return `${event.item}${event.providers?.length ? ` from ${event.providers.join(' and ')}` : ''}`;
+            return `${event.item}${event.providers?.length ? ` from ${event.providers.join(' and ')}` : ''}${suffix}`;
         case 'linked_at_ingest':
-            return event.item;
+            return `${event.item}${suffix}`;
         case 'evidence_attached':
-            return `${event.provider} alias from ${event.source}`;
+            return `${event.provider} alias from ${event.source}${suffix}`;
         case 'alias_closed':
-            return `${event.provider} alias closed`;
+            return `${event.provider} alias closed${suffix}`;
         case 'reattached':
         case 'promoted': {
             const moves = Object.entries(event.moves || {}).map(([table, count]) => `${table} ${count}`);
-            return `${event.superseded} into ${event.survivor}${moves.length ? `; moved ${moves.join(', ')}` : ''}${event.compressed ? '; compressed' : ''}`;
+            return `${event.superseded} into ${event.survivor}${moves.length ? `; moved ${moves.join(', ')}` : ''}${event.compressed ? '; compressed' : ''}${suffix}`;
         }
         case 'reverted':
-            return `${event.superseded} split back out of ${event.survivor}`;
+            return `${event.superseded} split back out of ${event.survivor}${suffix}`;
         case 'link_added':
         case 'link_changed':
         case 'link_removed':
-            return `${event.provider} ${event.external_id}: Discogs ${event.discogs_id_before ?? 'none'} to ${event.discogs_id_after ?? 'none'}`;
+            return `${event.provider} ${event.external_id}: Discogs ${event.discogs_id_before ?? 'none'} to ${event.discogs_id_after ?? 'none'}${suffix}`;
         default:
-            return '';
+            return references.join(' · ');
         }
     }
 }

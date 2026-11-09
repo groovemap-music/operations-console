@@ -636,6 +636,12 @@
         .ledger-events li { display: grid; grid-template-columns: 9.5rem 8rem minmax(0, 1fr) auto; gap: 4px 10px; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--row-border); }
         .ledger-events li > .ledger-badge { justify-self: start; }
         .ledger-events .ledger-detail { overflow-wrap: anywhere; color: var(--text-mid); }
+        .ledger-evidence { margin-top: 8px; border-top: 1px solid var(--row-border); padding-top: 8px; }
+        .ledger-evidence summary { width: fit-content; }
+        .ledger-evidence-scroll { overflow-x: auto; max-width: 100%; margin-top: 8px; }
+        .ledger-evidence-table { border-collapse: collapse; min-width: 48rem; width: 100%; font-size: 11px; }
+        .ledger-evidence-table th, .ledger-evidence-table td { padding: 5px 8px; border-bottom: 1px solid var(--row-border); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+        .ledger-evidence-table th { color: var(--text-muted-aa); font-size: 10px; font-weight: 700; white-space: nowrap; }
         @media (max-width: 640px) {
             .ledger-fields { grid-template-columns: minmax(0, 1fr); }
             .ledger-fields dd { margin-bottom: 4px; }
