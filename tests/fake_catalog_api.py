@@ -131,7 +131,28 @@ def default_ledger() -> dict[str, Any]:
                                 "decision_ref": "audit-7",
                             }
                         ],
-                        "evidence": [],
+                        "evidence": [
+                            {
+                                "provider": "discogs",
+                                "external_id": "900001",
+                                "source": "synthetic fixture import with deliberately long descriptive text for phone-width scrolling",
+                                "held_by": "synthetic-alias-holder",
+                                "valid_from": "2026-08-01T02:00:00Z",
+                                "valid_to": None,
+                                "opened_by": "fixture-loader",
+                                "closed_by": None,
+                            },
+                            {
+                                "provider": "musicbrainz",
+                                "external_id": LEDGER_MBID,
+                                "source": "synthetic fixture review",
+                                "held_by": None,
+                                "valid_from": "2026-08-02T02:00:00Z",
+                                "valid_to": "2026-09-03T12:00:00Z",
+                                "opened_by": "fixture-reviewer",
+                                "closed_by": "fixture-closer",
+                            },
+                        ],
                         "events": [
                             link_added,
                             _event("2026-08-01T02:00:00Z", "minted", item=LEDGER_EDITION, providers=["discogs"]),
