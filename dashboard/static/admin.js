@@ -1010,7 +1010,22 @@ class AdminQueues extends AdminExtractions {
 
             purgeBtn.append(deleteIcon, document.createTextNode(' Purge'));
 
-            row.append(left, purgeBtn);
+            const replayBtn = document.createElement('button');
+            replayBtn.className = 'text-[10px] px-3 py-1 rounded font-bold uppercase tracking-wider badge-running hover:opacity-80 transition-opacity flex items-center gap-1';
+            replayBtn.addEventListener('click', () => this.replayDlq(queue));
+
+            const replayIcon = document.createElement('span');
+            replayIcon.className = 'material-symbols-outlined';
+            replayIcon.style.fontSize = '12px';
+            replayIcon.textContent = 'replay';
+
+            replayBtn.append(replayIcon, document.createTextNode(' Replay'));
+
+            const actions = document.createElement('div');
+            actions.className = 'flex items-center gap-2';
+            actions.append(replayBtn, purgeBtn);
+
+            row.append(left, actions);
             return row;
         });
 
@@ -1038,6 +1053,44 @@ class AdminQueues extends AdminExtractions {
         } catch {
             this.showToast('Connection error', 'error');
         }
+    }
+
+    async replayDlq(queue) {
+        if (!confirm(`Replay ${queue}?\n\nThis moves the parked messages back to their work queue. Messages that cannot be republished stay in the dead letter queue.`)) {
+            return;
+        }
+
+        try {
+            const response = await this.authFetch(`/admin/api/dlq/replay/${queue}`, {
+                method: 'POST',
+            });
+            const body = await response.json().catch(() => ({}));
+
+            if (response.ok) {
+                const replayed = body.replayed != null ? body.replayed : 0;
+                const remaining = body.remaining != null ? body.remaining : 0;
+                this.showToast(`Replayed ${replayed} message(s) from ${queue}, ${remaining} remaining`, 'success');
+            } else if (response.status === 409) {
+                this.showToast(`Work queue for ${queue} is missing: nothing was moved`, 'error');
+            } else if (response.status === 502) {
+                const moved = /after (\d+) replayed/.exec(typeof body.detail === 'string' ? body.detail : '');
+                const count = moved ? `${moved[1]} message(s) moved` : 'some messages may have moved';
+                this.showToast(`Partial replay of ${queue}: ${count}; the rest stay parked in the dead letter queue`, 'error');
+            } else if (response.status === 404) {
+                this.showToast(`${queue} is not a known dead letter queue`, 'error');
+            } else {
+                this.showToast(body.detail || `Failed to replay ${queue}`, 'error');
+            }
+        } catch {
+            this.showToast('Connection error', 'error');
+        }
+        this.refreshQueueCounts();
+    }
+
+    refreshQueueCounts() {
+        // The queue counts live on the dashboard, which reads them from /api/metrics.
+        const dashboard = window.dashboard;
+        if (dashboard && typeof dashboard.fetchInitialData === 'function') dashboard.fetchInitialData();
     }
 }
 
