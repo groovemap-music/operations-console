@@ -3,6 +3,25 @@
 All notable changes to this repository will be recorded here by Commitizen from
 Conventional Commits.
 
+## v0.4.0 (2026-11-09)
+
+### Release notes
+
+Needs catalog-api v0.13.0 (the dead-letter replay route and its structured failure body); with an older API the Replay action gets 404.
+
+- **Dead-letter replay** (gm-operations-console-7g18, -se5t): a Replay action beside Purge on each dead-letter queue, proxied to `POST /api/admin/dlq/replay/{queue}`, with the audit row rendered. On a partial failure it shows the exact counts from the structured 502 body (`replayed`, `remaining`), says "remaining depth unknown" when the API reports it as unknown, and keeps parsing the older prose message only as a fallback.
+- **Identity Ledger alias evidence** (gm-operations-console-bg46, operator-authorized for release 2026-11-09): the ledger view shows administrator alias evidence and event references.
+
+### Feat
+
+- **dlq**: show exact replay counts from the structured 502 body
+- **dlq**: add a replay action beside purge
+- **ledger**: show alias evidence and event refs
+
+### Fix
+
+- **release**: keep breaking changes below 1.0 with major_version_zero
+
 ## v0.3.1 (2026-11-06)
 
 ### Release notes
