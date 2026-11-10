@@ -5,7 +5,8 @@ seconds. The loader lists the type in ``awaiting_extraction_complete`` on /healt
 must show that wait quietly, while a queue nobody excuses stays critical. This runs the console's
 real EventDetector, aggregation, WebSocket and front end in a real browser, over a source where both
 Discogs consumers of ``artists`` are cancelled with a message queued: Graphinator lists the type,
-Tableinator is a service version that does not report the field. The expected-wait bound is 6 s.
+Tableinator is a service version that does not report the field. The wait does not run on the clock: the test ages it past the production bound on demand, so
+it cannot race how long the browser took to start or log in.
 """
 # mypy: disable-error-code="no-untyped-def"
 
@@ -80,15 +81,18 @@ class TestAwaitingExtractionComplete:
         expect(page.locator('[data-attention-id="queue:groovemap-discogs-tableinator-artists"]')).to_be_visible()
 
         # Graphinator lists the type: an expected wait, not critical and not on the attention bar.
-        # (Asserted in the same polled reading that made the sibling critical, within the 6 s bound.)
+        # The wait is 60 s from the first reading and this test ages it by hand, so it is quiet however slow the page was.
         expect(graphinator).to_have_attribute("data-state", "ok")
         expect(graphinator).to_have_attribute("data-kind", "awaiting-marker")
         expect(graphinator).to_contain_text("awaiting extraction_complete")
         expect(graphinator).not_to_contain_text("NO CONSUMER")
         expect(page.locator('[data-attention-id="queue:groovemap-discogs-graphinator-artists"]')).to_have_count(0)
 
-        # Still waiting after the bound: visible as a problem again.
-        expect(graphinator).to_have_attribute("data-state", "crit", timeout=15000)
+        # Still waiting after the bound (the test moves the wait's start back by it): visible as a problem again.
+        aged = page.request.post(f"{parked_marker_console}/__fake__/age-awaiting-marker")
+        assert aged.ok
+        assert aged.json() == {"aged": 1}
+        expect(graphinator).to_have_attribute("data-state", "crit", timeout=10000)
         expect(graphinator).to_have_attribute("data-kind", "no-consumer")
         expect(graphinator).to_contain_text("NO CONSUMER")
         expect(page.locator('[data-attention-id="queue:groovemap-discogs-graphinator-artists"]')).to_be_visible()
