@@ -78,8 +78,8 @@ def test_audit_log_action_filter_has_all_actions_option() -> None:
     )
 
 
-def test_audit_log_action_filter_has_all_four_named_actions() -> None:
-    """All four named audit actions must still be present alongside the 'All Actions' option."""
+def test_audit_log_action_filter_has_all_five_named_actions() -> None:
+    """All five named audit actions must still be present alongside the 'All Actions' option."""
     collector = _collect_options("al-action-filter")
     assert collector.option_values == [
         "",
@@ -87,4 +87,5 @@ def test_audit_log_action_filter_has_all_four_named_actions() -> None:
         "admin.logout",
         "extraction.trigger",
         "dlq.purge",
+        "dlq.replay",
     ]

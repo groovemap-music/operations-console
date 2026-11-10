@@ -227,6 +227,10 @@ class FakeCatalogApi:
         self.ledger = default_ledger()
         self.ledger_building = False
         self.ledger_retry_after = 60
+        # DLQ replay scenario: messages parked, and how the replay ends ("ok", "work-queue-missing", "partial").
+        self.dlq_parked = 0
+        self.dlq_mode = "ok"
+        self.dlq_replay_calls: list[dict[str, Any]] = []
         self.app = self._build_app()
 
     def mint(self, email: str = ADMIN_EMAIL, *, lifetime_seconds: float = 3600, is_admin: bool = True) -> str:
@@ -360,6 +364,38 @@ class FakeCatalogApi:
             self.ledger_building = bool(body["enabled"])
             self.ledger_retry_after = int(body.get("retry_after", 60))
             return JSONResponse({"building": self.ledger_building, "retry_after": self.ledger_retry_after})
+
+        @app.post(catalog_admin_contract.ADMIN_DLQ_REPLAY_PATH)
+        async def dlq_replay(queue: str, request: Request) -> JSONResponse:
+            record = self._live(request)
+            if isinstance(record, JSONResponse):
+                return record
+            limit = int(request.query_params.get("limit", 5000))
+            self.dlq_replay_calls.append({"queue": queue, "limit": limit})
+            if not queue.endswith(".dlq"):
+                return JSONResponse({"detail": f"Unknown DLQ: {queue}"}, status_code=404)
+            if self.dlq_mode == "work-queue-missing":
+                return JSONResponse({"detail": "Work queue does not exist: work"}, status_code=409)
+            if self.dlq_mode == "partial":
+                moved = min(self.dlq_parked, 2)
+                self.dlq_parked -= moved
+                detail = f"RabbitMQ unreachable or replay failed after {moved} replayed; unreplayed messages remain in the DLQ"
+                return JSONResponse({"detail": detail}, status_code=502)
+            replayed = min(self.dlq_parked, limit)
+            self.dlq_parked -= replayed
+            return JSONResponse({"queue": queue, "replayed": replayed, "remaining": self.dlq_parked})
+
+        @app.post("/__fake__/dlq")
+        async def set_dlq(request: Request) -> JSONResponse:
+            body: dict[str, Any] = await request.json()
+            self.dlq_parked = int(body.get("parked", 0))
+            self.dlq_mode = str(body.get("mode", "ok"))
+            self.dlq_replay_calls = []
+            return JSONResponse({"parked": self.dlq_parked, "mode": self.dlq_mode})
+
+        @app.get("/__fake__/dlq-replays")
+        async def dlq_replays() -> JSONResponse:
+            return JSONResponse({"calls": self.dlq_replay_calls, "parked": self.dlq_parked})
 
         @app.post("/__fake__/audit")
         async def set_audit(request: Request) -> JSONResponse:

@@ -17,7 +17,7 @@ const RECONNECT_BASE_MS = 5000;
 const RECONNECT_MAX_MS = 60000;
 
 // Operator actions shown in the System Event Log, read from the audit log every minute.
-const AUDIT_ACTIONS = ['extraction.trigger', 'dlq.purge'];
+const AUDIT_ACTIONS = ['extraction.trigger', 'dlq.purge', 'dlq.replay'];
 const AUDIT_PAGE_SIZE = 20;
 const AUDIT_POLL_MS = 60000;
 
@@ -2328,6 +2328,7 @@ class Dashboard {
         const target = entry.target ? ` ${entry.target}` : '';
         if (entry.action === 'extraction.trigger') return `${who} triggered an extraction`;
         if (entry.action === 'dlq.purge') return `${who} purged DLQ${target}`;
+        if (entry.action === 'dlq.replay') return `${who} replayed DLQ${target}`;
         return `${who}: ${entry.action}${target}`;
     }
 

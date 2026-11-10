@@ -618,6 +618,7 @@ class TestEveryRouteIsGated:
         with patch("dashboard.admin_proxy._proxy_request") as proxied:
             assert client.get("/admin/api/extractions").status_code == 401
             assert client.post("/admin/api/dlq/purge/q", headers=CONSOLE).status_code == 401
+            assert client.post("/admin/api/dlq/replay/q", headers=CONSOLE).status_code == 401
         proxied.assert_not_called()
 
 

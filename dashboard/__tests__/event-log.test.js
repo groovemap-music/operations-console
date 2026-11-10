@@ -78,6 +78,7 @@ describe('System Event Log', () => {
         const audit = {
             'extraction.trigger': [{ action: 'extraction.trigger', admin_email: 'ops@example.com', created_at: new Date(T0 + 20_000).toISOString() }],
             'dlq.purge': [{ action: 'dlq.purge', admin_email: 'sre@example.com', target: 'q.dlq', created_at: new Date(T0 + 5_000).toISOString() }],
+            'dlq.replay': [{ action: 'dlq.replay', admin_email: 'sre@example.com', target: 'q.dlq', created_at: new Date(T0 + 3_000).toISOString() }],
         };
         const calls = [];
         globalThis.fetch = vi.fn(async (url, init) => {
@@ -88,14 +89,16 @@ describe('System Event Log', () => {
         dashboard.applyEventBacklog([event(1, 'Neo4j is down', 'error', 10)]);
 
         await dashboard.fetchAuditEntries();
-        expect(rows().map((r) => r[2])).toEqual(['ops@example.com triggered an extraction', 'Neo4j is down', 'sre@example.com purged DLQ q.dlq']);
+        expect(rows().map((r) => r[2])).toEqual(['ops@example.com triggered an extraction', 'Neo4j is down', 'sre@example.com purged DLQ q.dlq', 'sre@example.com replayed DLQ q.dlq']);
         expect(calls.every(([, headers]) => headers['X-GrooveMap-Console'] === '1' && !('Authorization' in headers))).toBe(true);
         expect(calls.map(([url]) => url)).toEqual([
             '/admin/api/audit-log?action=extraction.trigger&page_size=20',
             '/admin/api/audit-log?action=dlq.purge&page_size=20',
+            '/admin/api/audit-log?action=dlq.replay&page_size=20',
         ]);
 
         audit['dlq.purge'] = [];
+        audit['dlq.replay'] = [];
         await dashboard.fetchAuditEntries();
         expect(rows().map((r) => r[2])).toEqual(['ops@example.com triggered an extraction', 'Neo4j is down']);
     });

@@ -327,6 +327,21 @@ async def proxy_dlq_purge(queue: str, request: Request) -> Response:
     return await _proxy_request(request, "POST", path)
 
 
+@router.post("/admin/api/dlq/replay/{queue}")
+async def proxy_dlq_replay(queue: str, request: Request, limit: int | None = Query(default=None, ge=1, le=5000)) -> Response:
+    """Proxy DLQ replay requests to the API service.
+
+    catalog-api's status codes and body pass through untouched: 404 for an unknown queue,
+    409 when the work queue is missing, and 502 when a publish failed part-way, so the UI can
+    tell them apart.
+    """
+    if not _validate_path_segment(queue):
+        return Response(content=b'{"detail":"Invalid queue name"}', status_code=400, media_type="application/json")
+    path = catalog_admin_contract.ADMIN_DLQ_REPLAY_PATH.format(queue=queue)
+    params = {"limit": str(limit)} if limit is not None else None
+    return await _proxy_request(request, "POST", path, params=params)
+
+
 # ---------------------------------------------------------------------------
 # Phase 4 — Audit Log proxy route
 # ---------------------------------------------------------------------------
