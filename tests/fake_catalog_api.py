@@ -376,11 +376,16 @@ class FakeCatalogApi:
                 return JSONResponse({"detail": f"Unknown DLQ: {queue}"}, status_code=404)
             if self.dlq_mode == "work-queue-missing":
                 return JSONResponse({"detail": "Work queue does not exist: work"}, status_code=409)
-            if self.dlq_mode == "partial":
+            if self.dlq_mode in {"partial", "partial-unknown", "partial-legacy"}:
                 moved = min(self.dlq_parked, 2)
                 self.dlq_parked -= moved
                 detail = f"RabbitMQ unreachable or replay failed after {moved} replayed; unreplayed messages remain in the DLQ"
-                return JSONResponse({"detail": detail}, status_code=502)
+                if self.dlq_mode == "partial-legacy":
+                    # catalog-api before the structured 502: the counts live only in the detail prose.
+                    return JSONResponse({"detail": detail}, status_code=502)
+                # The current shape. remaining is null when the broker failed before the depth was read.
+                remaining = None if self.dlq_mode == "partial-unknown" else self.dlq_parked
+                return JSONResponse({"detail": detail, "replayed": moved, "remaining": remaining}, status_code=502)
             replayed = min(self.dlq_parked, limit)
             self.dlq_parked -= replayed
             return JSONResponse({"queue": queue, "replayed": replayed, "remaining": self.dlq_parked})

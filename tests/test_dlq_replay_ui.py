@@ -73,8 +73,24 @@ class TestDlqReplayButton:
         expect(page.locator("#toast")).to_contain_text("nothing was moved")
         assert replays()["parked"] == 5
 
-    def test_partial_replay_says_how_many_moved_and_the_rest_stay_parked(self, page: Page) -> None:
+    def test_partial_replay_shows_the_exact_moved_and_remaining_counts(self, page: Page) -> None:
         fake_catalog("dlq", {"parked": 5, "mode": "partial"})
+        open_dlq_tab(page)
+        replay_first_queue(page)
+        expect(page.locator("#toast")).to_contain_text("Partial replay of", timeout=10000)
+        expect(page.locator("#toast")).to_contain_text("2 moved, 3 still parked")
+        assert replays()["parked"] == 3
+
+    def test_partial_replay_with_unknown_depth_says_so(self, page: Page) -> None:
+        fake_catalog("dlq", {"parked": 5, "mode": "partial-unknown"})
+        open_dlq_tab(page)
+        replay_first_queue(page)
+        expect(page.locator("#toast")).to_contain_text("2 moved", timeout=10000)
+        expect(page.locator("#toast")).to_contain_text("remaining depth is unknown")
+        assert replays()["parked"] == 3
+
+    def test_legacy_partial_replay_still_reports_the_prose_count(self, page: Page) -> None:
+        fake_catalog("dlq", {"parked": 5, "mode": "partial-legacy"})
         open_dlq_tab(page)
         replay_first_queue(page)
         expect(page.locator("#toast")).to_contain_text("Partial replay", timeout=10000)

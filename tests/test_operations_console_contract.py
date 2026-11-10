@@ -64,6 +64,13 @@ class TestPromotedContractOperations:
         }
         assert catalog_admin_contract.ADMIN_SESSION_PATH == "/api/admin/auth/session"
 
+    def test_dlq_replay_error_body_is_promoted(self) -> None:
+        """The 502 replay body carries the moved and remaining counts; remaining is null when unknown."""
+        replay = ROUTES["operations"]["admin_dlq_replay"]
+        assert replay["error_fields"] == ["detail", "remaining", "replayed"]
+        assert set(replay["error_field_semantics"]) == {"remaining"}
+        assert "null" in replay["error_field_semantics"]["remaining"]
+
     def test_identity_ledger_operations_are_promoted(self) -> None:
         """The Ledger tab reads these three routes, through explicit proxy handlers."""
         operations = ROUTES["operations"]

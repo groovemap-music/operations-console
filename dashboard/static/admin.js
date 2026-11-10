@@ -1073,9 +1073,7 @@ class AdminQueues extends AdminExtractions {
             } else if (response.status === 409) {
                 this.showToast(`Work queue for ${queue} is missing: nothing was moved`, 'error');
             } else if (response.status === 502) {
-                const moved = /after (\d+) replayed/.exec(typeof body.detail === 'string' ? body.detail : '');
-                const count = moved ? `${moved[1]} message(s) moved` : 'some messages may have moved';
-                this.showToast(`Partial replay of ${queue}: ${count}; the rest stay parked in the dead letter queue`, 'error');
+                this.showToast(this.partialReplayMessage(queue, body), 'error');
             } else if (response.status === 404) {
                 this.showToast(`${queue} is not a known dead letter queue`, 'error');
             } else {
@@ -1085,6 +1083,27 @@ class AdminQueues extends AdminExtractions {
             this.showToast('Connection error', 'error');
         }
         this.refreshQueueCounts();
+    }
+
+    /**
+     * Toast text for a 502 replay. Prefers catalog-api's structured fields ({replayed, remaining});
+     * a null or missing remaining means the DLQ depth was unknown. Older catalog-api versions only
+     * say the count in the detail prose, so that text is the fallback, and a generic line is the last resort.
+     */
+    partialReplayMessage(queue, body) {
+        const data = body && typeof body === 'object' ? body : {};
+        const prefix = `Partial replay of ${queue}: `;
+
+        if (Number.isInteger(data.replayed)) {
+            if (Number.isInteger(data.remaining)) {
+                return `${prefix}${data.replayed} moved, ${data.remaining} still parked`;
+            }
+            return `${prefix}${data.replayed} moved; the remaining depth is unknown, so refresh the queue counts to see what is still parked`;
+        }
+
+        const moved = /after (\d+) replayed/.exec(typeof data.detail === 'string' ? data.detail : '');
+        const count = moved ? `${moved[1]} message(s) moved` : 'some messages may have moved';
+        return `${prefix}${count}; the rest stay parked in the dead letter queue`;
     }
 
     refreshQueueCounts() {

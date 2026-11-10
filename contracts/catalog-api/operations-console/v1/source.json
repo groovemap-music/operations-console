@@ -1,8 +1,8 @@
 {
   "binding": "dashboard/catalog_admin_contract.py",
   "binding_sha256": "d0da604123f9d05241bf57d09d155c72d71ffc60981374353ed0317e759ad329",
-  "contract_sha256": "756494e3ec6fd53f207594203749151c3e3c26c9707012eed65662c2759b0ded",
-  "producer_commit": "4594b44ee08f7c0f424ff55c49f8b401439bc1da",
+  "contract_sha256": "c169148796d22dd1740f34507132376d3d48e8144d12ae8daf86a12aef4cf44c",
+  "producer_commit": "7d26033afb522c506e464ac25756fa2115e38aee",
   "producer_repository": "https://github.com/groovemap-music/catalog-api",
   "version": 1
 }
