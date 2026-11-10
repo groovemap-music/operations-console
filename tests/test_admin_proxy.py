@@ -389,6 +389,72 @@ class TestDlqPurgeProxy:
 
 
 # ---------------------------------------------------------------------------
+# POST /admin/api/dlq/replay/{queue}
+# ---------------------------------------------------------------------------
+
+
+class TestDlqReplayProxy:
+    QUEUE = "groovemap-discogs-graphinator-artists.dlq"
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_forwards_replay_and_bearer(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        _, mock_instance = _mock_httpx("post", 200, b'{"queue":"q.dlq","replayed":97,"remaining":0}')
+        mock_cls_patch.return_value = mock_instance
+
+        resp = proxy_client.post(f"/admin/api/dlq/replay/{self.QUEUE}", headers={"Authorization": "Bearer tok"})
+        assert resp.status_code == 200
+        assert resp.json() == {"queue": "q.dlq", "replayed": 97, "remaining": 0}
+        call = mock_instance.post.call_args
+        assert call.args[0].endswith(f"/api/admin/dlq/replay/{self.QUEUE}")
+        assert call.kwargs["headers"]["Authorization"] == "Bearer tok"
+        assert "params" not in call.kwargs
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_forwards_limit(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        _, mock_instance = _mock_httpx("post", 200, b'{"queue":"q","replayed":5,"remaining":9}')
+        mock_cls_patch.return_value = mock_instance
+
+        resp = proxy_client.post(f"/admin/api/dlq/replay/{self.QUEUE}?limit=5")
+        assert resp.status_code == 200
+        assert mock_instance.post.call_args.kwargs["params"] == {"limit": "5"}
+
+    @pytest.mark.parametrize("limit", ["0", "5001", "abc"])
+    def test_rejects_out_of_range_limit(self, proxy_client: TestClient, limit: str) -> None:
+        assert proxy_client.post(f"/admin/api/dlq/replay/{self.QUEUE}?limit={limit}").status_code == 422
+
+    @pytest.mark.parametrize(
+        ("status", "body"),
+        [
+            (404, b'{"detail":"Unknown DLQ: nope"}'),
+            (409, b'{"detail":"Work queue does not exist: w"}'),
+            (502, b'{"detail":"RabbitMQ unreachable or replay failed after 3 replayed; unreplayed messages remain in the DLQ"}'),
+            (502, b'{"detail":"replay failed after 3 replayed","replayed":3,"remaining":9}'),
+            (502, b'{"detail":"broker unreachable before the depth was read","replayed":0,"remaining":null}'),
+            (401, b'{"detail":"Invalid or expired token"}'),
+            (403, b'{"detail":"Admin access required"}'),
+        ],
+    )
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_passes_producer_status_and_body_through(self, mock_cls_patch: AsyncMock, proxy_client: TestClient, status: int, body: bytes) -> None:
+        _, mock_instance = _mock_httpx("post", status, body)
+        mock_cls_patch.return_value = mock_instance
+
+        resp = proxy_client.post(f"/admin/api/dlq/replay/{self.QUEUE}", headers={"Authorization": "Bearer tok"})
+        assert resp.status_code == status
+        assert resp.content == body
+
+    def test_rejects_invalid_queue_name(self, proxy_client: TestClient) -> None:
+        assert proxy_client.post("/admin/api/dlq/replay/bad!queue").status_code == 400
+
+    @patch("dashboard.admin_proxy.httpx.AsyncClient")
+    def test_replay_unreachable(self, mock_cls_patch: AsyncMock, proxy_client: TestClient) -> None:
+        _, mock_instance = _mock_httpx_error("post")
+        mock_cls_patch.return_value = mock_instance
+
+        assert proxy_client.post(f"/admin/api/dlq/replay/{self.QUEUE}").status_code == 502
+
+
+# ---------------------------------------------------------------------------
 # Auth header forwarding
 # ---------------------------------------------------------------------------
 

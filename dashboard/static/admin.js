@@ -1010,7 +1010,22 @@ class AdminQueues extends AdminExtractions {
 
             purgeBtn.append(deleteIcon, document.createTextNode(' Purge'));
 
-            row.append(left, purgeBtn);
+            const replayBtn = document.createElement('button');
+            replayBtn.className = 'text-[10px] px-3 py-1 rounded font-bold uppercase tracking-wider badge-running hover:opacity-80 transition-opacity flex items-center gap-1';
+            replayBtn.addEventListener('click', () => this.replayDlq(queue));
+
+            const replayIcon = document.createElement('span');
+            replayIcon.className = 'material-symbols-outlined';
+            replayIcon.style.fontSize = '12px';
+            replayIcon.textContent = 'replay';
+
+            replayBtn.append(replayIcon, document.createTextNode(' Replay'));
+
+            const actions = document.createElement('div');
+            actions.className = 'flex items-center gap-2';
+            actions.append(replayBtn, purgeBtn);
+
+            row.append(left, actions);
             return row;
         });
 
@@ -1038,6 +1053,63 @@ class AdminQueues extends AdminExtractions {
         } catch {
             this.showToast('Connection error', 'error');
         }
+    }
+
+    async replayDlq(queue) {
+        if (!confirm(`Replay ${queue}?\n\nThis moves the parked messages back to their work queue. Messages that cannot be republished stay in the dead letter queue.`)) {
+            return;
+        }
+
+        try {
+            const response = await this.authFetch(`/admin/api/dlq/replay/${queue}`, {
+                method: 'POST',
+            });
+            const body = await response.json().catch(() => ({}));
+
+            if (response.ok) {
+                const replayed = body.replayed != null ? body.replayed : 0;
+                const remaining = body.remaining != null ? body.remaining : 0;
+                this.showToast(`Replayed ${replayed} message(s) from ${queue}, ${remaining} remaining`, 'success');
+            } else if (response.status === 409) {
+                this.showToast(`Work queue for ${queue} is missing: nothing was moved`, 'error');
+            } else if (response.status === 502) {
+                this.showToast(this.partialReplayMessage(queue, body), 'error');
+            } else if (response.status === 404) {
+                this.showToast(`${queue} is not a known dead letter queue`, 'error');
+            } else {
+                this.showToast(body.detail || `Failed to replay ${queue}`, 'error');
+            }
+        } catch {
+            this.showToast('Connection error', 'error');
+        }
+        this.refreshQueueCounts();
+    }
+
+    /**
+     * Toast text for a 502 replay. Prefers catalog-api's structured fields ({replayed, remaining});
+     * a null or missing remaining means the DLQ depth was unknown. Older catalog-api versions only
+     * say the count in the detail prose, so that text is the fallback, and a generic line is the last resort.
+     */
+    partialReplayMessage(queue, body) {
+        const data = body && typeof body === 'object' ? body : {};
+        const prefix = `Partial replay of ${queue}: `;
+
+        if (Number.isInteger(data.replayed)) {
+            if (Number.isInteger(data.remaining)) {
+                return `${prefix}${data.replayed} moved, ${data.remaining} still parked`;
+            }
+            return `${prefix}${data.replayed} moved; the remaining depth is unknown, so refresh the queue counts to see what is still parked`;
+        }
+
+        const moved = /after (\d+) replayed/.exec(typeof data.detail === 'string' ? data.detail : '');
+        const count = moved ? `${moved[1]} message(s) moved` : 'some messages may have moved';
+        return `${prefix}${count}; the rest stay parked in the dead letter queue`;
+    }
+
+    refreshQueueCounts() {
+        // The queue counts live on the dashboard, which reads them from /api/metrics.
+        const dashboard = window.dashboard;
+        if (dashboard && typeof dashboard.fetchInitialData === 'function') dashboard.fetchInitialData();
     }
 }
 
