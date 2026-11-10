@@ -428,6 +428,8 @@ class TestDlqReplayProxy:
             (404, b'{"detail":"Unknown DLQ: nope"}'),
             (409, b'{"detail":"Work queue does not exist: w"}'),
             (502, b'{"detail":"RabbitMQ unreachable or replay failed after 3 replayed; unreplayed messages remain in the DLQ"}'),
+            (502, b'{"detail":"replay failed after 3 replayed","replayed":3,"remaining":9}'),
+            (502, b'{"detail":"broker unreachable before the depth was read","replayed":0,"remaining":null}'),
             (401, b'{"detail":"Invalid or expired token"}'),
             (403, b'{"detail":"Admin access required"}'),
         ],
