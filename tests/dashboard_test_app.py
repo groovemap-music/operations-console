@@ -12,7 +12,7 @@ import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, Callable  # noqa: TC003  # FastAPI resolves lifespan annotations at runtime.
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from fastapi import FastAPI  # noqa: TC002  # FastAPI resolves lifespan annotations at runtime.
@@ -35,8 +35,6 @@ _CONFIG = DashboardConfig(
     postgres_password="test",
     postgres_database="test",
 )
-
-PARKED_MARKER_BOUND_SECONDS = 6.0
 
 _MUSICBRAINZ_SERVICES = {"extractor-musicbrainz", "brainzgraphinator", "brainztableinator"}
 
@@ -61,15 +59,27 @@ class MockDashboardApp(DashboardApp):
 
         ``parked_marker`` is the end of a load: both Discogs consumers of ``artists`` are cancelled with
         the terminal marker queued. Graphinator lists the type in ``awaiting_extraction_complete``;
-        Tableinator is a service version that does not report the field. The expected-wait bound is
-        6 s, so a browser can watch it lapse.
+        Tableinator is a service version that does not report the field. The expected-wait bound is the
+        production one; the wait lapses when a test calls ``age_awaiting_marker``, never with elapsed time.
         """
         with patch("dashboard.dashboard.get_config", return_value=_CONFIG):
             super().__init__()
         self.include_musicbrainz = include_musicbrainz
         self.parked_marker = parked_marker
-        if parked_marker:
-            self.events.awaiting_marker_seconds = PARKED_MARKER_BOUND_SECONDS
+
+    def age_awaiting_marker(self) -> int:
+        """Move every expected wait's start back by the bound, so the next reading finds it lapsed.
+
+        The wait clock starts at the first reading the detector sees, which is when this app starts, not
+        when a browser reads it; a test that raced that clock failed on slow runners. Ageing the wait
+        replaces elapsed time: before the call the wait is quiet however slow the browser was, after it
+        the next reading is past the bound. Returns how many waits were aged.
+        """
+        shift = timedelta(seconds=self.events.awaiting_marker_seconds)
+        waits = self.events._awaiting_since  # the detector's own clock, moved by the test control
+        for key, since in waits.items():
+            waits[key] = since - shift
+        return len(waits)
 
     async def startup(self) -> None:
         """Take the first reading, then run the real collection loop; no datastore clients are opened.
@@ -175,7 +185,16 @@ def create_test_app(include_musicbrainz: bool = True, parked_marker: bool = Fals
         lifespan=_lifespan(include_musicbrainz, parked_marker),
     )
     app.add_exception_handler(SessionRejected, session_rejected_handler)
+
+    if parked_marker:
+        # Only the parked-marker app has a control, so the default app still serves exactly the production
+        # routes. Registered before them: their static catch-all would otherwise answer this path.
+        @app.post("/__fake__/age-awaiting-marker")
+        async def age_awaiting_marker() -> dict[str, int]:
+            return {"aged": console.dashboard.age_awaiting_marker()}  # type: ignore[attr-defined]
+
     app.router.routes.extend(console.app.router.routes)
+
     return app
 
 
