@@ -39,7 +39,7 @@ dependency is distributed.
 
 ## JavaScript build and test dependencies
 
-The direct, build-only JavaScript dependencies are `@tailwindcss/cli` 4.3.4,
+The direct, build-only JavaScript dependencies are `@tailwindcss/cli` 4.3.5,
 `@tailwindcss/forms` 0.5.11, `@fontsource/jura` 5.3.0 (`OFL-1.1`, see
 below), `@vitest/coverage-v8` 5.1.0, `jsdom` 31.0.0,
 and `vitest` 5.1.0. Each declares the `MIT` license. The browser-coverage
