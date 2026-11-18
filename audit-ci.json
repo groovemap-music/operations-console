@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/IBM/audit-ci/v7.1.0/docs/schema.json",
+  "high": true,
+  "allowlist": [
+    {
+      "GHSA-fc5q-39xc-vjpf": {
+        "active": true,
+        "expiry": "2026-12-18T00:00:00Z",
+        "notes": "picomatch is used only by Tailwind/Vitest build/test tooling with repository-controlled glob patterns; the deployed Python/static-asset application does not run it. No patched release exists as of 2026-11-18. Revisit when upstream releases a fix; all other high/critical advisories remain blocking."
+      }
+    }
+  ]
+}
